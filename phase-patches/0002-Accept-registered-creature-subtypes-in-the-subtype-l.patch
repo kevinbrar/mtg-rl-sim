@@ -1,0 +1,161 @@
+From 0621bcebc88f0ab367d567d4bfe475fe4b443c76 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sun, 8 Nov 2026 18:34:44 +0000
+Subject: [PATCH 2/3] Accept registered creature subtypes in the subtype
+ lexicon (Restless Prairie)
+
+collect_valid_subtypes now includes oracle_subtypes(), so animation-only
+subtypes such as Llama are not flagged as parser misfires. CR 205.3m.
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/coverage.rs            | 52 +++++++++++++++----
+ crates/engine/tests/integration/main.rs       |  1 +
+ .../tests/integration/restless_prairie.rs     | 50 ++++++++++++++++++
+ 3 files changed, 92 insertions(+), 11 deletions(-)
+ create mode 100644 crates/engine/tests/integration/restless_prairie.rs
+
+diff --git a/crates/engine/src/game/coverage.rs b/crates/engine/src/game/coverage.rs
+index 3a238fa32..ba7a99704 100644
+--- a/crates/engine/src/game/coverage.rs
++++ b/crates/engine/src/game/coverage.rs
+@@ -8321,20 +8321,21 @@ fn check_replacements(
+     }
+ }
+ 
+-/// Build a lexicon of every subtype that appears on at least one printed
+-/// card face. Used by [`check_subtype_lexicon`] to flag parser misfires:
+-/// any `AddSubtype { subtype }` whose value isn't a real printed subtype
+-/// (e.g. `"Gets"`, `"Until"`, `"+1/+1"`) signals that the animation or
+-/// static-ability parser tokenized English filler words as subtypes.
+-///
+-/// The MTG Comprehensive Rules define valid subtypes (CR 205.3), but the
+-/// printed corpus is the authoritative source for the engine — anything
+-/// that has appeared on a real card's type line is valid.
++/// Build a lexicon of printed and canonical parser subtypes. Used by
++/// [`check_subtype_lexicon`] to flag parser misfires: any `AddSubtype { subtype }`
++/// outside these vocabularies (e.g. `"Gets"`, `"Until"`, `"+1/+1"`) signals
++/// that an animation or static parser tokenized English filler as a subtype.
+ fn collect_valid_subtypes(card_db: &CardDatabase) -> HashSet<String> {
+-    card_db
++    let mut subtypes: HashSet<String> = card_db
+         .face_iter()
+         .flat_map(|(_, face)| face.card_type.subtypes.iter().cloned())
+-        .collect()
++        .collect();
++    subtypes.extend(
++        phase_ast::types::text_grammar::oracle_subtypes()
++            .iter()
++            .cloned(),
++    );
++    subtypes
+ }
+ 
+ /// Visit every `ContinuousModification` reachable from a card face.
+@@ -18460,6 +18461,35 @@ mod tests {
+         assert!(missing.is_empty());
+     }
+ 
++    /// CR 205.3m: a valid creature subtype used only by an animation must not be
++    /// rejected merely because it is absent from printed card type lines.
++    #[test]
++    fn subtype_lexicon_accepts_registered_creature_subtypes_without_printed_types() {
++        let valid = collect_valid_subtypes(&CardDatabase::default());
++        assert!(valid.contains("Llama"));
++
++        let mut face = CardFace {
++            name: "Restless Prairie".into(),
++            ..Default::default()
++        };
++        face.abilities.push(AbilityDefinition::new(
++            AbilityKind::Activated,
++            Effect::GenericEffect {
++                static_abilities: vec![StaticDefinition::continuous().modifications(vec![
++                    ContinuousModification::AddSubtype {
++                        subtype: "Llama".into(),
++                    },
++                ])],
++                duration: None,
++                target: None,
++                end_cost: None,
++            },
++        ));
++        let mut missing = Vec::new();
++        check_subtype_lexicon(&face, &valid, &mut missing);
++        assert!(missing.is_empty());
++    }
++
+     /// The warning pattern prefers the engine's typed phrase, and falls back
+     /// to the sentence excerpt when there is none.
+     ///
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index d65d67558..67f0f6652 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -219,6 +219,7 @@ mod queen_parser_near_misses;
+ mod random_result_source_identity;
+ mod replacement_choice_trigger_gating;
+ mod resolve_all_consent;
++mod restless_prairie;
+ mod rev_tithe_extractor_facedown_cast;
+ mod reveal_pick_visibility;
+ mod reveal_until_that_many;
+diff --git a/crates/engine/tests/integration/restless_prairie.rs b/crates/engine/tests/integration/restless_prairie.rs
+new file mode 100644
+index 000000000..c048fa27d
+--- /dev/null
++++ b/crates/engine/tests/integration/restless_prairie.rs
+@@ -0,0 +1,50 @@
++//! Restless Prairie's temporary Llama creature type is a valid CR subtype,
++//! even though it does not appear on a printed card type line.
++
++use engine::game::scenario::{GameScenario, P0};
++use engine::types::card_type::CoreType;
++use engine::types::game_state::WaitingFor;
++use engine::types::identifiers::ObjectId;
++use engine::types::mana::{ManaType, ManaUnit};
++use engine::types::phase::Phase;
++
++const RESTLESS_PRAIRIE_ORACLE: &str = "This land enters tapped.\n\
++{T}: Add {G} or {W}.\n\
++{2}{G}{W}: This land becomes a 3/3 green and white Llama creature until end of turn. It's still a land.\n\
++Whenever this land attacks, other creatures you control get +1/+1 until end of turn.";
++
++#[test]
++fn restless_prairie_becomes_a_3_3_llama_and_remains_a_land() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let prairie = scenario
++        .add_land_from_oracle(P0, "Restless Prairie", RESTLESS_PRAIRIE_ORACLE)
++        .id();
++    scenario.with_mana_pool(
++        P0,
++        vec![
++            ManaUnit::new(ManaType::Colorless, ObjectId(0), false, vec![]),
++            ManaUnit::new(ManaType::Colorless, ObjectId(0), false, vec![]),
++            ManaUnit::new(ManaType::Green, ObjectId(0), false, vec![]),
++            ManaUnit::new(ManaType::White, ObjectId(0), false, vec![]),
++        ],
++    );
++    let mut runner = scenario.build();
++
++    let activation = runner.activate(prairie, 1).resolve();
++    assert!(matches!(
++        activation.final_waiting_for(),
++        WaitingFor::Priority { player: P0 }
++    ));
++    assert!(activation.state().stack.is_empty());
++
++    let prairie = &runner.state().objects[&prairie];
++    assert!(prairie.card_types.core_types.contains(&CoreType::Land));
++    assert!(prairie.card_types.core_types.contains(&CoreType::Creature));
++    assert!(prairie
++        .card_types
++        .subtypes
++        .iter()
++        .any(|subtype| subtype == "Llama"));
++    assert_eq!((prairie.power, prairie.toughness), (Some(3), Some(3)));
++}
+-- 
+2.56.0
+

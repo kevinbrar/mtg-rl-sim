@@ -17,6 +17,24 @@ curl -O https://data.phase-rs.dev/card-data-5b455542437560f2.json   # for 988bc3
 mv card-data-*.json <data-dir>/card-data.json
 ```
 
+## Local phase-rs parser patches
+
+The `phase/` submodule remains pinned at `988bc3412f5d4e475c1837fbc88062b14d1f5489`;
+local parser fixes are stored as patches in [`phase-patches/`](phase-patches/).
+With a clean submodule worktree, apply the series using:
+
+```bash
+./scripts/apply-phase-patches.sh
+```
+
+The script checks out the pinned commit detached and reapplies the patch series,
+so it can be rerun to reproduce the same local parser. The card data generated
+from that patched parser is copied to
+`~/repos/eng/pdata/patched/card-data.json`; use
+`~/repos/eng/pdata/patched/` as the `phase-env` data root when running against
+the local fixes. Do not stage or commit generator side effects from
+`gen-card-data.sh`.
+
 ## Build & run
 
 ```bash

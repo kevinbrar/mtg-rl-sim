@@ -1,0 +1,179 @@
+From 478d48ccb5dff67c6b2cb21a78091d3f2956e645 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sun, 8 Nov 2026 18:34:44 +0000
+Subject: [PATCH 3/3] Keep 'Then for each ...,' prefix clauses with their body
+ (Rottenmouth Viper)
+
+The sequence splitter treats 'then for each ' as a prefix clause so the
+repeat count binds to the following effect. CR 608.2c, 608.2h.
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../scoped_unless_payer_per_iteration.rs      | 58 +++++++++++++++++++
+ .../src/parser/oracle_effect/sequence.rs      | 14 +++++
+ .../src/parser/oracle_trigger_tests.rs        | 21 +++++--
+ 3 files changed, 89 insertions(+), 4 deletions(-)
+
+diff --git a/crates/engine/tests/integration/scoped_unless_payer_per_iteration.rs b/crates/engine/tests/integration/scoped_unless_payer_per_iteration.rs
+index e28f11ef7..9c88c5495 100644
+--- a/crates/engine/tests/integration/scoped_unless_payer_per_iteration.rs
++++ b/crates/engine/tests/integration/scoped_unless_payer_per_iteration.rs
+@@ -73,11 +73,21 @@ fn battlefield_ids(runner: &GameRunner, player: PlayerId) -> Vec<ObjectId> {
+ /// nonland permanent and a card in hand, so both branches of the disjunctive
+ /// cost are payable for them.
+ fn viper_attacking(player_count: u8) -> (GameRunner, ObjectId) {
++    viper_attacking_with_blight_counters(player_count, 0)
++}
++
++fn viper_attacking_with_blight_counters(
++    player_count: u8,
++    starting_blight_counters: u32,
++) -> (GameRunner, ObjectId) {
+     let mut scenario = GameScenario::new_n_player(player_count, 42);
+     scenario.at_phase(Phase::PreCombatMain);
+     let viper = scenario
+         .add_creature_from_oracle(P0, "Rottenmouth Viper", 5, 4, ROTTENMOUTH_VIPER)
+         .id();
++    if starting_blight_counters > 0 {
++        scenario.with_counter(viper, BLIGHT(), starting_blight_counters);
++    }
+     for seat in 1..player_count {
+         let pid = PlayerId(seat);
+         scenario.add_creature(pid, &format!("Grizzly Bears {seat}"), 2, 2);
+@@ -159,6 +169,54 @@ fn viper_attack_trigger_offers_the_choice_to_each_opponent() {
+     assert_eq!(runner.life(P0), 20, "the controller loses nothing");
+ }
+ 
++/// CR 608.2c + CR 608.2h: the preceding instruction adds a blight counter,
++/// then the repeat count is determined from Viper's current counters. Starting
++/// with one counter makes the attack trigger's second counter observable: P1
++/// must receive and decline two separate unless prompts, losing 4 life each.
++#[test]
++fn viper_attack_repeats_the_unless_clause_for_each_blight_counter() {
++    let (mut runner, viper) = viper_attacking_with_blight_counters(2, 1);
++
++    assert_eq!(
++        blight_counters(&runner, viper),
++        2,
++        "the attack trigger adds a counter before measuring the repeat count"
++    );
++    for iteration in 0..2 {
++        match &runner.state().waiting_for {
++            WaitingFor::UnlessPaymentChooseCost { player, costs, .. } => {
++                assert_eq!(*player, P1, "each iteration is scoped to the opponent");
++                assert_eq!(costs.len(), 2, "both unless-cost branches remain available");
++            }
++            other => panic!("expected unless prompt {iteration}, got {other:?}"),
++        }
++        runner
++            .act(GameAction::ChooseUnlessCostBranch {
++                choice: UnlessCostBranch::Decline,
++            })
++            .expect("decline the current iteration's unless cost");
++        runner.advance_until_stack_empty();
++        if iteration == 0 {
++            assert_eq!(
++                runner.life(P1),
++                16,
++                "the first declined iteration costs 4 life before the second prompt"
++            );
++        }
++    }
++
++    assert_eq!(runner.life(P1), 12, "two counters cause two 4-life losses");
++    assert_eq!(runner.life(P0), 20, "the controller is not taxed");
++    assert!(
++        runner.state().stack.is_empty(),
++        "the trigger fully resolves"
++    );
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::Priority { player: P0 }
++    ));
++}
++
+ /// CR 118.12a: the cost's "of their choice" resolves against the PROMPTEE, so
+ /// the sacrifice candidates are the opponent's own permanents. Pre-fix the
+ /// controller was prompted and offered Viper and their own creatures.
+diff --git a/crates/phase-parser/src/parser/oracle_effect/sequence.rs b/crates/phase-parser/src/parser/oracle_effect/sequence.rs
+index d2c837b0e..74a3ede32 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/sequence.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/sequence.rs
+@@ -2762,6 +2762,9 @@ fn starts_prefix_clause(current_lower: &str) -> bool {
+         // lose the game") — without this, the splitter bisects the conditional
+         // at the comma between life and "you lose", orphaning the body.
+         tag("then, if "),
++        // CR 608.2c: a sequence-connected "for each" prefix still owns its
++        // comma-delimited effect body.
++        tag("then for each "),
+         tag("otherwise"),
+         tag("if not"),
+         tag("the next time "),
+@@ -11379,6 +11382,17 @@ mod tests {
+         assert_eq!(split_clause_sequence(plain).len(), 2, "{plain}");
+     }
+ 
++    #[test]
++    fn then_for_each_prefix_keeps_its_effect_body_together() {
++        let text = "put a blight counter on it. Then for each blight counter on it, each opponent loses 4 life unless that player sacrifices a nonland permanent of their choice or discards a card.";
++        let chunks = split_clause_sequence(text);
++        assert_eq!(chunks.len(), 2, "{chunks:#?}");
++        assert_eq!(
++            chunks[1].text,
++            "Then for each blight counter on it, each opponent loses 4 life unless that player sacrifices a nonland permanent of their choice or discards a card"
++        );
++    }
++
+     #[test]
+     fn source_pronoun_damage_boundaries_compose_pronoun_verb_and_connector() {
+         for pronoun in ["he", "she"] {
+diff --git a/crates/phase-parser/src/parser/oracle_trigger_tests.rs b/crates/phase-parser/src/parser/oracle_trigger_tests.rs
+index 12a362168..4290b03fd 100644
+--- a/crates/phase-parser/src/parser/oracle_trigger_tests.rs
++++ b/crates/phase-parser/src/parser/oracle_trigger_tests.rs
+@@ -19205,11 +19205,11 @@ fn trigger_unless_each_opponent_sacrifice_binds_scoped_player() {
+     assert_eq!(execute.player_scope, Some(PlayerFilter::Opponent));
+ }
+ 
+-/// CR 608.2f + CR 118.12a: Rottenmouth Viper's scoped clause is two links below
+-/// the chain root, so a hoisted payer resolves against whatever stamped the
+-/// root's `scoped_player` rather than against the fan-out's per-opponent seat.
++/// CR 608.2c + CR 608.2h + CR 608.2f + CR 118.12a: the counter is added before
++/// the repeat count is fixed, and each repeated instruction fans out to the
++/// opponents with its unless payer bound to the scoped player.
+ #[test]
+-fn trigger_scoped_unless_stays_on_the_scoped_clause_under_an_unimplemented_parent() {
++fn trigger_for_each_blight_counter_repeats_scoped_unless() {
+     let def = parse_trigger_line(
+             "Whenever this creature enters or attacks, put a blight counter on it. Then for each blight counter on it, each opponent loses 4 life unless that player sacrifices a nonland permanent of their choice or discards a card.",
+             "Rottenmouth Viper",
+@@ -19226,6 +19226,18 @@ fn trigger_scoped_unless_stays_on_the_scoped_clause_under_an_unimplemented_paren
+         "the scoped clause should be the life loss, got {:?}",
+         scoped.effect
+     );
++    assert!(
++        matches!(
++            scoped.repeat_for.as_ref(),
++            Some(QuantityExpr::Ref {
++                qty: QuantityRef::CountersOn {
++                    scope: ObjectScope::Source,
++                    counter_type: Some(CounterType::Generic(counter_type)),
++                }
++            }) if counter_type == "blight"
++        ),
++        "the scoped clause should repeat for Viper's blight counters: {scoped:#?}"
++    );
+     let unless_pay = scoped
+         .unless_pay
+         .as_ref()
+@@ -19245,6 +19257,7 @@ fn trigger_scoped_unless_stays_on_the_scoped_clause_under_an_unimplemented_paren
+         "second branch should be Discard, got {:?}",
+         costs[1]
+     );
++    assert_no_unimplemented(def.execute.as_deref().expect("should have execute"));
+ }
+ 
+ /// CR 608.2f: Bellowing Mauler's `each player` subject is scope-bearing exactly
+-- 
+2.56.0
+

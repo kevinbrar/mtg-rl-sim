@@ -1,0 +1,200 @@
+From 93dfa0c8ee33ea6122b20bc3b0995fab0c0b327d Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sun, 8 Nov 2026 18:34:44 +0000
+Subject: [PATCH 1/3] Filter 'each of those <type> you (don't) control' tracked
+ sets by controller
+
+Lost in the Maze: 'Put a stun counter on each of those creatures you don't
+control' now folds the controller scope into TrackedSetFiltered instead of
+collapsing to a bare TrackedSet. CR 608.2c.
+
+Anchors: Stall for Time, Monstrosity of the Lake, Hapatra, the Desert Frost.
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../tests/integration/lost_in_the_maze.rs     | 96 +++++++++++++++++++
+ crates/engine/tests/integration/main.rs       |  1 +
+ .../phase-parser/src/parser/oracle_target.rs  | 44 +++++++--
+ 3 files changed, 134 insertions(+), 7 deletions(-)
+ create mode 100644 crates/engine/tests/integration/lost_in_the_maze.rs
+
+diff --git a/crates/engine/tests/integration/lost_in_the_maze.rs b/crates/engine/tests/integration/lost_in_the_maze.rs
+new file mode 100644
+index 000000000..405546353
+--- /dev/null
++++ b/crates/engine/tests/integration/lost_in_the_maze.rs
+@@ -0,0 +1,96 @@
++use engine::game::scenario::{GameScenario, P0, P1};
++use engine::types::counter::CounterType;
++use engine::types::game_state::WaitingFor;
++use engine::types::identifiers::ObjectId;
++use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const LOST_IN_THE_MAZE_ORACLE: &str = "Flash\nWhen this enchantment enters, tap X target creatures. Put a stun counter on each of those creatures you don't control. (If a permanent with a stun counter would become untapped, remove one from it instead.)\nTapped creatures you control have hexproof.";
++
++fn floating_mana(n: usize, ty: ManaType) -> Vec<ManaUnit> {
++    (0..n)
++        .map(|_| ManaUnit::new(ty, ObjectId(0), false, vec![]))
++        .collect()
++}
++
++#[test]
++fn lost_in_the_maze_stuns_only_targeted_creatures_not_controlled_by_its_controller() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let own = scenario.add_creature(P0, "Own creature", 2, 2).id();
++    let opponent = scenario.add_creature(P1, "Opponent creature", 2, 2).id();
++    let stolen = scenario
++        .add_creature(P1, "Stolen creature", 2, 2)
++        .controlled_by(P0)
++        .id();
++    let untargeted = scenario.add_creature(P1, "Untargeted creature", 2, 2).id();
++    let spell = {
++        let mut card = scenario.add_spell_to_hand_from_oracle(
++            P0,
++            "Lost in the Maze",
++            false,
++            LOST_IN_THE_MAZE_ORACLE,
++        );
++        card.as_enchantment();
++        card.with_mana_cost(ManaCost::Cost {
++            shards: vec![ManaCostShard::X, ManaCostShard::Blue, ManaCostShard::Blue],
++            generic: 0,
++        });
++        card.id()
++    };
++    scenario.with_mana_pool(P0, floating_mana(5, ManaType::Blue));
++    let mut runner = scenario.build();
++
++    runner
++        .cast(spell)
++        .x(3)
++        .target_objects(&[own, opponent, stolen])
++        .resolve();
++
++    assert_eq!(runner.state().objects[&spell].zone, Zone::Battlefield);
++    assert!(runner.state().stack.is_empty());
++    assert!(matches!(
++        &runner.state().waiting_for,
++        WaitingFor::Priority { .. }
++    ));
++    for target in [own, opponent, stolen] {
++        assert!(
++            runner.state().objects[&target].tapped,
++            "target {target:?} should be tapped"
++        );
++    }
++    assert_eq!(
++        runner.state().objects[&opponent]
++            .counters
++            .get(&CounterType::Stun)
++            .copied()
++            .unwrap_or_default(),
++        1
++    );
++    assert_eq!(
++        runner.state().objects[&own]
++            .counters
++            .get(&CounterType::Stun)
++            .copied()
++            .unwrap_or_default(),
++        0
++    );
++    assert_eq!(
++        runner.state().objects[&stolen]
++            .counters
++            .get(&CounterType::Stun)
++            .copied()
++            .unwrap_or_default(),
++        0
++    );
++    assert!(!runner.state().objects[&untargeted].tapped);
++    assert_eq!(
++        runner.state().objects[&untargeted]
++            .counters
++            .get(&CounterType::Stun)
++            .copied()
++            .unwrap_or_default(),
++        0
++    );
++}
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index c35c69134..d65d67558 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -170,6 +170,7 @@ mod later_instruction_unless_bindings;
+ mod lathiel_end_step_counters_repro;
+ mod layer_boundary_census;
+ mod leyline_tyrant_pay_any_red_damage;
++mod lost_in_the_maze;
+ mod lost_monarch_combat_damage_by_type_intervening_if;
+ mod mana_ability_mana_payment_window;
+ mod mana_burn;
+diff --git a/crates/phase-parser/src/parser/oracle_target.rs b/crates/phase-parser/src/parser/oracle_target.rs
+index db262c406..fe81edd22 100644
+--- a/crates/phase-parser/src/parser/oracle_target.rs
++++ b/crates/phase-parser/src/parser/oracle_target.rs
+@@ -5458,15 +5458,14 @@ mod declared_damage_source_target_tests {
+     }
+ }
+ 
+-/// CR 608.2c: True when a typed filter carries a `FilterProp` PREDICATE beyond
+-/// the bare head type noun (e.g. `Not(AttackedThisTurn)`, `Untapped`, a
+-/// controller-scoping property). Used by the "each of those <noun> that
+-/// <predicate>" anaphor to decide whether the trailing predicate must fold into
+-/// a `TrackedSetFiltered` (frozen set ∩ predicate) rather than collapsing to a
+-/// bare `TrackedSet` that would drop the predicate.
++/// CR 608.2c: True when a typed filter carries a qualifier beyond its bare head
++/// type noun, such as a `FilterProp` predicate or controller scope. Used by the
++/// "each of those <noun> that <predicate>" anaphor to decide whether the
++/// trailing qualifier must fold into a `TrackedSetFiltered` (frozen set ∩
++/// qualifier) rather than collapsing to a bare `TrackedSet` that would drop it.
+ fn target_filter_carries_predicate_property(filter: &TargetFilter) -> bool {
+     match filter {
+-        TargetFilter::Typed(tf) => !tf.properties.is_empty(),
++        TargetFilter::Typed(tf) => !tf.properties.is_empty() || tf.controller.is_some(),
+         TargetFilter::Or { filters } | TargetFilter::And { filters } => {
+             filters.iter().any(target_filter_carries_predicate_property)
+         }
+@@ -15696,6 +15695,37 @@ mod tests {
+         assert_eq!(rest, "");
+     }
+ 
++    #[test]
++    fn each_of_those_creatures_filters_the_tracked_set_by_controller() {
++        for (text, controller) in [
++            ("each of those creatures you control", ControllerRef::You),
++            (
++                "each of those creatures you don't control",
++                ControllerRef::Opponent,
++            ),
++        ] {
++            let (filter, rest) = parse_target(text);
++            assert_eq!(rest, "", "{text}");
++            match filter {
++                TargetFilter::TrackedSetFiltered {
++                    id,
++                    filter,
++                    caused_by: None,
++                } => {
++                    assert_eq!(id, TrackedSetId(0), "{text}");
++                    assert_eq!(
++                        *filter,
++                        TargetFilter::Typed(TypedFilter::creature().controller(controller)),
++                        "{text}"
++                    );
++                }
++                other => {
++                    panic!("expected a controller-filtered tracked set for {text}, got {other:?}")
++                }
++            }
++        }
++    }
++
+     /// CR 601.2c: "each of <count> target <type>" must route through "target"
+     /// parsing (a concrete creature filter), NOT degenerate to the bare "each "
+     /// all-matching path. This guard is the safety net for any non-counter
+-- 
+2.56.0
+

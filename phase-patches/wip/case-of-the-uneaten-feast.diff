@@ -1,0 +1,254 @@
+# WIP: Case of the Uneaten Feast; intentionally not an applicable fix.
+# Seam analysis: GenericEffect broadcast binding originally enumerated only
+# battlefield objects, so an InZone(Graveyard) recipient filter registered no
+# grant. The WIP adds a zone-aware candidate scan, but the runtime scenario
+# still fails: transient_graveyard_permission_sources only consumes player-
+# scoped GrantStaticAbility grants, while this is an object-scoped AddStaticMode
+# grant. The layer pass also deliberately does not materialize SpecificObject
+# effects into graveyard objects. Supporting this correctly requires a fixed
+# recipient set (CR 611.2c) at the casting-permission collector seam.
+# Verification: cargo fmt --all passed; the targeted Case runtime test failed at
+# the permission-offered assertion. The Case is parked pending engine design.
+
+diff --git a/crates/engine/src/game/effects/effect.rs b/crates/engine/src/game/effects/effect.rs
+index 7ad31131d..81ad7c066 100644
+--- a/crates/engine/src/game/effects/effect.rs
++++ b/crates/engine/src/game/effects/effect.rs
+@@ -957,15 +957,17 @@ fn bind_transient_effect(
+             }
+             let filter = crate::game::effects::resolved_object_filter(state, ability, filter);
+             let filter = crate::game::targeting::resolve_tracked_set_sentinel(state, filter);
+-            // Broadcast filter: find matching objects at resolution time and bind each.
+-            // CR 107.3a + CR 601.2b: ability-context filter evaluation.
++            // CR 611.2c: freeze the matching set at resolution, including any
++            // nonbattlefield zones named by the filter.
+             let ctx = filter::FilterContext::from_ability(ability);
+-            let matching: Vec<ObjectId> = state
+-                .battlefield
+-                .iter()
+-                .filter(|obj_id| filter::matches_target_filter(state, **obj_id, &filter, &ctx))
+-                .copied()
+-                .collect();
++            let matching: Vec<ObjectId> = crate::game::layers::generic_effect_candidate_ids(
++                state,
++                &filter,
++                ability.source_id,
++            )
++            .into_iter()
++            .filter(|obj_id| filter::matches_target_filter(state, *obj_id, &filter, &ctx))
++            .collect();
+             for obj_id in matching {
+                 install_transient(
+                     state,
+diff --git a/crates/engine/src/game/layers.rs b/crates/engine/src/game/layers.rs
+index 9645cab64..079992820 100644
+--- a/crates/engine/src/game/layers.rs
++++ b/crates/engine/src/game/layers.rs
+@@ -253,6 +253,21 @@ fn effect_candidate_ids(
+     candidates
+ }
+ 
++/// CR 400.1 + CR 611.2c: resolving GenericEffects freeze their matching
++/// recipients at resolution, using the same zone-aware candidate set as layers.
++pub(crate) fn generic_effect_candidate_ids(
++    state: &GameState,
++    filter: &TargetFilter,
++    source_id: ObjectId,
++) -> Vec<ObjectId> {
++    effect_candidate_ids(
++        state,
++        filter,
++        source_id,
++        &mut LayerZoneObjectCache::default(),
++    )
++}
++
+ struct PreparedIncrementalFlush {
+     recipient_ids: BTreeSet<ObjectId>,
+     active_effects: Vec<ActiveContinuousEffect>,
+@@ -12581,6 +12596,16 @@ fn apply_continuous_effect_filtered(
+                 let resolved_mode = resolve_static_mode_chosen_color(mode, chosen_color);
+                 let mut def =
+                     StaticDefinition::new(resolved_mode.clone()).affected(TargetFilter::SelfRef);
++                // CR 113.6b: a granted cast permission functions from the zone it names.
++                match &resolved_mode {
++                    StaticMode::GraveyardCastPermission { .. } => {
++                        def = def.active_zones(vec![crate::types::zones::Zone::Graveyard]);
++                    }
++                    StaticMode::ExileCastPermission { .. } => {
++                        def = def.active_zones(vec![crate::types::zones::Zone::Exile]);
++                    }
++                    _ => {}
++                }
+                 // CR 611.2c + CR 109.5: A player reference carried by the granted
+                 // mode — a controller-relative blocker filter ("your opponents")
+                 // or `MustAttackAwayFromSource`'s avoided player (CR 701.15b) —
+diff --git a/crates/engine/tests/integration/swallow_optional_you_may.rs b/crates/engine/tests/integration/swallow_optional_you_may.rs
+index 5070ad5a5..5828083e7 100644
+--- a/crates/engine/tests/integration/swallow_optional_you_may.rs
++++ b/crates/engine/tests/integration/swallow_optional_you_may.rs
+@@ -1,6 +1,6 @@
+ //! `Swallow:Optional_YouMay` regression: Hades, Sorcerer of Eld's labeled
+-//! graveyard-play permission must parse as the rules-bearing static it is, and
+-//! the same-class residuals must stay red-honest.
++//! graveyard-play permission and temporary AddStaticMode grants must account
++//! for their own optional cast permission.
+ //!
+ //! Oracle (back face):
+ //!   "Vigilance
+@@ -55,9 +55,7 @@ const HADES_ORACLE: &str = "Vigilance\n\
+     If a card or token would be put into your graveyard from anywhere, exile it instead.";
+ 
+ /// Kethis, the Hidden Hand — its quoted grant is carried as
+-/// `ContinuousModification::AddStaticMode { mode: GraveyardCastPermission }`,
+-/// which `swallow_check::static_carries_optional_modification` does not yet
+-/// recognize, so the Optional_YouMay warning must survive (conservative-red).
++/// `ContinuousModification::AddStaticMode { mode: GraveyardCastPermission }`.
+ const KETHIS_ORACLE: &str = "Legendary spells you cast cost {1} less to cast.\n\
+     Exile two legendary cards from your graveyard: Until end of turn, each legendary card \
+      in your graveyard gains \"You may play this card from your graveyard.\"";
+@@ -383,15 +381,10 @@ fn hades_graveyard_play_permission_is_limited_to_your_turns() {
+     assert_cast_rejected(&mut runner, second);
+ }
+ 
+-/// CR 207.2d + CR 604.2 + CR 305.1: the quoted grants on Kethis and Case of the
+-/// Uneaten Feast are carried as `ContinuousModification::AddStaticMode`, which
+-/// `static_carries_optional_modification` does not yet recognize — so their
+-/// Optional_YouMay warnings must survive and keep the cards demoted.
+-/// Conservative-red by design: the fix's scope deliberately excludes the
+-/// `AddStaticMode` recognition arm, and dropping these warnings without that arm
+-/// would be a false green.
++/// CR 601.3 + CR 611.2a: Kethis and Case of the Uneaten Feast carry their
++/// graveyard-cast permission as `ContinuousModification::AddStaticMode`.
+ #[test]
+-fn kethis_and_case_of_the_uneaten_feast_stay_red_honest() {
++fn kethis_and_case_of_the_uneaten_feast_recognize_optional_cast_permissions() {
+     for (oracle, name, types) in [
+         (KETHIS_ORACLE, "Kethis, the Hidden Hand", &["Creature"][..]),
+         (
+@@ -415,14 +408,94 @@ fn kethis_and_case_of_the_uneaten_feast_stay_red_honest() {
+             "{name}: the AddStaticMode {{ GraveyardCastPermission }} carrier must be present"
+         );
+         assert!(
+-            has_swallowed_detector(&parsed, "Optional_YouMay"),
+-            "{name}'s AddStaticMode-carried grant is not recognized as an optionality \
+-             carrier yet and must stay red: {:?}",
++            !has_swallowed_detector(&parsed, "Optional_YouMay"),
++            "{name}'s AddStaticMode-carried graveyard permission accounts for its 'you may': {:?}",
+             parsed.parse_warnings
+         );
+     }
+ }
+ 
++/// CR 601.3 + CR 611.2a: Case's temporary graveyard-cast permission enables
++/// casting a creature card from its controller's graveyard, but not a
++/// noncreature card there.
++#[test]
++fn case_of_the_uneaten_feast_grants_its_graveyard_cast_permission() {
++    let parsed = parse_oracle_text(
++        CASE_OF_THE_UNEATEN_FEAST_ORACLE,
++        "Case of the Uneaten Feast",
++        &keyword_input(),
++        &["Enchantment".to_string()],
++        &[],
++    );
++    assert!(
++        carries_add_static_mode_graveyard_permission(&parsed),
++        "reach: the Solved ability must carry the graveyard-cast permission"
++    );
++    assert!(
++        !has_swallowed_detector(&parsed, "Optional_YouMay"),
++        "the permission's 'you may' must be represented, not reported as swallowed: {:?}",
++        parsed.parse_warnings
++    );
++
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let case = scenario
++        .add_creature(P0, "Case of the Uneaten Feast", 0, 0)
++        .as_enchantment()
++        .with_subtypes(vec!["Case"])
++        .from_oracle_text(CASE_OF_THE_UNEATEN_FEAST_ORACLE)
++        .id();
++    let creature = scenario
++        .add_creature_to_graveyard(P0, "Graveyard Creature", 2, 2)
++        .with_mana_cost(ManaCost::zero())
++        .id();
++    let noncreature = scenario
++        .add_spell_to_graveyard(P0, "Graveyard Instant", true)
++        .from_oracle_text("You gain 1 life.")
++        .with_mana_cost(ManaCost::zero())
++        .id();
++    let mut runner = scenario.build();
++    // Solved is the activated ability's prerequisite; Case solving has
++    // independent CR 719.3a runtime coverage.
++    runner
++        .state_mut()
++        .objects
++        .get_mut(&case)
++        .expect("Case on the battlefield")
++        .case_state
++        .as_mut()
++        .expect("Case state")
++        .is_solved = true;
++
++    assert!(!offered_to(&runner, P0, creature));
++    let activation = runner.activate(case, 0).resolve();
++    assert!(matches!(
++        activation.final_waiting_for(),
++        WaitingFor::Priority { player: P0 }
++    ));
++    assert!(activation.state().stack.is_empty());
++
++    assert!(
++        offered_to(&runner, P0, creature),
++        "the resolved ability must permit casting the creature from the graveyard"
++    );
++    assert!(
++        !offered_to(&runner, P0, noncreature),
++        "the permission applies only to creature cards"
++    );
++    runner.cast(creature).resolve();
++    assert_eq!(
++        runner.state().objects[&creature].zone,
++        Zone::Battlefield,
++        "the permitted creature spell resolves onto the battlefield"
++    );
++    assert!(runner.state().stack.is_empty());
++    assert!(matches!(
++        &runner.state().waiting_for,
++        WaitingFor::Priority { .. }
++    ));
++}
++
+ /// CR 207.2d: Drach'Nyen's five-word flavor word is beyond the label-decline
+ /// width, and trigger lines are claimed by the ability-word trigger route before
+ /// the keyword-cost router anyway — the labeled trigger body must still parse.
+diff --git a/crates/phase-parser/src/parser/swallow_check.rs b/crates/phase-parser/src/parser/swallow_check.rs
+index fa884bb4d..331be844e 100644
+--- a/crates/phase-parser/src/parser/swallow_check.rs
++++ b/crates/phase-parser/src/parser/swallow_check.rs
+@@ -1316,9 +1316,8 @@ fn def_tree_has_target_replacement(def: &AbilityDefinition) -> bool {
+         .any(def_tree_has_target_replacement)
+ }
+ 
+-/// CR 702.20a / CR 702.21: certain `ContinuousModification` variants
+-/// encode an inherently-optional player choice that the def-level
+-/// `optional` flag does not capture:
++/// Certain `ContinuousModification` variants encode a player choice that the
++/// def-level `optional` flag does not capture:
+ ///   - `AssignDamageAsThoughUnblocked` ("you may have ~ assign its combat
+ ///     damage as though it weren't blocked") — Lone Wolf class.
+ ///   - `AssignDamageFromToughness` is mandatory (Brontodon class), so
+@@ -1326,6 +1325,11 @@ fn def_tree_has_target_replacement(def: &AbilityDefinition) -> bool {
+ fn static_carries_optional_modification(s: &StaticDefinition) -> bool {
+     s.modifications.iter().any(|m| match m {
+         ContinuousModification::AssignDamageAsThoughUnblocked => true,
++        // CR 601.3 + CR 611.2a: a granted graveyard-cast permission is an
++        // opt-in permission, even when carried by a temporary continuous effect.
++        ContinuousModification::AddStaticMode {
++            mode: StaticMode::GraveyardCastPermission { .. },
++        } => true,
+         ContinuousModification::GrantTrigger { trigger } => trigger_tree_has_optional(trigger),
+         ContinuousModification::GrantAbility { definition } => def_tree_has_optional(definition),
+         // CR 113.3d + CR 613.1f: GrantStaticAbility conveys a static as if printed on the
