@@ -1,0 +1,444 @@
+From f54786c9ff4d45108cee5f1aa39f384fc5eb0ca9 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sun, 8 Nov 2026 19:19:24 +0000
+Subject: [PATCH 04/10] Fix Seasoned Cryomancer filtered discard count
+
+Bind the reflexive target cardinality to matching discarded cards, and preserve the target set announced by the reflexive body.
+
+Analogues: Nyssa of Traken's reflexive up-to target count in reflexive_sacrifice_this_way_taps_and_draws_that_many; Dread Summons's filtered tracked-set count in for_each_creature_card_this_way_counts_only_creatures.
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/tests/integration/main.rs       |   1 +
+ .../tests/integration/seasoned_cryomancer.rs  | 189 ++++++++++++++++++
+ .../zone_change_reflexive_this_way.rs         |  13 +-
+ .../src/parser/oracle_effect/mod.rs           |  55 ++++-
+ .../oracle_effect/zone_change_reflexive.rs    |  29 +--
+ 5 files changed, 265 insertions(+), 22 deletions(-)
+ create mode 100644 crates/engine/tests/integration/seasoned_cryomancer.rs
+
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index 67f0f6652..d77f4ca8a 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -227,6 +227,7 @@ mod reviving_vapors_hand_and_rest;
+ mod ring_equipped_creature_color_condition;
+ mod rules;
+ mod screaming_nemesis_combat_damage_multi_trigger;
++mod seasoned_cryomancer;
+ mod self_exile_cast_permission;
+ mod seven_of_nine_differently_named_lands;
+ mod sliver_static_grants;
+diff --git a/crates/engine/tests/integration/seasoned_cryomancer.rs b/crates/engine/tests/integration/seasoned_cryomancer.rs
+new file mode 100644
+index 000000000..f82276261
+--- /dev/null
++++ b/crates/engine/tests/integration/seasoned_cryomancer.rs
+@@ -0,0 +1,189 @@
++use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
++use engine::types::ability::TargetRef;
++use engine::types::actions::GameAction;
++use engine::types::counter::CounterType;
++use engine::types::game_state::WaitingFor;
++use engine::types::identifiers::ObjectId;
++use engine::types::mana::{ManaType, ManaUnit};
++use engine::types::phase::Phase;
++
++const ORACLE: &str = "When this creature enters, draw two cards, then discard two cards. When you discard one or more nonland cards this way, tap up to that many target creatures and put a stun counter on each of them.\n\
++{3}{U}{U}, Exile this card from your graveyard: Draw two cards.";
++
++fn add_mana(scenario: &mut GameScenario) {
++    scenario.with_mana_pool(
++        P0,
++        vec![ManaUnit::new(ManaType::Blue, ObjectId(9_999), false, vec![]); 3],
++    );
++}
++
++fn resolve_cryomancer(
++    runner: &mut GameRunner,
++    source: ObjectId,
++    discards: &[ObjectId],
++    targets: &[ObjectId],
++    expected_target_slots: Option<usize>,
++) {
++    let mut cast = runner.cast(source).commit();
++    let mut saw_discard = false;
++    let mut saw_target_prompt = false;
++
++    for _ in 0..32 {
++        if saw_discard
++            && cast.state().stack.is_empty()
++            && matches!(cast.state().waiting_for, WaitingFor::Priority { .. })
++        {
++            break;
++        }
++
++        match cast.state().waiting_for.clone() {
++            WaitingFor::Priority { .. } => {
++                cast.act(GameAction::PassPriority)
++                    .expect("passing priority must advance the ETB ability");
++            }
++            WaitingFor::DiscardChoice { player, count, .. } => {
++                assert_eq!(player, P0);
++                assert_eq!(count, 2);
++                assert!(!saw_discard, "the ETB ability should discard only once");
++                cast.act(GameAction::SelectCards {
++                    cards: discards.to_vec(),
++                })
++                .expect("choosing the two discarded cards must succeed");
++                saw_discard = true;
++            }
++            WaitingFor::TriggerTargetSelection {
++                player,
++                target_slots,
++                selection,
++                ..
++            } => {
++                assert_eq!(player, P0);
++                assert_eq!(Some(target_slots.len()), expected_target_slots);
++                let slot = selection.current_slot;
++                let target = targets
++                    .get(slot)
++                    .copied()
++                    .map(TargetRef::Object)
++                    .expect("each requested target must have a slot");
++                assert!(
++                    target_slots[slot].legal_targets.contains(&target),
++                    "the selected creature must be legal for target slot {slot}"
++                );
++                cast.act(GameAction::ChooseTarget {
++                    target: Some(target),
++                })
++                .expect("choosing the reflexive target must succeed");
++                saw_target_prompt = true;
++            }
++            other => panic!("unexpected state while resolving Seasoned Cryomancer: {other:?}"),
++        }
++    }
++
++    assert!(
++        saw_discard,
++        "the ETB ability must reach its discard instruction"
++    );
++    assert_eq!(saw_target_prompt, expected_target_slots.is_some());
++    assert!(
++        cast.state().stack.is_empty(),
++        "the ETB ability and any reflexive trigger must finish resolving"
++    );
++    assert!(
++        matches!(cast.state().waiting_for, WaitingFor::Priority { .. }),
++        "the resolved ETB ability and reflexive trigger must return priority"
++    );
++}
++
++fn stun_count(runner: &GameRunner, creature: ObjectId) -> u32 {
++    runner.state().objects[&creature]
++        .counters
++        .get(&CounterType::Stun)
++        .copied()
++        .unwrap_or_default()
++}
++
++#[test]
++fn seasoned_cryomancer_targets_up_to_the_number_of_nonland_cards_discarded() {
++    // Two nonland discards create a reflexive target prompt with two slots.
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let source = scenario
++        .add_creature_to_hand_from_oracle(P0, "Seasoned Cryomancer", 2, 3, ORACLE)
++        .id();
++    let first_nonland = scenario.add_card_to_hand(P0, "Discarded nonland one");
++    let second_nonland = scenario.add_card_to_hand(P0, "Discarded nonland two");
++    let land = scenario.add_land_to_hand(P0, "Undiscarded land").id();
++    scenario.add_card_to_library_top(P0, "Drawn card one");
++    scenario.add_card_to_library_top(P0, "Drawn card two");
++    let own_creature = scenario.add_creature(P0, "Own target", 2, 2).id();
++    let opponent_creature = scenario.add_creature(P1, "Opponent target", 2, 2).id();
++    let untouched_creature = scenario.add_creature(P1, "Untouched creature", 2, 2).id();
++    add_mana(&mut scenario);
++    let mut runner = scenario.build();
++
++    resolve_cryomancer(
++        &mut runner,
++        source,
++        &[first_nonland, second_nonland],
++        &[own_creature, opponent_creature],
++        Some(2),
++    );
++    assert_eq!(
++        runner.state().objects[&first_nonland].zone,
++        engine::types::zones::Zone::Graveyard
++    );
++    assert_eq!(
++        runner.state().objects[&second_nonland].zone,
++        engine::types::zones::Zone::Graveyard
++    );
++    assert_eq!(
++        runner.state().objects[&land].zone,
++        engine::types::zones::Zone::Hand
++    );
++    for target in [own_creature, opponent_creature] {
++        assert!(runner.state().objects[&target].tapped);
++        assert_eq!(stun_count(&runner, target), 1);
++    }
++    assert!(!runner.state().objects[&untouched_creature].tapped);
++    assert_eq!(stun_count(&runner, untouched_creature), 0);
++
++    // A discarded land moves this way, but does not increase the target count.
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let source = scenario
++        .add_creature_to_hand_from_oracle(P0, "Seasoned Cryomancer", 2, 3, ORACLE)
++        .id();
++    let nonland = scenario.add_card_to_hand(P0, "Discarded nonland");
++    let land = scenario.add_land_to_hand(P0, "Discarded land").id();
++    scenario.add_card_to_library_top(P0, "Drawn card one");
++    scenario.add_card_to_library_top(P0, "Drawn card two");
++    let target = scenario.add_creature(P0, "Only target", 2, 2).id();
++    let untouched_creature = scenario.add_creature(P1, "Untouched creature", 2, 2).id();
++    add_mana(&mut scenario);
++    let mut runner = scenario.build();
++
++    resolve_cryomancer(&mut runner, source, &[nonland, land], &[target], Some(1));
++    assert!(runner.state().objects[&target].tapped);
++    assert_eq!(stun_count(&runner, target), 1);
++    assert!(!runner.state().objects[&untouched_creature].tapped);
++    assert_eq!(stun_count(&runner, untouched_creature), 0);
++
++    // Discarding only lands reaches the positive discard guard but creates no
++    // reflexive trigger or target prompt.
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let source = scenario
++        .add_creature_to_hand_from_oracle(P0, "Seasoned Cryomancer", 2, 3, ORACLE)
++        .id();
++    let first_land = scenario.add_land_to_hand(P0, "Discarded land one").id();
++    let second_land = scenario.add_land_to_hand(P0, "Discarded land two").id();
++    scenario.add_card_to_library_top(P0, "Drawn card one");
++    scenario.add_card_to_library_top(P0, "Drawn card two");
++    let untouched_creature = scenario.add_creature(P1, "Untouched creature", 2, 2).id();
++    add_mana(&mut scenario);
++    let mut runner = scenario.build();
++
++    resolve_cryomancer(&mut runner, source, &[first_land, second_land], &[], None);
++    assert!(!runner.state().objects[&untouched_creature].tapped);
++    assert_eq!(stun_count(&runner, untouched_creature), 0);
++}
+diff --git a/crates/engine/tests/integration/zone_change_reflexive_this_way.rs b/crates/engine/tests/integration/zone_change_reflexive_this_way.rs
+index de66ff1f6..d493d9751 100644
+--- a/crates/engine/tests/integration/zone_change_reflexive_this_way.rs
++++ b/crates/engine/tests/integration/zone_change_reflexive_this_way.rs
+@@ -1294,11 +1294,10 @@ fn reflexive_whose_event_is_not_the_preceding_instruction_fails_closed() {
+     }
+ }
+ 
+-/// CR 603.3d: a reflexive created by a zone change has no announced parent
+-/// target, so a body whose recipient was rebound to the parent's target can
+-/// never choose one. Not claimed.
++/// CR 115.1d + CR 603.3d: the reflexive body announces its own targets when it
++/// is put on the stack; a later "each of them" rider refers to that target set.
+ #[test]
+-fn reflexive_with_an_unbound_recipient_fails_closed() {
++fn reflexive_multi_target_body_keeps_its_announced_target_set() {
+     let parsed = parse_oracle_text(
+         "When this creature enters, draw two cards, then discard two cards. When you discard one or more nonland cards this way, tap up to that many target creatures and put a stun counter on each of them.",
+         "Seasoned Cryomancer",
+@@ -1311,9 +1310,9 @@ fn reflexive_with_an_unbound_recipient_fails_closed() {
+         matches!(execute.effect.as_ref(), Effect::Draw { .. }),
+         "reach guard: the printed ETB body"
+     );
+-    assert_eq!(
+-        unimplemented_name(execute).as_deref(),
+-        Some("zone_change_reflexive_unbound_referent")
++    assert!(
++        unimplemented_name(execute).is_none(),
++        "the ETB and reflexive target body must remain supported: {execute:?}"
+     );
+ }
+ 
+diff --git a/crates/phase-parser/src/parser/oracle_effect/mod.rs b/crates/phase-parser/src/parser/oracle_effect/mod.rs
+index f6885e780..273e50a35 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/mod.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/mod.rs
+@@ -26973,6 +26973,20 @@ fn explicit_any_target_clause(effect: &Effect, lower: &str) -> bool {
+         && nom_primitives::scan_contains(lower, "any target")
+ }
+ 
++fn explicit_typed_target_clause(effect: &Effect, lower: &str) -> bool {
++    effect
++        .target_filter()
++        .is_some_and(target_filter_has_explicit_object_constraints)
++        && nom_primitives::scan_at_word_boundaries(lower, |input| {
++            terminated(
++                tag::<_, _, OracleError<'_>>("target"),
++                not(satisfy(char::is_alphanumeric)),
++            )
++            .parse(input)
++        })
++        .is_some()
++}
++
+ fn rewrite_triggering_spell_controller_to_parent_target_controller(effect: &mut Effect) {
+     each_target_filter_mut(effect, &mut |filter| {
+         if matches!(filter, TargetFilter::TriggeringSpellController) {
+@@ -49253,7 +49267,7 @@ fn parse_effect_chain_ir_body(
+                 )
+             }
+         };
+-        let (clause, multi_target) = lift_untargeted_declared_slot_destroy(
++        let (clause, mut multi_target) = lift_untargeted_declared_slot_destroy(
+             clause,
+             multi_target,
+             &text_no_qty.to_ascii_lowercase(),
+@@ -49652,6 +49666,11 @@ fn parse_effect_chain_ir_body(
+         // chunks. The deeper links are never visited by these rewriters anyway,
+         // which is exactly why a head-only rewrite corrupts the chain.
+         let is_distributed_chunk = text_is_compound_subject_distribution(&text);
++        // CR 115.1d + CR 608.2c: the clause's own explicit typed target is the
++        // object set that a compound anaphoric rider refers to. Do not rebind
++        // that declared set to an earlier parent target.
++        let clause_announces_typed_target =
++            explicit_typed_target_clause(&clause.effect, &recipient_anaphor_lower);
+         // Kicker clauses referencing "that creature"/"it" inherit the parent's target.
+         // CR 608.2c: its `!builder.is_empty()` gate is intentionally broad
+         // (many antecedent shapes reach this without a `target_filter()`, e.g. a typed
+@@ -49679,6 +49698,7 @@ fn parse_effect_chain_ir_body(
+             && has_anaphoric_reference(&recipient_anaphor_lower)
+             && !matches!(if_you_do_anchor, Some(TargetFilter::SelfRef))
+             && !typed_trigger_subject
++            && !clause_announces_typed_target
+             && !explicit_any_target_clause(&clause.effect, &text_lower)
+             && !replace_fight_subject_with_parent_if_anaphoric_subject(
+                 &text_lower,
+@@ -49758,6 +49778,7 @@ fn parse_effect_chain_ir_body(
+             })
+             && has_anaphoric_reference(&recipient_anaphor_lower)
+             && !typed_trigger_subject
++            && !clause_announces_typed_target
+             && !explicit_any_target_clause(&clause.effect, &text_lower)
+             && !replace_fight_subject_with_parent_if_anaphoric_subject(
+                 &text_lower,
+@@ -49790,6 +49811,7 @@ fn parse_effect_chain_ir_body(
+             && chain_has_prior_typed_referent(builder.clauses(), false)
+             && has_anaphoric_reference(&recipient_anaphor_lower)
+             && !typed_trigger_subject
++            && !clause_announces_typed_target
+             && !explicit_any_target_clause(&clause.effect, &text_lower)
+             && !replace_fight_subject_with_parent_if_anaphoric_subject(
+                 &text_lower,
+@@ -51044,7 +51066,6 @@ fn parse_effect_chain_ir_body(
+                 condition.as_ref(),
+                 zone_change_head,
+                 &clause.effect,
+-                &text_lower,
+                 player_scope.as_ref(),
+                 builder.clauses(),
+             ) {
+@@ -51072,6 +51093,36 @@ fn parse_effect_chain_ir_body(
+                 continue 'chunks;
+             }
+ 
++            // CR 603.12 + CR 608.2c: a filtered discard reflexive counts only
++            // the discarded members named by its "this way" gate, not every
++            // card in a wider discard instruction (Seasoned Cryomancer).
++            let filtered_discard_count = condition
++                .as_ref()
++                .and_then(AbilityCondition::zone_changed_this_way_head)
++                .and_then(|gate| match gate {
++                    AbilityCondition::ZoneChangedThisWay { filter, .. }
++                        if !matches!(filter, TargetFilter::Any)
++                            && zone_change_head.is_some_and(|head| {
++                                matches!(
++                                    head.verb,
++                                    super::oracle_nom::condition::ThisWayVerb::Discard
++                                )
++                            }) =>
++                    {
++                        Some(crate::types::ability::QuantityRef::FilteredTrackedSetSize {
++                            filter: Box::new(filter.clone()),
++                            caused_by: Some(crate::types::ability::ThisWayCause::Discarded),
++                        })
++                    }
++                    _ => None,
++                });
++            if let (Some(spec), Some(count)) = (multi_target.as_mut(), filtered_discard_count) {
++                spec.min.rebind_event_context_amount(&count);
++                if let Some(max) = spec.max.as_mut() {
++                    max.rebind_event_context_amount(&count);
++                }
++            }
++
+             let clause_declared_group = chunk_ctx.clause_declared_group.take();
+             if let Some(group) = clause_declared_group {
+                 declarations.push((builder.clauses().len(), group));
+diff --git a/crates/phase-parser/src/parser/oracle_effect/zone_change_reflexive.rs b/crates/phase-parser/src/parser/oracle_effect/zone_change_reflexive.rs
+index efeac26f2..426ec6d30 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/zone_change_reflexive.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/zone_change_reflexive.rs
+@@ -11,12 +11,7 @@
+ //! stack object carries. This module is the semantic boundary: per clause it
+ //! decides whether both hold, and anything else fails closed.
+ 
+-use nom::bytes::complete::tag;
+-use nom::Parser;
+-
+ use super::super::oracle_nom::condition::{ThisWayHead, ThisWayOccurrence, ThisWayVerb};
+-use super::super::oracle_nom::error::OracleError;
+-use super::super::oracle_nom::primitives as nom_primitives;
+ use super::{has_typed_target_widened, ClauseDisposition, ClauseIr};
+ use crate::types::ability::{AbilityCondition, Effect, PlayerFilter, QuantityExpr, TargetFilter};
+ use crate::types::zones::Zone;
+@@ -180,14 +175,13 @@ fn grants_play_permission(effect: &Effect) -> bool {
+ ///   creating resolution instead of as its own stack object.
+ /// * `zone_change_reflexive_unbound_referent` — the body names an object the
+ ///   reflexive stack object cannot carry: a bare `ParentTarget` operand (its
+-///   target, or a fight's subject) while no earlier instruction announced a
+-///   target for it to inherit or while the body itself says "target"; or a
++///   target, or a fight's subject) when neither the producing instruction nor
++///   an earlier instruction in the reflexive body announced a target; or a
+ ///   copy with no copy source.
+ pub(super) fn unsupported_zone_change_reflexive(
+     condition: Option<&AbilityCondition>,
+     head: Option<ThisWayHead>,
+     effect: &Effect,
+-    body_lower: &str,
+     body_player_scope: Option<&PlayerFilter>,
+     clauses: &[ClauseIr],
+ ) -> Option<&'static str> {
+@@ -216,11 +210,17 @@ pub(super) fn unsupported_zone_change_reflexive(
+     if body_player_scope.is_some() {
+         return Some("zone_change_reflexive_scoped_body");
+     }
+-    let body_names_a_target = nom_primitives::scan_at_word_boundaries(body_lower, |input| {
+-        tag::<_, _, OracleError<'_>>("target ").parse(input)
+-    })
+-    .is_some();
+     let parent_announced_a_target = has_typed_target_widened(&producer.parsed.effect);
++    let body_announced_a_target = has_typed_target_widened(effect)
++        || clauses
++            .iter()
++            .position(|clause| std::ptr::eq(clause, producer))
++            .is_some_and(|producer_index| {
++                clauses
++                    .iter()
++                    .skip(producer_index + 1)
++                    .any(|clause| has_typed_target_widened(&clause.parsed.effect))
++            });
+     // The body's object operands: its target, plus the fighting creature of a
+     // fight ("it fights ~").
+     let fight_subject = match effect {
+@@ -232,7 +232,10 @@ pub(super) fn unsupported_zone_change_reflexive(
+         .into_iter()
+         .chain(fight_subject)
+         .any(|operand| matches!(operand, TargetFilter::ParentTarget));
+-    if reads_parent_target && (body_names_a_target || !parent_announced_a_target) {
++    // CR 603.12 + CR 603.3d: a target announced by an earlier instruction in
++    // the reflexive body belongs to that triggered ability, not its creator.
++    // Later body instructions may therefore refer to its target set.
++    if reads_parent_target && !parent_announced_a_target && !body_announced_a_target {
+         return Some("zone_change_reflexive_unbound_referent");
+     }
+     // A copy whose source lost its referent ("a token that's a copy of that
+-- 
+2.56.0
+

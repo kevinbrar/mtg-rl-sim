@@ -1,0 +1,23 @@
+# WIP: Kíli the Resourceful; intentionally not an applicable fix.
+# Scryfall Oracle: "As long as you have an enduring story, you may pay {0}
+# rather than pay the equip cost of the first equip ability you activate each
+# turn."
+#
+# Baseline parsing recognizes Storied and the HasEnduringStory condition, but
+# emits no cost modifier for this sentence; the Optional_YouMay swallow warning
+# covers the line. Existing StaticMode::ReduceAbilityCost represents numeric
+# reductions to activated costs, including once-per-turn reductions (Professor
+# Hojo). StaticMode::CastWithAlternativeCost is spell-casting-only. Neither
+# models an optional {0} replacement for an activated ability's equip cost.
+#
+# A correct general fix needs an alternative activation-cost choice in the
+# shared activation-payment path, scoped to Equip abilities and gated by the
+# player's enduring-story state, with a per-turn first-activation limit. Treating
+# it as a large numeric reduction or as a spell alternative cost would be
+# unsound. Relevant rules checked: CR 602.2b (activation follows casting-cost
+# steps), CR 702.6a (Equip), and CR 702.195a (Storied).
+#
+# No parser or engine files were changed and no runtime test was run. Parked
+# because this is shared activated-cost architecture for one card; the existing
+# first-activation discount path is a useful analogue but does not supply an
+# alternative activation-cost election.

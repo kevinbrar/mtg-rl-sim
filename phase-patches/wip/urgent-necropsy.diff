@@ -1,0 +1,27 @@
+# WIP: Urgent Necropsy; intentionally not an applicable fix.
+# Diagnosis: Oracle defines the additional Collect Evidence amount as the
+# total mana value of this spell's chosen permanent targets. The parser currently
+# stores CollectEvidence.amount as u32, and the additional-cost parser does not
+# bind a trailing where-X quantity to that cost. The existing where-X cost
+# rebinder also treats CollectEvidence as a fixed-cost no-op.
+#
+# The quantity side is representable: PropertyAggregate can sum ObjectManaValue
+# over CardTypeSetSource::TargetedObjects { slot: None }. The missing seam is
+# carrying that dynamic expression through the shared casting-cost path. A
+# complete fix must preserve legacy serialized fixed amounts, defer target-
+# dependent payability until targets are chosen, resolve the amount from the
+# pending cast's targets before collect-evidence payment, and keep activation
+# cost consumers correct. Relevant paths include AbilityCost::CollectEvidence,
+# parse_additional_cost_line / parse_single_cost, cost_payability,
+# casting_costs, and collect_evidence::begin_cost_payment.
+#
+# Verified rules: CR 107.3c (text-defined X), CR 202.3 (mana value),
+# CR 601.2c and 601.2h (targets precede total-cost payment), and CR 701.59a
+# (collect evidence). Static Collect Evidence on Detective's Phoenix /
+# Conspiracy Unraveler and dynamic PayLife cost binding are analogues, but neither
+# covers a target-derived Collect Evidence threshold.
+#
+# No parser or engine files were changed and no runtime test was run. This is a
+# shared AST/casting-payment seam rather than a parser-local fix; park pending
+# a general dynamic cost-amount design and a scenario test with multiple targets
+# whose mana values must be summed.

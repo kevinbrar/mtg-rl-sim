@@ -1,0 +1,244 @@
+From 7cd439def8d3c7159c0824d43023d59d45f12234 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sun, 8 Nov 2026 19:32:26 +0000
+Subject: [PATCH 05/10] Add controller-scoped exile count parser
+
+Vren's end-step X now uses battlefield-to-exile zone-change records filtered by type and last-known controller. Gate B: reuse the parse_number_of_creatures_died_this_turn and parse_entered_this_turn_ref patterns; Cruel Calculations' origin-scoped graveyard quantity uses the same ZoneChangeCountThisTurn building block. The runtime scenario uses Vren, Shock, and Swords to Plowshares Oracle text and distinguishes controller from owner.
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/tests/integration/main.rs       |   1 +
+ .../tests/integration/vren_relentless.rs      | 115 ++++++++++++++++++
+ .../src/parser/oracle_nom/quantity.rs         |  68 +++++++++++
+ 3 files changed, 184 insertions(+)
+ create mode 100644 crates/engine/tests/integration/vren_relentless.rs
+
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index d77f4ca8a..b3db1109a 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -257,6 +257,7 @@ mod ureni_attack_trigger;
+ mod vengeful_ancestor_goaded_attack_trigger;
+ mod viewer_projection_ingest_gate;
+ mod void_winnower_announced_x;
++mod vren_relentless;
+ mod vrestin_menoptra_leader_5949;
+ mod vulcan_mind_meld_exiler_plays;
+ mod wba_fodder_multiset;
+diff --git a/crates/engine/tests/integration/vren_relentless.rs b/crates/engine/tests/integration/vren_relentless.rs
+new file mode 100644
+index 000000000..2aba2a15f
+--- /dev/null
++++ b/crates/engine/tests/integration/vren_relentless.rs
+@@ -0,0 +1,115 @@
++use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
++use engine::types::actions::GameAction;
++use engine::types::game_state::WaitingFor;
++use engine::types::identifiers::ObjectId;
++use engine::types::mana::{ManaType, ManaUnit};
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const VREN_ORACLE: &str = "Ward {2}\n\
++If a creature an opponent controls would die, exile it instead.\n\
++At the beginning of each end step, create X 1/1 black Rat creature tokens with \"This token gets +1/+1 for each other Rat you control,\" where X is the number of creatures that were exiled under your opponents' control this turn.";
++const SHOCK_ORACLE: &str = "Shock deals 2 damage to any target.";
++const SWORDS_ORACLE: &str = "Exile target creature. Its controller gains life equal to its power.";
++
++fn rat_tokens(runner: &GameRunner) -> Vec<ObjectId> {
++    runner
++        .state()
++        .objects
++        .iter()
++        .filter(|(_, object)| {
++            object.zone == Zone::Battlefield
++                && object.is_token
++                && object.name.eq_ignore_ascii_case("Rat")
++        })
++        .map(|(id, _)| *id)
++        .collect()
++}
++
++#[test]
++fn vren_counts_creatures_exiled_under_opponents_control_this_turn() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    scenario.add_creature_from_oracle(P0, "Vren, the Relentless", 2, 2, VREN_ORACLE);
++
++    let killed_by_shock = scenario
++        .add_creature(P1, "Opponent creature killed", 1, 1)
++        .id();
++    let exiled_by_spell = scenario
++        .add_creature(P1, "Opponent creature exiled", 2, 2)
++        .id();
++    let mut stolen = scenario.add_creature(P1, "Opponent-owned stolen creature", 2, 2);
++    stolen.controlled_by(P0);
++    let stolen = stolen.id();
++
++    let shock = scenario
++        .add_spell_to_hand_from_oracle(P0, "Shock", true, SHOCK_ORACLE)
++        .id();
++    let swords_one = scenario
++        .add_spell_to_hand_from_oracle(P0, "Swords to Plowshares", true, SWORDS_ORACLE)
++        .id();
++    let swords_two = scenario
++        .add_spell_to_hand_from_oracle(P0, "Swords to Plowshares", true, SWORDS_ORACLE)
++        .id();
++    let source = ObjectId(9_999);
++    scenario.with_mana_pool(
++        P0,
++        vec![
++            ManaUnit::new(ManaType::Red, source, false, vec![]),
++            ManaUnit::new(ManaType::White, source, false, vec![]),
++            ManaUnit::new(ManaType::White, source, false, vec![]),
++        ],
++    );
++    let mut runner = scenario.build();
++
++    runner.cast(shock).target_object(killed_by_shock).resolve();
++    runner
++        .cast(swords_one)
++        .target_object(exiled_by_spell)
++        .resolve();
++    runner.cast(swords_two).target_object(stolen).resolve();
++    for creature in [killed_by_shock, exiled_by_spell, stolen] {
++        assert_eq!(runner.state().objects[&creature].zone, Zone::Exile);
++    }
++
++    for _ in 0..128 {
++        if runner.state().phase == Phase::End
++            && runner.state().stack.is_empty()
++            && matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
++        {
++            break;
++        }
++        match runner.state().waiting_for.clone() {
++            WaitingFor::Priority { .. } => {
++                runner.act(GameAction::PassPriority).expect("pass priority");
++            }
++            WaitingFor::DeclareAttackers { .. } => {
++                runner
++                    .act(GameAction::DeclareAttackers {
++                        attacks: vec![],
++                        bands: vec![],
++                    })
++                    .expect("declare no attackers");
++            }
++            WaitingFor::DeclareBlockers { .. } => {
++                runner
++                    .act(GameAction::DeclareBlockers {
++                        assignments: vec![],
++                    })
++                    .expect("declare no blockers");
++            }
++            other => panic!("unexpected action while advancing to end step: {other:?}"),
++        }
++    }
++
++    assert_eq!(runner.state().phase, Phase::End);
++    assert!(
++        runner.state().stack.is_empty(),
++        "Vren's end-step trigger must finish resolving"
++    );
++    assert_eq!(
++        rat_tokens(&runner).len(),
++        2,
++        "count opponent-controlled creature exiles, not the creature owned by P1 but controlled by P0"
++    );
++}
+diff --git a/crates/phase-parser/src/parser/oracle_nom/quantity.rs b/crates/phase-parser/src/parser/oracle_nom/quantity.rs
+index 6d54b2b08..e02dde698 100644
+--- a/crates/phase-parser/src/parser/oracle_nom/quantity.rs
++++ b/crates/phase-parser/src/parser/oracle_nom/quantity.rs
+@@ -2357,6 +2357,7 @@ fn parse_number_of_inner(input: &str) -> OracleResult<'_, QuantityRef> {
+         alt((
+             parse_entered_this_turn_ref,
+             parse_number_of_creatures_died_this_turn,
++            parse_number_of_objects_exiled_under_controller_this_turn,
+             parse_number_of_sacrificed_this_turn,
+             parse_number_of_descended_this_turn,
+             // CR 404.1 + CR 111.7 + CR 303.4b: "cards put into [possessive]
+@@ -7111,6 +7112,42 @@ fn parse_number_of_creatures_died_this_turn(input: &str) -> OracleResult<'_, Qua
+     Ok((rest, creatures_died_this_turn_ref(controller, nontoken)))
+ }
+ 
++/// CR 400.7 + CR 109.5: Count typed permanents exiled from the battlefield
++/// this turn under a specified controller's control, using each zone-change
++/// record's last-known characteristics.
++fn parse_number_of_objects_exiled_under_controller_this_turn(
++    input: &str,
++) -> OracleResult<'_, QuantityRef> {
++    let (filter, rest) = parse_type_phrase_folding(input);
++    if !quantity_filter_has_meaningful_content(&filter) {
++        return Err(oracle_err(input));
++    }
++    let (rest, _) = alt((
++        tag(" that were exiled under "),
++        tag(" that was exiled under "),
++    ))
++    .parse(rest)?;
++    let (rest, controller) = alt((
++        value(ControllerRef::Opponent, tag("your opponents'")),
++        value(ControllerRef::Opponent, tag("your opponent's")),
++        value(ControllerRef::Opponent, tag("an opponent's")),
++        value(ControllerRef::You, tag("your")),
++    ))
++    .parse(rest)?;
++    let (rest, _) = tag(" control this turn").parse(rest)?;
++    let TargetFilter::Typed(typed) = filter else {
++        return Err(oracle_err(input));
++    };
++    Ok((
++        rest,
++        QuantityRef::ZoneChangeCountThisTurn {
++            from: Some(Zone::Battlefield),
++            to: Some(Zone::Exile),
++            filter: TargetFilter::Typed(typed.controller(controller)),
++        },
++    ))
++}
++
+ /// CR 701.21a: Parse "[type] you['ve] sacrificed this turn" -> `TargetFilter`.
+ /// Shared inner combinator for both `parse_number_of_sacrificed_this_turn` and
+ /// `parse_for_each_sacrificed_this_turn`.
+@@ -8920,6 +8957,37 @@ mod tests {
+         assert!(parse_died_this_turn_suffix("you control").is_err());
+     }
+ 
++    #[test]
++    fn zone_change_count_exiled_under_controller_supports_type_and_number_forms() {
++        for (phrase, filter) in [
++            (
++                "creatures that were exiled under your opponents' control this turn",
++                TypedFilter::creature().controller(ControllerRef::Opponent),
++            ),
++            (
++                "creature that was exiled under your opponent's control this turn",
++                TypedFilter::creature().controller(ControllerRef::Opponent),
++            ),
++            (
++                "artifacts that were exiled under your control this turn",
++                TypedFilter::new(TypeFilter::Artifact).controller(ControllerRef::You),
++            ),
++        ] {
++            let expected = QuantityRef::ZoneChangeCountThisTurn {
++                from: Some(Zone::Battlefield),
++                to: Some(Zone::Exile),
++                filter: TargetFilter::Typed(filter),
++            };
++            let (rest, quantity) = parse_number_of_inner(phrase).expect("exiled object count");
++            assert_eq!(rest, "", "phrase {phrase:?}");
++            assert_eq!(quantity, expected, "phrase {phrase:?}");
++        }
++        assert!(parse_number_of_inner(
++            "creatures that were exiled under your opponents' control last turn"
++        )
++        .is_err());
++    }
++
+     /// CR 400.7d: each subject anaphora maps to the correct
+     /// `CastManaObjectScope` — "this …"/"it"/"them"/"~" → `SelfObject`;
+     /// "that …" → `TriggeringSpell`.
+-- 
+2.56.0
+

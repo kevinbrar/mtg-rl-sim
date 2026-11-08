@@ -1,0 +1,67 @@
+From 3063c3e9ea3549a157b8ebf097c91f4eabc06719 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sun, 8 Nov 2026 21:28:46 +0000
+Subject: [PATCH 09/10] Preserve anaphoric damage binding with typed targets
+
+Run one-sided damage-source binding before preserving the clause's explicit recipient, so anaphoric power is not left unresolved.
+
+Analogues: Ambuscade, Bite Down on Crime, and Venom Blast use a boosted creature as the damage source while retaining a separate explicit recipient.
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/phase-parser/src/parser/oracle_effect/mod.rs | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/crates/phase-parser/src/parser/oracle_effect/mod.rs b/crates/phase-parser/src/parser/oracle_effect/mod.rs
+index 8fcb38867..a7d91a5ca 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/mod.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/mod.rs
+@@ -49699,13 +49699,13 @@ fn parse_effect_chain_ir_body(
+             && has_anaphoric_reference(&recipient_anaphor_lower)
+             && !matches!(if_you_do_anchor, Some(TargetFilter::SelfRef))
+             && !typed_trigger_subject
+-            && !clause_announces_typed_target
+             && !explicit_any_target_clause(&clause.effect, &text_lower)
+             && !replace_fight_subject_with_parent_if_anaphoric_subject(
+                 &text_lower,
+                 &mut clause.effect,
+             )
+             && !bind_self_ref_damage_subject(&mut clause.effect)
++            && !clause_announces_typed_target
+         {
+             // CR 608.2c: when the rewrite would collapse a tracked-set
+             // target the clause text names via "this way", refuse the
+@@ -49779,7 +49779,6 @@ fn parse_effect_chain_ir_body(
+             })
+             && has_anaphoric_reference(&recipient_anaphor_lower)
+             && !typed_trigger_subject
+-            && !clause_announces_typed_target
+             && !explicit_any_target_clause(&clause.effect, &text_lower)
+             && !replace_fight_subject_with_parent_if_anaphoric_subject(
+                 &text_lower,
+@@ -49790,6 +49789,7 @@ fn parse_effect_chain_ir_body(
+             // clobbering the recipient (Throw from the Saddle, Wolf Strike,
+             // Burrog Barrage — conditional-boost head).
+             && !bind_anaphoric_damage_subject_keep_recipient(&mut clause.effect)
++            && !clause_announces_typed_target
+         {
+             // CR 608.2c: same fail-closed refusal as the conditional arm
+             // above — see `anaphor_rewrite_would_drop_this_way_binding`.
+@@ -49812,7 +49812,6 @@ fn parse_effect_chain_ir_body(
+             && chain_has_prior_typed_referent(builder.clauses(), false)
+             && has_anaphoric_reference(&recipient_anaphor_lower)
+             && !typed_trigger_subject
+-            && !clause_announces_typed_target
+             && !explicit_any_target_clause(&clause.effect, &text_lower)
+             && !replace_fight_subject_with_parent_if_anaphoric_subject(
+                 &text_lower,
+@@ -49823,6 +49822,7 @@ fn parse_effect_chain_ir_body(
+             // clobbering the recipient (Ambuscade, Clear Shot, Rabid Gnaw —
+             // unconditional-boost head).
+             && !bind_anaphoric_damage_subject_keep_recipient(&mut clause.effect)
++            && !clause_announces_typed_target
+         {
+             // CR 608.2c: same fail-closed refusal as the conditional arm
+             // above — see `anaphor_rewrite_would_drop_this_way_binding`.
+-- 
+2.56.0
+

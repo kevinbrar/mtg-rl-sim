@@ -1,8 +1,8 @@
 From 478d48ccb5dff67c6b2cb21a78091d3f2956e645 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Sun, 8 Nov 2026 18:34:44 +0000
-Subject: [PATCH 3/3] Keep 'Then for each ...,' prefix clauses with their body
- (Rottenmouth Viper)
+Subject: [PATCH 03/10] Keep 'Then for each ...,' prefix clauses with their
+ body (Rottenmouth Viper)
 
 The sequence splitter treats 'then for each ' as a prefix clause so the
 repeat count binds to the following effect. CR 608.2c, 608.2h.

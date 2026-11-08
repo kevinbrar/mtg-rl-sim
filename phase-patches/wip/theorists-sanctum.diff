@@ -1,0 +1,13 @@
+# WIP: Theorist's Sanctum; intentionally not an applicable fix.
+# Oracle: "As this land enters, you may behold a Jace. If you don't, this land
+# enters tapped." CR 701.4a defines behold; CR 614.1c and 614.12a govern the
+# as-enters replacement and its choice timing.
+# Seam diagnosis: AbilityCost::Behold is payable for a replacement when a legal
+# choice exists, but the replacement MayCost path routes payment through
+# pay_ability_cost_for_replacement_may_cost, whose resolution-cost gate rejects
+# Behold via supported_at_resolution. PayCostKind::Behold currently resumes
+# through the spell-cost path; CostResume::Resolution rejects it. Correctly
+# supporting this text therefore needs a replacement-specific interactive
+# Behold payment/resume path that preserves the pre-entry event and runs the
+# tap-on-decline branch. No parser or engine edits were made; this card is
+# parked pending that engine design.

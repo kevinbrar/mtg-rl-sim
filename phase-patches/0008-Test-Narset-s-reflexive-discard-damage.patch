@@ -1,0 +1,164 @@
+From 6999757f8330c036daba63a8a1298a6e533e9114 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sun, 8 Nov 2026 20:46:24 +0000
+Subject: [PATCH 08/10] Test Narset's reflexive discard damage
+
+The discard trigger announces its own target and uses the discarded card's mana value.
+
+Analogues: Seasoned Cryomancer's discard-this-way trigger and Vivien's Invocation's this-way referent.
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../integration/queen_parser_near_misses.rs   | 123 ++++++++++++++++--
+ 1 file changed, 114 insertions(+), 9 deletions(-)
+
+diff --git a/crates/engine/tests/integration/queen_parser_near_misses.rs b/crates/engine/tests/integration/queen_parser_near_misses.rs
+index d82f04e8b..daf0ac2b4 100644
+--- a/crates/engine/tests/integration/queen_parser_near_misses.rs
++++ b/crates/engine/tests/integration/queen_parser_near_misses.rs
+@@ -5,7 +5,7 @@ use engine::game::zones::create_object;
+ use engine::parser::oracle::parse_oracle_text;
+ use engine::types::ability::{
+     AbilityCost, CastManaObjectScope, CastManaSpentMetric, Effect, QuantityExpr, QuantityRef,
+-    TargetFilter,
++    TargetFilter, TargetRef,
+ };
+ use engine::types::actions::GameAction;
+ use engine::types::card_type::CoreType;
+@@ -168,14 +168,7 @@ fn shape_all_nine_cards_reach_their_targeted_semantic_family() {
+         let types = types.into_iter().map(str::to_owned).collect::<Vec<_>>();
+         let subtypes = subtypes.into_iter().map(str::to_owned).collect::<Vec<_>>();
+         let parsed = parse_oracle_text(oracle, name, &[], &types, &subtypes);
+-        // Narset's −2 is a "When you discard … this way" reflexive whose
+-        // explicit recipient is misbound to the parent's (nonexistent) target,
+-        // so that one clause is honestly unsupported; nothing else may hide.
+-        let expected_gaps: &[&str] = if name == "Narset of the Ancient Way" {
+-            &["zone_change_reflexive_unbound_referent"]
+-        } else {
+-            &[]
+-        };
++        let expected_gaps: &[&str] = &[];
+         let mut gaps = Vec::new();
+         for ability in parsed.abilities.iter().chain(
+             parsed
+@@ -479,6 +472,118 @@ fn narset_emblem_is_command_zone_source_of_trigger_damage() {
+     );
+ }
+ 
++#[test]
++fn narset_reflexive_discard_uses_discarded_card_mana_value_and_announces_its_target() {
++    // CR 603.12 and 603.3d: the discard creates a reflexive triggered ability,
++    // whose creature-or-planeswalker target is chosen when it is put on the stack.
++    // CR 202.3: its damage amount reads the mana value of the card discarded.
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let narset = scenario
++        .add_planeswalker_from_oracle(P0, "Narset of the Ancient Way", "Narset", 6, NARSET)
++        .as_planeswalker_with_loyalty("Narset", 6)
++        .id();
++    let discarded = scenario
++        .add_spell_to_hand(P0, "Four-mana nonland", true)
++        .with_mana_cost(ManaCost::generic(4))
++        .id();
++    scenario.add_card_to_library_top(P0, "Drawn card");
++    let creature = scenario.add_creature(P1, "Target creature", 2, 6).id();
++    let planeswalker = scenario
++        .add_planeswalker_from_oracle(P1, "Target planeswalker", "Jace", 5, "")
++        .as_planeswalker_with_loyalty("Jace", 5)
++        .id();
++    let mut runner = scenario.build();
++    let minus_two = runner.state().objects[&narset]
++        .abilities
++        .iter()
++        .position(|ability| matches!(ability.cost, Some(AbilityCost::Loyalty { amount: -2 })))
++        .expect("Narset's −2 ability");
++
++    let outcome = runner
++        .activate(narset, minus_two)
++        .stop_at_optional()
++        .resolve();
++    assert!(matches!(
++        outcome.final_waiting_for(),
++        WaitingFor::OptionalEffectChoice { player: P0, .. }
++    ));
++    runner
++        .act(GameAction::DecideOptionalEffect { accept: true })
++        .expect("accept the optional discard");
++    match runner.state().waiting_for.clone() {
++        WaitingFor::DiscardChoice {
++            player,
++            count,
++            cards,
++            ..
++        } => {
++            assert_eq!(player, P0);
++            assert_eq!(count, 1);
++            assert!(cards.contains(&discarded));
++            runner
++                .act(GameAction::SelectCards {
++                    cards: vec![discarded],
++                })
++                .expect("discard the four-mana nonland card");
++        }
++        other => panic!("expected Narset's discard choice, got {other:?}"),
++    }
++
++    let mut saw_target_prompt = false;
++    for _ in 0..20 {
++        match runner.state().waiting_for.clone() {
++            WaitingFor::TriggerTargetSelection {
++                player,
++                target_slots,
++                selection,
++                ..
++            } => {
++                assert_eq!(player, P0);
++                assert_eq!(target_slots.len(), 1);
++                let legal = &target_slots[selection.current_slot].legal_targets;
++                assert!(legal.contains(&TargetRef::Object(creature)));
++                assert!(legal.contains(&TargetRef::Object(planeswalker)));
++                runner
++                    .act(GameAction::ChooseTarget {
++                        target: Some(TargetRef::Object(creature)),
++                    })
++                    .expect("choose the target creature for the reflexive trigger");
++                saw_target_prompt = true;
++            }
++            WaitingFor::Priority { .. } if runner.state().stack.is_empty() => break,
++            WaitingFor::Priority { .. } => {
++                runner
++                    .act(GameAction::PassPriority)
++                    .expect("pass priority to resolve Narset's reflexive trigger");
++            }
++            other => panic!("unexpected Narset resolution state: {other:?}"),
++        }
++    }
++
++    assert!(
++        saw_target_prompt,
++        "the reflexive trigger must announce its target"
++    );
++    assert!(runner.state().stack.is_empty());
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::Priority { .. }
++    ));
++    assert_eq!(
++        runner.state().objects[&discarded].zone,
++        Zone::Graveyard,
++        "the selected nonland card must be discarded"
++    );
++    assert_eq!(
++        runner.state().objects[&creature].damage_marked,
++        4,
++        "damage must equal the discarded card's mana value"
++    );
++    assert_eq!(runner.state().objects[&planeswalker].loyalty, Some(5));
++    assert_eq!(runner.state().objects[&narset].loyalty, Some(4));
++}
++
+ #[test]
+ fn awakened_inferno_opponent_emblem_damages_its_controller() {
+     let mut scenario = GameScenario::new();
+-- 
+2.56.0
+
