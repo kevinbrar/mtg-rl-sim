@@ -1,8 +1,8 @@
 # Local phase-rs fixes
 
 The phase submodule remains pinned at `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
-Card fixes are being developed on the local `local-fixes` branch, then exported
-as a patch series after the batch is complete. No upstream PRs or pushes are
+Card fixes are committed one per card on the local `local-fixes` branch and
+exported here with `git format-patch 988bc34..local-fixes`. No upstream PRs or pushes are
 planned.
 
 ## Card status
@@ -10,7 +10,7 @@ planned.
 | Card | Status | Runtime test | Coverage / semantic audit | Self-review |
 | --- | --- | --- | --- | --- |
 | Restless Prairie | Fixed locally: the coverage subtype lexicon now includes the canonical parser vocabulary as well as printed type-line subtypes. The Oracle text's Llama subtype is valid under CR 205.3m but does not appear on a printed type line. | `restless_prairie_becomes_a_3_3_llama_and_remains_a_land` passed; `GameRunner::activate` resolves the real Oracle-text ability to a 3/3 Llama that remains a land. | At that card's checkpoint, coverage was 32,307/36,280 (89.05%); the current aggregate after Rottenmouth Viper is 32,309/36,280 (89.1%). The targeted regression test confirms Llama no longer produces an invalid-subtype finding. The existing semantic-audit output has no Restless Prairie finding. | Pass: general vocabulary union; existing `text_grammar::parse_subtype` and `oracle_util::parse_creature_subtype` are analogous canonical-list consumers. Existing unknown-subtype test still covers the filler-word rejection path. |
-| Rottenmouth Viper | Fixed locally, uncommitted: `starts_prefix_clause` now keeps a sequence-connected `Then for each` prefix with its comma-delimited effect body, allowing the existing counter-count parser to attach `repeat_for` to the scoped unless effect. | `viper_attack_repeats_the_unless_clause_for_each_blight_counter` passed with the printed Oracle text: one seeded blight counter plus the attack trigger's counter produces two separate P1 prompts and two 4-life losses; P0 remains at 20 and the trigger completes. Parser regressions `then_for_each_prefix_keeps_its_effect_body_together` and `trigger_for_each_blight_counter_repeats_scoped_unless` passed. Existing Viper attack, ETB, sacrifice, and three-player integration tests passed. | `cargo coverage`: `supported: true`, `gap_count: 0` for Rottenmouth Viper; aggregate 32,309/36,280 (89.1%). `cargo semantic-audit`: no Rottenmouth Viper entry in `flagged_cards` (191 cards have findings globally). | Pass: self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
+| Rottenmouth Viper | Fixed locally: `starts_prefix_clause` now keeps a sequence-connected `Then for each` prefix with its comma-delimited effect body, allowing the existing counter-count parser to attach `repeat_for` to the scoped unless effect. | `viper_attack_repeats_the_unless_clause_for_each_blight_counter` passed with the printed Oracle text: one seeded blight counter plus the attack trigger's counter produces two separate P1 prompts and two 4-life losses; P0 remains at 20 and the trigger completes. Parser regressions `then_for_each_prefix_keeps_its_effect_body_together` and `trigger_for_each_blight_counter_repeats_scoped_unless` passed. Existing Viper attack, ETB, sacrifice, and three-player integration tests passed. | `cargo coverage`: `supported: true`, `gap_count: 0` for Rottenmouth Viper; aggregate 32,309/36,280 (89.1%). `cargo semantic-audit`: no Rottenmouth Viper entry in `flagged_cards` (191 cards have findings globally). | Pass: self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
 | Lost in the Maze | Fixed locally: anaphoric tracked-set parsing now preserves controller-qualified typed filters such as “each of those creatures you don't control.” | `lost_in_the_maze_stuns_only_targeted_creatures_not_controlled_by_its_controller` passed through the scenario runner; casts the printed Oracle text for X=3 and verifies all targets tap, only an opponent-controlled target gets a stun counter, a stolen opponent-owned target does not, and an untargeted creature is unaffected. Baseline failed at the opponent's missing stun counter. Parser regression `each_of_those_creatures_filters_the_tracked_set_by_controller` passed. | `cargo coverage`: `supported: true`, `gap_count: 0`; aggregate 32,310/36,280 (89.1%). `cargo semantic-audit` has no Lost in the Maze finding. | Pass: self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
 | Seasoned Cryomancer | Pending | — | — | — |
 | Essence Burn | Pending | — | — | — |
@@ -49,7 +49,7 @@ This was a self-review only; no independent reviewer was used.
 - **(h) Bool-flag avoidance — pass.** No new fields, parameters, or flags were added.
 - **(i) Test discrimination — pass.** The production `SpellCast` scenario uses the printed Oracle text and X=3; before the parser fix, all three targets tapped but the opponent-controlled target received no stun counter. The passing assertions also distinguish current controller from owner and exclude a non-target.
 
-This was a self-review only; no independent reviewer was used. The card fix remains uncommitted for lead review.
+This was a self-review only; no independent reviewer was used.
 
 ## Final gates
 
@@ -57,4 +57,4 @@ This was a self-review only; no independent reviewer was used. The card fix rema
 - Targeted regressions for Restless Prairie, the subtype lexicon, Rottenmouth Viper, scoped-unless behavior, and the `Then for each` splitter passed. `cargo test -p phase-engine`: 13,790 unit tests and 3,179 integration tests passed; 4 unit and 8 integration tests ignored; doc tests had 0 passed and 2 ignored.
 - `cargo build --release -p phase-env` passed (existing warning: `phase-env/src/main.rs:38`, `Out` is never constructed). A random `phase-env` game with Restless Prairie, Rottenmouth Viper, and Lost in the Maze in both decks reached `game_over` in 37 turns / 2,233 steps, winner P0, `unresolved: []`.
 - Final generated data was copied to `~/repos/eng/pdata/patched/card-data.json`; SHA-256 `d7f2ccf5f09e9b6538983b83d1f8cd794ae734b09ff552d758efbd7933018790` matches `client/public/card-data.json`.
-- Patch export and clean-submodule apply-script reproduction remain pending until the per-card commits exist.
+- Patches 0001–0003 exported; `scripts/apply-phase-patches.sh` from a clean submodule reproduces the `local-fixes` tree exactly and is rerunnable.
