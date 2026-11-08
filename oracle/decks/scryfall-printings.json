@@ -1,0 +1,58 @@
+{
+  "forest": {
+    "name": "Forest",
+    "set": "FDN",
+    "collector_number": "280",
+    "type_line": "Basic Land — Forest",
+    "oracle_text": "({T}: Add {G}.)",
+    "standard": "legal"
+  },
+  "bear cub": {
+    "name": "Bear Cub",
+    "set": "FDN",
+    "collector_number": "552",
+    "type_line": "Creature — Bear",
+    "oracle_text": "",
+    "standard": "legal"
+  },
+  "gigantosaurus": {
+    "name": "Gigantosaurus",
+    "set": "FDN",
+    "collector_number": "718",
+    "type_line": "Creature — Dinosaur",
+    "oracle_text": "",
+    "standard": "legal"
+  },
+  "quakestrider ceratops": {
+    "name": "Quakestrider Ceratops",
+    "set": "FDN",
+    "collector_number": "110",
+    "type_line": "Creature — Dinosaur",
+    "oracle_text": "",
+    "standard": "legal"
+  },
+  "magnigoth sentry": {
+    "name": "Magnigoth Sentry",
+    "set": "FDN",
+    "collector_number": "556",
+    "type_line": "Creature — Treefolk",
+    "oracle_text": "Reach (This creature can block creatures with flying.)",
+    "standard": "legal"
+  },
+  "tajuru pathwarden": {
+    "name": "Tajuru Pathwarden",
+    "set": "FDN",
+    "collector_number": "558",
+    "type_line": "Creature — Elf Warrior Ally",
+    "oracle_text": "Vigilance (Attacking doesn't cause this creature to tap.)\nTrample (This creature can deal excess combat damage to the player or planeswalker it's attacking.)",
+    "standard": "legal"
+  },
+  "thornweald archer": {
+    "name": "Thornweald Archer",
+    "set": "FDN",
+    "collector_number": "559",
+    "type_line": "Creature — Elf Archer",
+    "oracle_text": "Reach (This creature can block creatures with flying.)\nDeathtouch (Any amount of damage this deals to a creature is enough to destroy it.)",
+    "standard": "legal"
+  }
+}

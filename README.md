@@ -25,11 +25,19 @@ cargo build --release -p phase-env
 python driver/phase_env.py                    # see PhaseEnv.play()
 ```
 
+Run the lockstep oracle after applying the local mage-bench patch described in
+[`oracle/README.md`](oracle/README.md):
+
+```bash
+python driver/diff_game.py oracle/decks/mono-green-v0.txt \
+  oracle/decks/mono-green-v0.txt --seed 17
+```
+
 ## Status
 
 - [x] phase-env JSONL driver; random-policy games complete end-to-end
-- [ ] surface unresolved deck-card names (currently skipped silently upstream)
+- [x] surface unresolved deck-card names and reject them in the differential driver
 - [x] XMage oracle channel proven: headless game with custom .dck decks driven via mage-bench MCP bridge (see `oracle/`)
-- [ ] XMage oracle driver + state-diff comparators
+- [x] XMage/phase sync-point v0 harness (meaningful decisions and legal sets compared; terminal board snapshot unavailable after XMage closes its bridge)
 - [ ] per-card / per-mechanic differential suite over the meta card pool (~600 cards)
 - [ ] batched env + training scaffolding

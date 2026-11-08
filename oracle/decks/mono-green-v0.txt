@@ -1,0 +1,14 @@
+1 Forest
+1 Bear Cub
+1 Gigantosaurus
+1 Quakestrider Ceratops
+1 Magnigoth Sentry
+1 Tajuru Pathwarden
+1 Thornweald Archer
+23 Forest
+5 Bear Cub
+5 Gigantosaurus
+5 Quakestrider Ceratops
+5 Magnigoth Sentry
+5 Tajuru Pathwarden
+5 Thornweald Archer

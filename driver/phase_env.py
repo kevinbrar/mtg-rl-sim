@@ -43,15 +43,27 @@ class PhaseEnv:
                 out.append(e)
         return out
 
-    def new_game(self, player_deck: list[str], opponent_deck: list[str], seed: int = 0):
+    def new_game(
+        self,
+        player_deck: list[str],
+        opponent_deck: list[str],
+        seed: int = 0,
+        ordered_library: bool = False,
+    ):
         self._write(
             {
                 "type": "new_game",
                 "seed": seed,
+                "ordered_library": ordered_library,
                 "player": {"main_deck": self._expand(player_deck)},
                 "opponent": {"main_deck": self._expand(opponent_deck)},
             }
         )
+        self.started = self._read()
+        if self.started["type"] != "started":
+            raise RuntimeError(f"phase-env failed to start game: {self.started}")
+        if self.started["unresolved"]:
+            raise ValueError(f"phase-env could not resolve deck cards: {self.started['unresolved']}")
         return self._read()
 
     def choose(self, index: int):
@@ -84,4 +96,8 @@ class PhaseEnv:
             self._write({"type": "quit"})
         except Exception:
             pass
-        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.proc.terminate()
+            self.proc.wait(timeout=5)

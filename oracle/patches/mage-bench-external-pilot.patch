@@ -1,0 +1,375 @@
+diff --git a/src/magebench/orchestration/batch_coordination.py b/src/magebench/orchestration/batch_coordination.py
+index 68d3d3a9..62a94c01 100644
+--- a/src/magebench/orchestration/batch_coordination.py
++++ b/src/magebench/orchestration/batch_coordination.py
+@@ -24,6 +24,7 @@ from magebench.orchestration.game_finalization import (
+ )
+ from magebench.orchestration.game_processes import (
+     start_gui_client,
++    start_external_client,
+     start_observer_client,
+     start_pilot_client,
+     start_replay_client,
+@@ -84,7 +85,11 @@ def setup_game(
+             cross_game_format_picks=cross_game_format_picks,
+         )
+         if used_player_names is not None:
+-            all_players = game_config.pilot_players + game_config.sleepwalker_players
++            all_players = (
++                game_config.pilot_players
++                + game_config.sleepwalker_players
++                + game_config.external_players
++            )
+             for player in all_players:
+                 assert player.name not in used_player_names, (
+                     f"Duplicate player name {player.name!r} across parallel games — "
+@@ -142,7 +147,10 @@ def setup_game(
+     )
+ 
+     bridge_count = (
+-        len(game_config.sleepwalker_players) + len(game_config.pilot_players) + len(game_config.replay_players)
++        len(game_config.sleepwalker_players)
++        + len(game_config.pilot_players)
++        + len(game_config.replay_players)
++        + len(game_config.external_players)
+     )
+ 
+     try:
+@@ -194,6 +202,20 @@ def setup_game(
+                 )
+                 session.pilot_procs.append((replay_player.name, proc))
+ 
++            for external_player in game_config.external_players:
++                log_path = game_dir / f"{external_player.name}_external.log"
++                logger.info("%sExternal client (%s) log: %s", game_label, external_player.name, log_path)
++                proc = start_external_client(
++                    pm,
++                    project_root,
++                    game_config,
++                    external_player.name,
++                    external_player.deck,
++                    log_path,
++                    game_dir,
++                )
++                session.pilot_procs.append((external_player.name, proc))
++
+             if batch:
+                 wait_for_game_start(spectator_log, spectator_proc)
+     except (TimeoutError, RuntimeError):
+diff --git a/src/magebench/orchestration/config.py b/src/magebench/orchestration/config.py
+index 868d3323..366af5ad 100644
+--- a/src/magebench/orchestration/config.py
++++ b/src/magebench/orchestration/config.py
+@@ -66,6 +66,16 @@ class ReplayPlayer:
+     script: str | None = None  # Path to script JSON file, relative to project root
+ 
+ 
++@dataclass
++class ExternalPlayer:
++    """Bridge-only seat controlled by an external MCP client."""
++
++    name: str
++    deck: str | None = None
++    deck_name: str | None = None
++    deck_strategy: str | None = None
++
++
+ @dataclass
+ class CpuPlayer:
+     """XMage built-in COMPUTER_MAD AI."""
+@@ -77,7 +87,7 @@ class CpuPlayer:
+ 
+ 
+ # Union type for all player types
+-Player = SleepwalkerPlayer | PilotPlayer | ReplayPlayer | CpuPlayer
++Player = SleepwalkerPlayer | PilotPlayer | ReplayPlayer | ExternalPlayer | CpuPlayer
+ 
+ # XMage server username constraints (from Mage.Server/config/config.xml)
+ MIN_USERNAME_LENGTH = 3
+@@ -580,6 +590,7 @@ class Config:
+     sleepwalker_players: list[SleepwalkerPlayer] = field(default_factory=list)
+     pilot_players: list[PilotPlayer] = field(default_factory=list)
+     replay_players: list[ReplayPlayer] = field(default_factory=list)
++    external_players: list[ExternalPlayer] = field(default_factory=list)
+     cpu_players: list[CpuPlayer] = field(default_factory=list)
+ 
+     def load_config(
+@@ -623,6 +634,7 @@ class Config:
+             data = json.load(f)
+             self.match_time_limit = data.get("matchTimeLimit")
+             self.match_buffer_time = data.get("matchBufferTime")
++            self.log_dir = Path(data.get("logDir", self.log_dir))
+             self.game_type = data.get("gameType")
+             raw_deck_type = data.get("deckType")
+             if isinstance(raw_deck_type, list):
+@@ -679,13 +691,20 @@ class Config:
+                     )
+                 elif player_type == "replay":
+                     self.replay_players.append(ReplayPlayer(name=name, deck=deck, script=player.get("script")))
++                elif player_type == "external":
++                    self.external_players.append(ExternalPlayer(name=name, deck=deck))
+                 elif player_type == "cpu":
+                     self.cpu_players.append(CpuPlayer(name=name, deck=deck))
+                 else:
+                     raise AssertionError(f"Unknown player type {player_type!r}")
+ 
+             # Validate: only pilot players can have deck="choice"
+-            non_pilot = self.sleepwalker_players + self.replay_players + self.cpu_players
++            non_pilot = (
++                self.sleepwalker_players
++                + self.replay_players
++                + self.external_players
++                + self.cpu_players
++            )
+             non_pilot_choice = [p.name for p in non_pilot if p.deck == "choice"]
+             assert not non_pilot_choice, (
+                 f"deck='choice' requires a pilot player (has LLM), but found on non-pilot player(s): {non_pilot_choice}"
+@@ -748,6 +767,11 @@ class Config:
+             if p.deck:
+                 d["deck"] = p.deck
+             players.append(d)
++        for p in self.external_players:
++            d = {"type": "bridge", "name": p.name}
++            if p.deck:
++                d["deck"] = p.deck
++            players.append(d)
+         for p in self.cpu_players:
+             d = {"type": "cpu", "name": p.name}
+             if p.deck:
+@@ -765,13 +789,25 @@ class Config:
+     def resolve_random_decks(self, project_root: Path) -> None:
+         """Replace any deck="random" with a randomly chosen deck from the registry."""
+         # Fail fast if any player still has deck="choice" — caller must resolve those first
+-        all_typed_players = self.sleepwalker_players + self.pilot_players + self.replay_players + self.cpu_players
++        all_typed_players = (
++            self.sleepwalker_players
++            + self.pilot_players
++            + self.replay_players
++            + self.external_players
++            + self.cpu_players
++        )
+         choice_names = [p.name for p in all_typed_players if p.deck == "choice"]
+         assert not choice_names, (
+             f"Unresolved deck='choice' for {choice_names} — call resolve_choice_decks() before resolve_random_decks()"
+         )
+ 
+-        all_players = self.sleepwalker_players + self.pilot_players + self.replay_players + self.cpu_players
++        all_players = (
++            self.sleepwalker_players
++            + self.pilot_players
++            + self.replay_players
++            + self.external_players
++            + self.cpu_players
++        )
+         if not any(p.deck == "random" for p in all_players):
+             return
+ 
+@@ -815,7 +851,13 @@ class Config:
+         Called after all deck resolution is complete. Looks up static deck paths
+         in the registry by matching card content.
+         """
+-        all_players = self.sleepwalker_players + self.pilot_players + self.replay_players + self.cpu_players
++        all_players = (
++            self.sleepwalker_players
++            + self.pilot_players
++            + self.replay_players
++            + self.external_players
++            + self.cpu_players
++        )
+         for player in all_players:
+             # Skip players that already have metadata (from random/choice resolution)
+             # or don't have a deck path
+diff --git a/src/magebench/orchestration/game_finalization.py b/src/magebench/orchestration/game_finalization.py
+index 2d106cf6..11fd1a24 100644
+--- a/src/magebench/orchestration/game_finalization.py
++++ b/src/magebench/orchestration/game_finalization.py
+@@ -118,6 +118,7 @@ def write_game_meta(game_dir: Path, config: Config, project_root: Path) -> None:
+         *((p, "pilot") for p in config.pilot_players),
+         *((p, "sleepwalker") for p in config.sleepwalker_players),
+         *((p, "cpu") for p in config.cpu_players),
++        *((p, "external") for p in config.external_players),
+     ]
+     for player, ptype in all_players:
+         entry: dict[str, str | list[str]] = {"name": player.name, "type": ptype}
+diff --git a/src/magebench/orchestration/game_processes.py b/src/magebench/orchestration/game_processes.py
+index 63b8f672..012e578b 100644
+--- a/src/magebench/orchestration/game_processes.py
++++ b/src/magebench/orchestration/game_processes.py
+@@ -251,6 +251,42 @@ def start_replay_client(
+     )
+ 
+ 
++def start_external_client(
++    pm: ProcessManager,
++    project_root: Path,
++    config: Config,
++    name: str,
++    deck_path: str | None,
++    log_path: Path,
++    game_dir: Path,
++) -> subprocess.Popen:
++    """Start a bridge-only client for an external MCP controller."""
++    args = [
++        sys.executable,
++        "-m",
++        "magebench.pilot.external",
++        "--server",
++        config.server,
++        "--port",
++        str(config.port),
++        "--username",
++        name,
++        "--project-root",
++        str(project_root),
++        "--game-dir",
++        str(game_dir),
++    ]
++    if deck_path:
++        args.extend(["--deck", str(project_root / deck_path)])
++
++    return pm.start_process(
++        args=args,
++        cwd=project_root,
++        env={"PYTHONUNBUFFERED": "1"},
++        log_file=log_path,
++    )
++
++
+ def start_pilot_client(
+     pm: ProcessManager,
+     project_root: Path,
+diff --git a/src/magebench/pilot/bridge_transport.py b/src/magebench/pilot/bridge_transport.py
+index d5515faa..cbf5f6ba 100644
+--- a/src/magebench/pilot/bridge_transport.py
++++ b/src/magebench/pilot/bridge_transport.py
+@@ -88,6 +88,7 @@ async def spawn_bridge_http(
+     jvm_args: str,
+     env_updates: dict[str, str] | None = None,
+     log_file: Path | None = None,
++    url_file: Path | None = None,
+ ) -> AsyncGenerator[ClientSession, None]:
+     """Spawn a bridge JVM with an MCP HTTP server and yield a ClientSession.
+ 
+@@ -103,6 +104,7 @@ async def spawn_bridge_http(
+         jvm_args: JVM options string (will be appended with the MCP port property).
+         env_updates: Additional environment variables to merge.
+         log_file: Optional path for stdout/stderr logging.
++        url_file: Optional path where the bridge MCP URL is written.
+ 
+     Yields:
+         A ``ClientSession`` connected to the bridge's MCP HTTP server.
+@@ -147,6 +149,8 @@ async def spawn_bridge_http(
+         port_reservation.release()
+ 
+         url = f"http://127.0.0.1:{mcp_port}/mcp"
++        if url_file is not None:
++            url_file.write_text(url + "\n")
+         # pass_priority blocks until the opponent finishes their turn, which
+         # can exceed 10 minutes for slow reasoning models.  The MCP SDK's
+         # default SSE read timeout is 300s — too short.  Use an unlimited
+diff --git a/src/magebench/pilot/external.py b/src/magebench/pilot/external.py
+new file mode 100644
+index 00000000..3263fc44
+--- /dev/null
++++ b/src/magebench/pilot/external.py
+@@ -0,0 +1,66 @@
++"""Bridge-only pilot for games controlled by an external MCP client."""
++
++from __future__ import annotations
++
++import argparse
++import asyncio
++from pathlib import Path
++
++from magebench.common.log import setup_logging
++from magebench.pilot.bridge_transport import build_bridge_launch_args, spawn_bridge_http
++
++
++async def run_external(
++    *,
++    server: str,
++    port: int,
++    username: str,
++    project_root: Path,
++    game_dir: Path,
++    deck_path: Path | None,
++) -> None:
++    launch_args = build_bridge_launch_args(
++        server=server,
++        port=port,
++        username=username,
++        deck_path=deck_path,
++        error_log_path=game_dir / f"{username}_errors.log",
++    )
++    async with spawn_bridge_http(
++        mvn_args=launch_args.mvn_args,
++        project_root=project_root,
++        jvm_args=launch_args.jvm_args,
++        log_file=game_dir / f"{username}_mcp.log",
++        url_file=game_dir / f"{username}_mcp_url.txt",
++    ) as session:
++        await session.initialize()
++        # The orchestrator owns game lifetime and terminates bridge clients
++        # after XMage ends the game.
++        await asyncio.Event().wait()
++
++
++def main() -> int:
++    setup_logging()
++    parser = argparse.ArgumentParser(description="Bridge-only external MCP pilot")
++    parser.add_argument("--server", default="localhost")
++    parser.add_argument("--port", type=int, default=17171)
++    parser.add_argument("--username", required=True)
++    parser.add_argument("--project-root", type=Path, required=True)
++    parser.add_argument("--game-dir", type=Path, required=True)
++    parser.add_argument("--deck", type=Path)
++    args = parser.parse_args()
++    asyncio.run(
++        run_external(
++            server=args.server,
++            port=args.port,
++            username=args.username,
++            project_root=args.project_root.resolve(),
++            game_dir=args.game_dir.resolve(),
++            deck_path=args.deck.resolve() if args.deck else None,
++        )
++    )
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tests/test_external_pilot.py b/tests/test_external_pilot.py
+new file mode 100644
+index 00000000..f7eb793d
+--- /dev/null
++++ b/tests/test_external_pilot.py
+@@ -0,0 +1,28 @@
++"""Tests for the bridge-only external player configuration."""
++
++import json
++from pathlib import Path
++
++from magebench.orchestration.config import Config, ExternalPlayer
++
++
++def test_external_player_reserves_bridge_seat(tmp_path: Path) -> None:
++    config_path = tmp_path / "external.json"
++    log_dir = tmp_path / "logs"
++    config_path.write_text(
++        json.dumps(
++            {
++                "deckType": "Constructed - Standard",
++                "logDir": str(log_dir),
++                "players": [{"type": "external", "name": "DiffA", "deck": "decks/green.dck"}],
++            }
++        )
++    )
++    config = Config(config_file=config_path)
++    config.load_config()
++
++    players = json.loads(config.get_players_config_json())["players"]
++
++    assert players == [{"type": "bridge", "name": "DiffA", "deck": "decks/green.dck"}]
++    assert config.external_players == [ExternalPlayer(name="DiffA", deck="decks/green.dck")]
++    assert config.log_dir == log_dir
