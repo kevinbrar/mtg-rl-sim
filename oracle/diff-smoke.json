@@ -1,0 +1,9 @@
+{
+  "skipPostGamePrompts": true,
+  "gameType": "Two Player Duel",
+  "deckType": "Constructed - Standard",
+  "players": [
+    {"type": "sleepwalker", "name": "SleepA", "deck": "tmp/decks/islands.dck"},
+    {"type": "sleepwalker", "name": "SleepB", "deck": "tmp/decks/mountains.dck"}
+  ]
+}

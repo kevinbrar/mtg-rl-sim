@@ -29,6 +29,7 @@ python driver/phase_env.py                    # see PhaseEnv.play()
 
 - [x] phase-env JSONL driver; random-policy games complete end-to-end
 - [ ] surface unresolved deck-card names (currently skipped silently upstream)
-- [ ] XMage oracle via mage-bench bridge + state-diff comparators
+- [x] XMage oracle channel proven: headless game with custom .dck decks driven via mage-bench MCP bridge (see `oracle/`)
+- [ ] XMage oracle driver + state-diff comparators
 - [ ] per-card / per-mechanic differential suite over the meta card pool (~600 cards)
 - [ ] batched env + training scaffolding
