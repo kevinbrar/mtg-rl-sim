@@ -1,7 +1,7 @@
 From 9ef67fee1269aa26f3e614ebe89620f7d4cae76a Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Sun, 8 Nov 2026 23:00:19 +0000
-Subject: [PATCH 11/14] Add object-scoped Case graveyard casting
+Subject: [PATCH 11/16] Add object-scoped Case graveyard casting
 
 Snapshot GenericEffect recipients at resolution and route their GraveyardCastPermission modes through the graveyard casting collector. Pin each recipient incarnation so a later object at the same id cannot inherit the permission.
 

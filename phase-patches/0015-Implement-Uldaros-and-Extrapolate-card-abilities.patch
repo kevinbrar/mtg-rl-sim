@@ -1,0 +1,2083 @@
+From 9a8a7017b1ed3062bedeffcbac4143db75e18886 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Mon, 9 Nov 2026 01:46:23 +0000
+Subject: [PATCH 15/16] Implement Uldaros and Extrapolate card abilities
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/ai_support/candidates.rs    |  18 ++
+ crates/engine/src/ai_support/mod.rs           |  25 +-
+ crates/engine/src/game/ability_rw.rs          |   3 +
+ crates/engine/src/game/ability_scan.rs        |   3 +
+ crates/engine/src/game/ability_utils.rs       |  21 ++
+ crates/engine/src/game/cipher.rs              |   1 +
+ .../src/game/effects/cast_copy_of_card.rs     |  17 +-
+ crates/engine/src/game/effects/learn.rs       |   2 +
+ crates/engine/src/game/effects/mod.rs         |   1 +
+ .../src/game/effects/open_booster_pack.rs     |   2 +
+ crates/engine/src/game/effects/overload.rs    |   1 +
+ .../src/game/effects/search_outside_game.rs   | 106 ++++++-
+ .../src/game/engine_resolution_choices.rs     | 123 +++++++-
+ crates/engine/src/game/interaction.rs         |  16 ++
+ crates/engine/src/game/quantity.rs            |   1 +
+ crates/engine/src/game/visibility.rs          |  24 +-
+ crates/engine/src/types/game_state.rs         |  23 ++
+ .../codie_prepared_spell_trigger.rs           |   1 +
+ .../integration/extrapolate_the_impossible.rs | 177 ++++++++++++
+ crates/engine/tests/integration/main.rs       |   2 +
+ .../tests/integration/uldaros_theorix.rs      | 272 ++++++++++++++++++
+ crates/phase-ast/src/types/ability.rs         |  23 ++
+ .../phase-ast/src/types/game_state_kinds.rs   |   3 +
+ .../src/parser/oracle_effect/assembly.rs      |   7 +-
+ .../src/parser/oracle_effect/imperative.rs    |   9 +-
+ .../src/parser/oracle_effect/mod.rs           |  89 +++++-
+ .../src/parser/oracle_effect/tests.rs         |  67 +++++
+ .../src/parser/oracle_ir/context.rs           |   5 +
+ .../src/parser/oracle_ir/effect_chain.rs      |  28 ++
+ .../phase-parser/src/parser/oracle_target.rs  |  35 ++-
+ .../phase-parser/src/parser/oracle_trigger.rs |  47 ++-
+ .../src/parser/oracle_trigger_tests.rs        |  18 ++
+ .../phase-parser/src/parser/swallow_check.rs  |   2 +
+ 33 files changed, 1115 insertions(+), 57 deletions(-)
+ create mode 100644 crates/engine/tests/integration/extrapolate_the_impossible.rs
+ create mode 100644 crates/engine/tests/integration/uldaros_theorix.rs
+
+diff --git a/crates/engine/src/ai_support/candidates.rs b/crates/engine/src/ai_support/candidates.rs
+index 7c7da2206..ace348b3b 100644
+--- a/crates/engine/src/ai_support/candidates.rs
++++ b/crates/engine/src/ai_support/candidates.rs
+@@ -1552,6 +1552,24 @@ pub fn candidate_actions_broad_with_probe(
+                 )
+             })
+             .collect(),
++        WaitingFor::OutsideGameChoice {
++            player,
++            opponent_candidates,
++            stage:
++                crate::types::game_state::OutsideGameChoiceStage::ControllerChoosesOpponent { .. },
++            ..
++        } => opponent_candidates
++            .iter()
++            .map(|opponent| {
++                candidate(
++                    GameAction::ChooseZoneOpponentChooser {
++                        opponent: *opponent,
++                    },
++                    TacticalClass::Selection,
++                    Some(*player),
++                )
++            })
++            .collect(),
+         WaitingFor::OutsideGameChoice {
+             player,
+             choices,
+diff --git a/crates/engine/src/ai_support/mod.rs b/crates/engine/src/ai_support/mod.rs
+index 223629f80..c1b8ecc0e 100644
+--- a/crates/engine/src/ai_support/mod.rs
++++ b/crates/engine/src/ai_support/mod.rs
+@@ -589,6 +589,7 @@ fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
+                 choices,
+                 count,
+                 up_to,
++                stage,
+                 ..
+             },
+             GameAction::ChooseOutsideGameCards { selections },
+@@ -647,8 +648,30 @@ fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
+                     OutsideGameChoiceSource::BoosterPack { pack_slot: slot, .. } if slot == pack_slot
+                 ))
+             });
+-            !valid_count || exile_dup || pack_slot_dup || bad_sideboard || bad_exile || bad_pack_slot
++            !valid_count
++                || matches!(
++                    stage,
++                    crate::types::game_state::OutsideGameChoiceStage::ControllerChoosesOpponent {
++                        ..
++                    }
++                )
++                || exile_dup
++                || pack_slot_dup
++                || bad_sideboard
++                || bad_exile
++                || bad_pack_slot
+         }
++        (
++            WaitingFor::OutsideGameChoice {
++                opponent_candidates,
++                stage:
++                    crate::types::game_state::OutsideGameChoiceStage::ControllerChoosesOpponent {
++                        ..
++                    },
++                ..
++            },
++            GameAction::ChooseZoneOpponentChooser { opponent },
++        ) => !opponent_candidates.contains(opponent),
+         (WaitingFor::PairChoice { choices, .. }, GameAction::ChoosePair { partner }) => {
+             partner.is_some_and(|partner| !choices.contains(&partner))
+         }
+diff --git a/crates/engine/src/game/ability_rw.rs b/crates/engine/src/game/ability_rw.rs
+index 0c57b0dc3..4ff0d4c8b 100644
+--- a/crates/engine/src/game/ability_rw.rs
++++ b/crates/engine/src/game/ability_rw.rs
+@@ -1968,6 +1968,7 @@ fn legacy_target_constraint(c: &TargetSelectionConstraint) -> bool {
+         TargetSelectionConstraint::TotalManaValue { value, .. } => legacy_quantity_expr(value),
+         TargetSelectionConstraint::DifferentTargetPlayers
+         | TargetSelectionConstraint::DifferentObjectControllers
++        | TargetSelectionConstraint::DistinctCardTypes
+         | TargetSelectionConstraint::SameZoneOwner { .. } => false,
+     }
+ }
+@@ -4852,6 +4853,7 @@ fn rw_target_constraint(c: &TargetSelectionConstraint) -> RwProfile {
+     match c {
+         TargetSelectionConstraint::DifferentTargetPlayers => RwProfile::empty(),
+         TargetSelectionConstraint::DifferentObjectControllers => RwProfile::empty(),
++        TargetSelectionConstraint::DistinctCardTypes => RwProfile::empty(),
+         TargetSelectionConstraint::SameZoneOwner { zone: _ } => RwProfile::empty(),
+         TargetSelectionConstraint::TotalManaValue {
+             value,
+@@ -6180,6 +6182,7 @@ fn rw_effect(
+             target: _,
+             count,
+             cost: _,
++            selection_constraint: _,
+         } => {
+             let mut p = ext_write(StateKind::StackShape);
+             p.writes_external.set(StateKind::SetMembership);
+diff --git a/crates/engine/src/game/ability_scan.rs b/crates/engine/src/game/ability_scan.rs
+index fdd028a85..6c5c8b74a 100644
+--- a/crates/engine/src/game/ability_scan.rs
++++ b/crates/engine/src/game/ability_scan.rs
+@@ -499,6 +499,7 @@ fn scan_target_selection_constraint(c: &TargetSelectionConstraint, mode: ScanMod
+     match c {
+         TargetSelectionConstraint::DifferentTargetPlayers => Axes::NONE,
+         TargetSelectionConstraint::DifferentObjectControllers => Axes::NONE,
++        TargetSelectionConstraint::DistinctCardTypes => Axes::NONE,
+         TargetSelectionConstraint::SameZoneOwner { zone: _ } => Axes::NONE,
+         TargetSelectionConstraint::TotalManaValue {
+             value,
+@@ -1108,6 +1109,7 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
+             target,
+             count,
+             cost: _,
++            selection_constraint: _,
+         } => {
+             let mut acc = Axes::NONE;
+             acc = acc.or(scan_target_filter(target, target_ctx, mode));
+@@ -1430,6 +1432,7 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
+             reveal: _,
+             destination: _,
+             source_pool: _,
++            selection_mode: _,
+         } => {
+             let mut acc = Axes::NONE;
+             acc = acc.or(scan_target_filter(filter, target_ctx, mode));
+diff --git a/crates/engine/src/game/ability_utils.rs b/crates/engine/src/game/ability_utils.rs
+index 9ed7295bb..74cd45e52 100644
+--- a/crates/engine/src/game/ability_utils.rs
++++ b/crates/engine/src/game/ability_utils.rs
+@@ -11339,6 +11339,27 @@ fn validate_target_constraints(
+                     }
+                 }
+             }
++            TargetSelectionConstraint::DistinctCardTypes => {
++                let Some(state) = state else {
++                    continue;
++                };
++                let mut seen = std::collections::HashSet::new();
++                for target in targets {
++                    let TargetRef::Object(object_id) = target else {
++                        continue;
++                    };
++                    let object = state.objects.get(object_id).ok_or_else(|| {
++                        EngineError::InvalidAction("Selected object target is missing".into())
++                    })?;
++                    for card_type in &object.card_types.core_types {
++                        if !seen.insert(*card_type) {
++                            return Err(EngineError::InvalidAction(
++                                "Selected object targets must have different card types".into(),
++                            ));
++                        }
++                    }
++                }
++            }
+             TargetSelectionConstraint::SameZoneOwner { zone } => {
+                 let Some(state) = state else {
+                     continue;
+diff --git a/crates/engine/src/game/cipher.rs b/crates/engine/src/game/cipher.rs
+index 41a1de7cf..6e104e95b 100644
+--- a/crates/engine/src/game/cipher.rs
++++ b/crates/engine/src/game/cipher.rs
+@@ -383,6 +383,7 @@ fn recast_trigger(
+             target: TargetFilter::None,
+             cost: ManaCost::zero(),
+             count: None,
++            selection_constraint: None,
+         },
+         vec![TargetRef::Object(card_id)],
+         creature_id,
+diff --git a/crates/engine/src/game/effects/cast_copy_of_card.rs b/crates/engine/src/game/effects/cast_copy_of_card.rs
+index 9040d86dd..fbfbca9fd 100644
+--- a/crates/engine/src/game/effects/cast_copy_of_card.rs
++++ b/crates/engine/src/game/effects/cast_copy_of_card.rs
+@@ -23,12 +23,13 @@ pub fn resolve(
+     ability: &ResolvedAbility,
+     events: &mut Vec<GameEvent>,
+ ) -> Result<(), EffectError> {
+-    let (target_filter, cost, count) = match &ability.effect {
++    let (target_filter, cost, count, selection_constraint) = match &ability.effect {
+         Effect::CastCopyOfCard {
+             target,
+             cost,
+             count,
+-        } => (target, cost, count),
++            selection_constraint,
++        } => (target, cost, count, selection_constraint),
+         _ => return Err(EffectError::MissingParam("CastCopyOfCard".to_string())),
+     };
+ 
+@@ -88,6 +89,7 @@ pub fn resolve(
+                 // The cap is consumed by this choice; the resumed cast of the
+                 // chosen copies (explicit targets) must not re-apply it.
+                 count: None,
++                selection_constraint: None,
+             };
+             resume.sub_ability = None;
+             // CR 707.12a: under a "copy that card N times" loop the
+@@ -100,7 +102,7 @@ pub fn resolve(
+                 cards: source_ids,
+                 count: choose,
+                 up_to: true,
+-                constraint: None,
++                constraint: selection_constraint.clone(),
+                 source_id: ability.source_id,
+                 reciprocal_role: None,
+             };
+@@ -140,6 +142,7 @@ pub fn resolve(
+                 target: TargetFilter::None,
+                 cost: cost.clone(),
+                 count: None,
++                selection_constraint: None,
+             };
+             resume.sub_ability = None;
+             // The rest of this iteration only (see the choice resume above).
+@@ -381,6 +384,7 @@ mod tests {
+                 target: TargetFilter::None,
+                 cost: ManaCost::zero(),
+                 count: None,
++                selection_constraint: None,
+             },
+             vec![TargetRef::Object(source_id)],
+             ObjectId(99),
+@@ -433,6 +437,7 @@ mod tests {
+                 target: TargetFilter::None,
+                 cost: ManaCost::zero(),
+                 count: None,
++                selection_constraint: None,
+             },
+             vec![TargetRef::Object(source_id)],
+             ObjectId(99),
+@@ -492,6 +497,7 @@ mod tests {
+                 target: TargetFilter::None,
+                 cost: ManaCost::zero(),
+                 count: None,
++                selection_constraint: None,
+             },
+             vec![TargetRef::Object(source_id)],
+             ObjectId(99),
+@@ -548,6 +554,7 @@ mod tests {
+                 target: TargetFilter::None,
+                 cost: ManaCost::zero(),
+                 count: None,
++                selection_constraint: None,
+             },
+             vec![TargetRef::Object(source_id)],
+             ObjectId(99),
+@@ -603,6 +610,7 @@ mod tests {
+                 },
+                 cost: ManaCost::zero(),
+                 count: None,
++                selection_constraint: None,
+             },
+             Vec::new(),
+             ObjectId(99),
+@@ -649,6 +657,7 @@ mod tests {
+                 },
+                 cost: ManaCost::zero(),
+                 count: None,
++                selection_constraint: None,
+             },
+             Vec::new(),
+             ObjectId(99),
+@@ -696,6 +705,7 @@ mod tests {
+                 target: TargetFilter::None,
+                 cost: ManaCost::zero(),
+                 count: None,
++                selection_constraint: None,
+             },
+             vec![TargetRef::Object(source_id)],
+             ObjectId(99),
+@@ -742,6 +752,7 @@ mod tests {
+                 target: TargetFilter::None,
+                 cost: ManaCost::zero(),
+                 count: None,
++                selection_constraint: None,
+             },
+             vec![TargetRef::Object(source_id)],
+             ObjectId(99),
+diff --git a/crates/engine/src/game/effects/learn.rs b/crates/engine/src/game/effects/learn.rs
+index c0b8d76ab..ef33038e5 100644
+--- a/crates/engine/src/game/effects/learn.rs
++++ b/crates/engine/src/game/effects/learn.rs
+@@ -60,6 +60,8 @@ pub(crate) fn lesson_search_ability(source_id: ObjectId, controller: PlayerId) -
+             reveal: true,
+             destination: Zone::Hand,
+             source_pool: OutsideGameSourcePool::Sideboard,
++            selection_mode:
++                crate::types::ability::OutsideGameSelectionMode::ControllerTakesSelected,
+         },
+         vec![],
+         source_id,
+diff --git a/crates/engine/src/game/effects/mod.rs b/crates/engine/src/game/effects/mod.rs
+index 14fb1a3e0..f708bad42 100644
+--- a/crates/engine/src/game/effects/mod.rs
++++ b/crates/engine/src/game/effects/mod.rs
+@@ -19174,6 +19174,7 @@ fn target_choice_positions_read_created_referent(
+             } => has_quantity(value),
+             TargetSelectionConstraint::DifferentTargetPlayers
+             | TargetSelectionConstraint::DifferentObjectControllers
++            | TargetSelectionConstraint::DistinctCardTypes
+             | TargetSelectionConstraint::SameZoneOwner { zone: _ } => false,
+         });
+     let modal_reads = modal.is_some_and(
+diff --git a/crates/engine/src/game/effects/open_booster_pack.rs b/crates/engine/src/game/effects/open_booster_pack.rs
+index 97c2a3063..7f838cf67 100644
+--- a/crates/engine/src/game/effects/open_booster_pack.rs
++++ b/crates/engine/src/game/effects/open_booster_pack.rs
+@@ -128,6 +128,8 @@ pub fn resolve(
+         reveal: false,
+         up_to,
+         destination,
++        stage: crate::types::game_state::OutsideGameChoiceStage::ControllerSelects,
++        opponent_candidates: Vec::new(),
+     };
+     events.push(GameEvent::EffectResolved {
+         kind: EffectKind::OpenBoosterPack,
+diff --git a/crates/engine/src/game/effects/overload.rs b/crates/engine/src/game/effects/overload.rs
+index e3c49fc0c..d210c397c 100644
+--- a/crates/engine/src/game/effects/overload.rs
++++ b/crates/engine/src/game/effects/overload.rs
+@@ -420,6 +420,7 @@ mod tests {
+                 },
+                 cost: ManaCost::zero(),
+                 count: None,
++                selection_constraint: None,
+             },
+         )
+         .sub_ability(self_exile);
+diff --git a/crates/engine/src/game/effects/search_outside_game.rs b/crates/engine/src/game/effects/search_outside_game.rs
+index 21bf0d261..fad4823ec 100644
+--- a/crates/engine/src/game/effects/search_outside_game.rs
++++ b/crates/engine/src/game/effects/search_outside_game.rs
+@@ -4,15 +4,19 @@ use crate::game::printed_cards::apply_card_face_to_object;
+ use crate::game::quantity::resolve_quantity_with_targets;
+ use crate::game::zones;
+ use crate::types::ability::TargetFilter;
+-use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
++use crate::types::ability::{
++    Effect, EffectError, EffectKind, OutsideGameSelectionMode, ResolvedAbility,
++};
+ use crate::types::card_printing::DeckSection;
+ use crate::types::events::GameEvent;
+ use crate::types::game_state::{
+-    GameState, OutsideGameCardUse, OutsideGameChoiceEntry, OutsideGameChoiceSource, WaitingFor,
++    GameState, OutsideGameCardUse, OutsideGameChoiceEntry, OutsideGameChoiceSource,
++    OutsideGameChoiceStage, WaitingFor,
+ };
+ use crate::types::identifiers::{CardId, ObjectId};
+ use crate::types::player::PlayerId;
+ use crate::types::zones::Zone;
++use std::collections::HashSet;
+ 
+ pub fn resolve(
+     state: &mut GameState,
+@@ -25,6 +29,7 @@ pub fn resolve(
+         reveal,
+         destination,
+         source_pool,
++        selection_mode,
+     } = &ability.effect
+     else {
+         return Ok(());
+@@ -89,6 +94,14 @@ pub fn resolve(
+         choices.extend(exile_candidates);
+     }
+ 
++    if *selection_mode == OutsideGameSelectionMode::OpponentChoosesOne {
++        let mut seen_names = HashSet::new();
++        choices.retain(|choice| seen_names.insert(choice.name.clone()));
++        for choice in &mut choices {
++            choice.count = 1;
++        }
++    }
++
+     if choices.is_empty() || count == 0 {
+         events.push(GameEvent::EffectResolved {
+             kind: EffectKind::SearchOutsideGame,
+@@ -98,15 +111,34 @@ pub fn resolve(
+         return Ok(());
+     }
+ 
++    if *selection_mode == OutsideGameSelectionMode::OpponentChoosesOne && choices.len() < count {
++        events.push(GameEvent::EffectResolved {
++            kind: EffectKind::SearchOutsideGame,
++            source_id: ability.source_id,
++            subject: None,
++        });
++        return Ok(());
++    }
++
+     let available_total = choices.iter().map(|choice| choice.count as usize).sum();
+     state.waiting_for = WaitingFor::OutsideGameChoice {
+         player: ability.controller,
+         source_id: ability.source_id,
+-        count: count.min(available_total),
++        count: if *selection_mode == OutsideGameSelectionMode::OpponentChoosesOne {
++            count
++        } else {
++            count.min(available_total)
++        },
+         choices,
+         reveal: *reveal,
+-        up_to,
++        up_to: *selection_mode != OutsideGameSelectionMode::OpponentChoosesOne && up_to,
+         destination: *destination,
++        stage: if *selection_mode == OutsideGameSelectionMode::OpponentChoosesOne {
++            OutsideGameChoiceStage::RevealPairThenOpponentSelects
++        } else {
++            OutsideGameChoiceStage::ControllerSelects
++        },
++        opponent_candidates: Vec::new(),
+     };
+     events.push(GameEvent::EffectResolved {
+         kind: EffectKind::SearchOutsideGame,
+@@ -398,6 +430,7 @@ mod tests {
+                 reveal: true,
+                 destination: Zone::Hand,
+                 source_pool: OutsideGameSourcePool::Sideboard,
++                selection_mode: OutsideGameSelectionMode::ControllerTakesSelected,
+             },
+             vec![],
+             source_id,
+@@ -591,6 +624,8 @@ mod tests {
+             reveal: true,
+             up_to: false,
+             destination: Zone::Hand,
++            stage: OutsideGameChoiceStage::ControllerSelects,
++            opponent_candidates: Vec::new(),
+         };
+ 
+         let result = crate::game::apply_as_current(
+@@ -617,6 +652,8 @@ mod tests {
+             reveal: true,
+             up_to: false,
+             destination: Zone::Hand,
++            stage: OutsideGameChoiceStage::ControllerSelects,
++            opponent_candidates: Vec::new(),
+         };
+ 
+         crate::game::apply_as_current(
+@@ -654,6 +691,8 @@ mod tests {
+             reveal: true,
+             up_to: false,
+             destination: Zone::Hand,
++            stage: OutsideGameChoiceStage::ControllerSelects,
++            opponent_candidates: Vec::new(),
+         };
+ 
+         let result = crate::game::apply_as_current(
+@@ -686,6 +725,8 @@ mod tests {
+             reveal: true,
+             up_to: false,
+             destination: Zone::Hand,
++            stage: OutsideGameChoiceStage::ControllerSelects,
++            opponent_candidates: Vec::new(),
+         };
+ 
+         let actions = crate::ai_support::legal_actions(&state);
+@@ -698,6 +739,56 @@ mod tests {
+         )));
+     }
+ 
++    #[test]
++    fn controller_chooses_which_opponent_selects_the_revealed_pair() {
++        let mut state = state_with_sideboard(vec![
++            entry("Lightning Bolt", CoreType::Instant, 1),
++            entry("Shock", CoreType::Instant, 1),
++        ]);
++        let choices = state.deck_pools[0]
++            .current_sideboard
++            .iter()
++            .enumerate()
++            .map(|(index, entry)| sideboard_choice(index, entry))
++            .collect();
++        state.waiting_for = WaitingFor::OutsideGameChoice {
++            player: PlayerId(0),
++            source_id: ObjectId(0),
++            choices,
++            count: 1,
++            reveal: false,
++            up_to: false,
++            destination: Zone::Hand,
++            stage: OutsideGameChoiceStage::ControllerChoosesOpponent { owner: PlayerId(0) },
++            opponent_candidates: vec![PlayerId(1)],
++        };
++
++        let actions = crate::ai_support::legal_actions(&state);
++        assert!(actions.contains(&GameAction::ChooseZoneOpponentChooser {
++            opponent: PlayerId(1),
++        }));
++        assert!(!actions
++            .iter()
++            .any(|action| matches!(action, GameAction::ChooseOutsideGameCards { .. })));
++
++        crate::game::apply_as_current(
++            &mut state,
++            GameAction::ChooseZoneOpponentChooser {
++                opponent: PlayerId(1),
++            },
++        )
++        .unwrap();
++
++        assert!(matches!(
++            state.waiting_for,
++            WaitingFor::OutsideGameChoice {
++                player: PlayerId(1),
++                stage: OutsideGameChoiceStage::OpponentSelects { owner: PlayerId(0) },
++                ..
++            }
++        ));
++    }
++
+     #[test]
+     fn ai_generates_duplicate_outside_game_indices_for_available_copies() {
+         let mut state = state_with_sideboard(vec![entry("Pyroclasm", CoreType::Sorcery, 2)]);
+@@ -712,6 +803,8 @@ mod tests {
+             reveal: true,
+             up_to: false,
+             destination: Zone::Hand,
++            stage: OutsideGameChoiceStage::ControllerSelects,
++            opponent_candidates: Vec::new(),
+         };
+ 
+         let actions = crate::ai_support::legal_actions(&state);
+@@ -767,6 +860,7 @@ mod tests {
+                 reveal: true,
+                 destination: Zone::Hand,
+                 source_pool: OutsideGameSourcePool::SideboardAndFaceUpExile,
++                selection_mode: OutsideGameSelectionMode::ControllerTakesSelected,
+             },
+             vec![],
+             source,
+@@ -838,6 +932,7 @@ mod tests {
+                 reveal: true,
+                 destination: Zone::Hand,
+                 source_pool: OutsideGameSourcePool::SideboardAndFaceUpExile,
++                selection_mode: OutsideGameSelectionMode::ControllerTakesSelected,
+             },
+             vec![],
+             source,
+@@ -880,6 +975,8 @@ mod tests {
+             reveal: true,
+             up_to: false,
+             destination: Zone::Hand,
++            stage: OutsideGameChoiceStage::ControllerSelects,
++            opponent_candidates: Vec::new(),
+         };
+         state
+             .outside_game_cards_brought_in
+@@ -946,6 +1043,7 @@ mod tests {
+                 reveal: true,
+                 destination: Zone::Hand,
+                 source_pool: OutsideGameSourcePool::Sideboard,
++                selection_mode: OutsideGameSelectionMode::ControllerTakesSelected,
+             },
+             vec![],
+             source,
+diff --git a/crates/engine/src/game/engine_resolution_choices.rs b/crates/engine/src/game/engine_resolution_choices.rs
+index 61d5696f7..fdbd47e38 100644
+--- a/crates/engine/src/game/engine_resolution_choices.rs
++++ b/crates/engine/src/game/engine_resolution_choices.rs
+@@ -16,8 +16,9 @@ use crate::types::events::GameEvent;
+ use crate::types::game_state::{
+     ActionResult, BatchCompletion, CastOfferKind, ChosenDamageSource, ContinuationXAnnouncement,
+     CopyChosenSelection, CostResume, GameState, ManaAmountComposition, OutsideGameChoiceSource,
+-    PayCostKind, PayableResource, PendingContinuation, PendingPlayerScopeSacrificeCompletion,
+-    PersistentAxisMaterialization, WaitingFor, ZoneOpponentChooserPurpose,
++    OutsideGameChoiceStage, PayCostKind, PayableResource, PendingContinuation,
++    PendingPlayerScopeSacrificeCompletion, PersistentAxisMaterialization, WaitingFor,
++    ZoneOpponentChooserPurpose,
+ };
+ use crate::types::identifiers::ObjectId;
+ use crate::types::resolved_commands::{
+@@ -5717,9 +5718,19 @@ pub(super) fn handle_resolution_choice(
+                 reveal,
+                 up_to,
+                 destination,
++                stage,
++                ..
+             },
+             GameAction::ChooseOutsideGameCards { selections },
+         ) => {
++            if matches!(
++                stage,
++                OutsideGameChoiceStage::ControllerChoosesOpponent { .. }
++            ) {
++                return Err(EngineError::InvalidAction(
++                    "Must choose an opponent for the revealed outside-game pair".to_string(),
++                ));
++            }
+             let valid = if up_to {
+                 selections.len() <= count
+             } else {
+@@ -5806,6 +5817,76 @@ pub(super) fn handle_resolution_choice(
+                 }
+             }
+ 
++            if stage == OutsideGameChoiceStage::RevealPairThenOpponentSelects {
++                let selected_choices = selections
++                    .iter()
++                    .filter_map(|selection| {
++                        choices
++                            .iter()
++                            .find(|choice| match (&choice.source, selection) {
++                                (
++                                    OutsideGameChoiceSource::Sideboard {
++                                        sideboard_index: offered,
++                                        ..
++                                    },
++                                    OutsideGameSelection::Sideboard {
++                                        sideboard_index: selected,
++                                    },
++                                ) => offered == selected,
++                                _ => false,
++                            })
++                            .cloned()
++                    })
++                    .collect::<Vec<_>>();
++                let distinct_names = selected_choices
++                    .iter()
++                    .map(|choice| choice.name.as_str())
++                    .collect::<HashSet<_>>();
++                if selected_choices.len() != 2 || distinct_names.len() != 2 {
++                    return Err(EngineError::InvalidAction(
++                        "Must reveal two outside-game cards with different names".to_string(),
++                    ));
++                }
++                let candidates = crate::game::players::choosable_opponents(state, player);
++                if candidates.is_empty() {
++                    return Ok(ResolutionChoiceOutcome::WaitingFor(
++                        finish_with_continuation(state, player, events),
++                    ));
++                }
++                let (chooser, next_stage, opponent_candidates) =
++                    if let [opponent] = candidates.as_slice() {
++                        (
++                            *opponent,
++                            OutsideGameChoiceStage::OpponentSelects { owner: player },
++                            Vec::new(),
++                        )
++                    } else {
++                        (
++                            player,
++                            OutsideGameChoiceStage::ControllerChoosesOpponent { owner: player },
++                            candidates,
++                        )
++                    };
++                state.waiting_for = WaitingFor::OutsideGameChoice {
++                    player: chooser,
++                    source_id,
++                    choices: selected_choices,
++                    count: 1,
++                    reveal: false,
++                    up_to: false,
++                    destination,
++                    stage: next_stage,
++                    opponent_candidates,
++                };
++                return Ok(action_result_outcome(events, state.waiting_for.clone()));
++            }
++
++            let recipient = match stage {
++                OutsideGameChoiceStage::OpponentSelects { owner } => owner,
++                OutsideGameChoiceStage::ControllerChoosesOpponent { owner } => owner,
++                OutsideGameChoiceStage::ControllerSelects
++                | OutsideGameChoiceStage::RevealPairThenOpponentSelects => player,
++            };
+             let mut chosen_ids = Vec::new();
+             for selection in selections {
+                 match selection {
+@@ -5813,7 +5894,7 @@ pub(super) fn handle_resolution_choice(
+                         let object_id =
+                             effects::search_outside_game::put_sideboard_entry_into_game(
+                                 state,
+-                                player,
++                                recipient,
+                                 sideboard_index,
+                                 destination,
+                             )
+@@ -5847,7 +5928,7 @@ pub(super) fn handle_resolution_choice(
+                         // silently dropped card.
+                         let object_id = effects::search_outside_game::put_outside_game_face_into(
+                             state,
+-                            player,
++                            recipient,
+                             &card,
+                             destination,
+                         )
+@@ -5866,7 +5947,7 @@ pub(super) fn handle_resolution_choice(
+                             object_id,
+                             destination,
+                             source_id,
+-                            player,
++                            recipient,
+                             events,
+                         )
+                         .map_err(|error| EngineError::InvalidAction(format!("{error:?}")))?
+@@ -5919,7 +6000,7 @@ pub(super) fn handle_resolution_choice(
+                     chosen_ids.iter().map(|&id| TargetRef::Object(id)).collect(),
+                 );
+             }
+-            ResolutionChoiceOutcome::WaitingFor(finish_with_continuation(state, player, events))
++            ResolutionChoiceOutcome::WaitingFor(finish_with_continuation(state, recipient, events))
+         }
+         (
+             WaitingFor::ChooseFromZoneChoice {
+@@ -9206,6 +9287,36 @@ pub(super) fn handle_resolution_choice(
+                 ResolutionChoiceOutcome::WaitingFor(state.waiting_for.clone())
+             }
+         }
++        (
++            WaitingFor::OutsideGameChoice {
++                player: _,
++                source_id,
++                choices,
++                destination,
++                stage: OutsideGameChoiceStage::ControllerChoosesOpponent { owner },
++                opponent_candidates,
++                ..
++            },
++            GameAction::ChooseZoneOpponentChooser { opponent },
++        ) => {
++            if !opponent_candidates.contains(&opponent) {
++                return Err(EngineError::InvalidAction(format!(
++                    "Chosen outside-game opponent {opponent:?} is not a legal candidate"
++                )));
++            }
++            state.waiting_for = WaitingFor::OutsideGameChoice {
++                player: opponent,
++                source_id,
++                choices,
++                count: 1,
++                reveal: false,
++                up_to: false,
++                destination,
++                stage: OutsideGameChoiceStage::OpponentSelects { owner },
++                opponent_candidates: Vec::new(),
++            };
++            ResolutionChoiceOutcome::WaitingFor(state.waiting_for.clone())
++        }
+         // CR 101.4 + CR 707.2 + CR 122.1: One player submitted their ordered
+         // 1..=max selection for `EachPlayerCopyChosen`. Collect APNAP choices
+         // first; copy/counter actions run only after the complete set is known.
+diff --git a/crates/engine/src/game/interaction.rs b/crates/engine/src/game/interaction.rs
+index 7628876fb..74911f907 100644
+--- a/crates/engine/src/game/interaction.rs
++++ b/crates/engine/src/game/interaction.rs
+@@ -278,6 +278,13 @@ fn human_response_model(waiting_for: &WaitingFor, semantic_owner: PlayerId) -> H
+         WaitingFor::ModeChoice { .. } | WaitingFor::AbilityModeChoice { .. } => {
+             HumanResponseModel::ModeSequence
+         }
++        WaitingFor::OutsideGameChoice {
++            stage:
++                crate::types::game_state::OutsideGameChoiceStage::ControllerChoosesOpponent {
++                    ..
++                },
++            ..
++        } => HumanResponseModel::ExactCandidates(AuditedExactCandidates),
+         WaitingFor::OutsideGameChoice { .. } => HumanResponseModel::OutsideSelection,
+         WaitingFor::NamedChoice { .. } | WaitingFor::SecretAgendaChoice { .. } => {
+             HumanResponseModel::TextChoice
+@@ -448,6 +455,15 @@ fn classify_waiting_for(waiting_for: &WaitingFor) -> WaitingClassification {
+             None,
+             Some(InteractionSlotKind::Single),
+         ),
++        WaitingFor::OutsideGameChoice {
++            stage:
++                crate::types::game_state::OutsideGameChoiceStage::ControllerChoosesOpponent { .. },
++            ..
++        } => (
++            InteractionWaitingForCode::Choose,
++            None,
++            Some(InteractionSlotKind::Single),
++        ),
+         WaitingFor::OutsideGameChoice { .. } => (
+             InteractionWaitingForCode::Select,
+             None,
+diff --git a/crates/engine/src/game/quantity.rs b/crates/engine/src/game/quantity.rs
+index e1c320ef3..0203c26b8 100644
+--- a/crates/engine/src/game/quantity.rs
++++ b/crates/engine/src/game/quantity.rs
+@@ -1445,6 +1445,7 @@ fn target_constraint_is_cast_stable_for_pre_cast(constraint: &TargetSelectionCon
+         }
+         TargetSelectionConstraint::DifferentTargetPlayers
+         | TargetSelectionConstraint::DifferentObjectControllers
++        | TargetSelectionConstraint::DistinctCardTypes
+         | TargetSelectionConstraint::SameZoneOwner { .. } => true,
+     }
+ }
+diff --git a/crates/engine/src/game/visibility.rs b/crates/engine/src/game/visibility.rs
+index c77aa6fe0..81b486866 100644
+--- a/crates/engine/src/game/visibility.rs
++++ b/crates/engine/src/game/visibility.rs
+@@ -2861,18 +2861,28 @@ fn filter_state_for_scope(state: &GameState, viewer: Option<PlayerId>) -> GameSt
+         reveal,
+         up_to,
+         destination,
++        stage,
++        opponent_candidates,
+         ..
+-    } = state.waiting_for
++    } = &state.waiting_for
+     {
+-        if !can_view_private_for_player(player) {
++        if !can_view_private_for_player(*player)
++            && !matches!(
++                *stage,
++                crate::types::game_state::OutsideGameChoiceStage::ControllerChoosesOpponent { .. }
++                    | crate::types::game_state::OutsideGameChoiceStage::OpponentSelects { .. }
++            )
++        {
+             filtered.waiting_for = WaitingFor::OutsideGameChoice {
+-                player,
+-                source_id,
++                player: *player,
++                source_id: *source_id,
+                 choices: Vec::new(),
+                 count: 0,
+-                reveal,
+-                up_to,
+-                destination,
++                reveal: *reveal,
++                up_to: *up_to,
++                destination: *destination,
++                stage: *stage,
++                opponent_candidates: opponent_candidates.clone(),
+             };
+         }
+     }
+diff --git a/crates/engine/src/types/game_state.rs b/crates/engine/src/types/game_state.rs
+index ec438a252..8a5e61dac 100644
+--- a/crates/engine/src/types/game_state.rs
++++ b/crates/engine/src/types/game_state.rs
+@@ -177,6 +177,10 @@ fn is_default_interaction_serial(value: &str) -> bool {
+     value == "1"
+ }
+ 
++fn is_default_outside_game_choice_stage(stage: &OutsideGameChoiceStage) -> bool {
++    matches!(stage, OutsideGameChoiceStage::ControllerSelects)
++}
++
+ fn is_zero_u32(value: &u32) -> bool {
+     *value == 0
+ }
+@@ -11854,6 +11858,21 @@ pub struct OutsideGameChoiceEntry {
+     pub name: String,
+ }
+ 
++/// CR 608.2d + CR 400.11: Stage of an outside-game card selection.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(tag = "type", content = "data")]
++pub enum OutsideGameChoiceStage {
++    /// The chooser selects cards that will be brought into the game.
++    #[default]
++    ControllerSelects,
++    /// The controller selects the pair to reveal; an opponent chooses one.
++    RevealPairThenOpponentSelects,
++    /// The controller chooses which opponent receives the revealed pair.
++    ControllerChoosesOpponent { owner: PlayerId },
++    /// An opponent selects the card that will be brought in for this owner.
++    OpponentSelects { owner: PlayerId },
++}
++
+ fn default_one_u32() -> u32 {
+     1
+ }
+@@ -18030,6 +18049,10 @@ pub enum WaitingFor {
+         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+         up_to: bool,
+         destination: Zone,
++        #[serde(default, skip_serializing_if = "is_default_outside_game_choice_stage")]
++        stage: OutsideGameChoiceStage,
++        #[serde(default, skip_serializing_if = "Vec::is_empty")]
++        opponent_candidates: Vec<PlayerId>,
+     },
+     /// CR 608.2d: Player selects card(s) from a tracked set (e.g., exiled cards).
+     /// Chosen/unchosen cards flow into sub-abilities via pending_continuation,
+diff --git a/crates/engine/tests/integration/codie_prepared_spell_trigger.rs b/crates/engine/tests/integration/codie_prepared_spell_trigger.rs
+index 3df544e3d..8ff583f65 100644
+--- a/crates/engine/tests/integration/codie_prepared_spell_trigger.rs
++++ b/crates/engine/tests/integration/codie_prepared_spell_trigger.rs
+@@ -633,6 +633,7 @@ fn codie_prepared_spell_cast_copy_of_card_clears_marker() {
+             target: TargetFilter::None,
+             cost: ManaCost::zero(),
+             count: None,
++            selection_constraint: None,
+         },
+         vec![TargetRef::Object(source)],
+         ObjectId(99),
+diff --git a/crates/engine/tests/integration/extrapolate_the_impossible.rs b/crates/engine/tests/integration/extrapolate_the_impossible.rs
+new file mode 100644
+index 000000000..656d2e11b
+--- /dev/null
++++ b/crates/engine/tests/integration/extrapolate_the_impossible.rs
+@@ -0,0 +1,177 @@
++use std::sync::Arc;
++
++use engine::game::deck_loading::DeckEntry;
++use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
++use engine::types::actions::{GameAction, OutsideGameSelection};
++use engine::types::card::CardFace;
++use engine::types::game_state::{PlayerDeckPool, WaitingFor};
++use engine::types::mana::ManaCost;
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const ORACLE: &str = "You may reveal exactly two cards you own with different names from outside the game. An opponent chooses one of them. You put that card into your hand.";
++
++fn sideboard_entry(name: &str, count: u32) -> DeckEntry {
++    DeckEntry {
++        card: CardFace {
++            name: name.to_string(),
++            ..Default::default()
++        },
++        count,
++    }
++}
++
++fn setup(sideboard: Vec<DeckEntry>) -> (GameRunner, engine::types::identifiers::ObjectId) {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let spell = scenario
++        .add_spell_to_hand_from_oracle(P0, "Extrapolate the Impossible", false, ORACLE)
++        .with_mana_cost(ManaCost::generic(0))
++        .id();
++    let mut runner = scenario.build();
++    runner.state_mut().deck_pools = vec![PlayerDeckPool {
++        player: P0,
++        current_sideboard: Arc::new(sideboard),
++        ..Default::default()
++    }];
++    runner.state_mut().active_player = P0;
++    runner.state_mut().priority_player = P0;
++    runner.state_mut().waiting_for = WaitingFor::Priority { player: P0 };
++    (runner, spell)
++}
++
++fn resolve_extrapolate(runner: &mut GameRunner, spell: engine::types::identifiers::ObjectId) {
++    runner.cast(spell).resolve();
++    runner.advance_until_stack_empty();
++    if matches!(
++        runner.state().waiting_for,
++        WaitingFor::OptionalEffectChoice { .. }
++    ) {
++        runner
++            .act(GameAction::DecideOptionalEffect { accept: true })
++            .expect("accept the optional reveal");
++    }
++}
++
++#[test]
++fn fewer_than_two_different_names_cannot_reveal_a_partial_pair() {
++    let (mut runner, spell) = setup(vec![sideboard_entry("Lightning Bolt", 2)]);
++    resolve_extrapolate(&mut runner, spell);
++
++    assert!(
++        !matches!(
++            runner.state().waiting_for,
++            WaitingFor::OutsideGameChoice { .. }
++        ),
++        "one eligible name cannot satisfy the exactly-two, different-names requirement"
++    );
++    assert!(runner.state().players[0].hand.is_empty());
++    assert!(runner.state().outside_game_cards_brought_in.is_empty());
++    assert_eq!(runner.state().deck_pools[0].current_sideboard[0].count, 2);
++}
++
++#[test]
++fn caster_reveals_two_distinct_names_then_opponent_puts_only_one_into_hand() {
++    let (mut runner, spell) = setup(vec![
++        sideboard_entry("Lightning Bolt", 2),
++        sideboard_entry("Shock", 1),
++        sideboard_entry("Opt", 1),
++    ]);
++    resolve_extrapolate(&mut runner, spell);
++
++    let (choices, count, player) = match &runner.state().waiting_for {
++        WaitingFor::OutsideGameChoice {
++            choices,
++            count,
++            player,
++            ..
++        } => (choices, count, player),
++        other => panic!("expected the caster's two-card outside-game selection, got {other:?}"),
++    };
++    assert_eq!(*player, P0);
++    assert_eq!(*count, 2);
++    assert_eq!(
++        choices
++            .iter()
++            .map(|choice| choice.name.as_str())
++            .collect::<Vec<_>>(),
++        vec!["Lightning Bolt", "Shock", "Opt"]
++    );
++
++    assert!(
++        runner
++            .act(GameAction::ChooseOutsideGameCards {
++                selections: vec![OutsideGameSelection::Sideboard { sideboard_index: 0 }],
++            })
++            .is_err(),
++        "the caster must select exactly two cards"
++    );
++    assert!(
++        runner
++            .act(GameAction::ChooseOutsideGameCards {
++                selections: vec![
++                    OutsideGameSelection::Sideboard { sideboard_index: 0 },
++                    OutsideGameSelection::Sideboard { sideboard_index: 0 },
++                ],
++            })
++            .is_err(),
++        "a duplicated name cannot satisfy the different-names requirement"
++    );
++
++    runner
++        .act(GameAction::ChooseOutsideGameCards {
++            selections: vec![
++                OutsideGameSelection::Sideboard { sideboard_index: 0 },
++                OutsideGameSelection::Sideboard { sideboard_index: 1 },
++            ],
++        })
++        .expect("reveal two differently named cards");
++
++    match &runner.state().waiting_for {
++        WaitingFor::OutsideGameChoice {
++            player,
++            choices,
++            count,
++            ..
++        } => {
++            assert_eq!(*player, P1, "an opponent chooses from the revealed pair");
++            assert_eq!(*count, 1);
++            assert_eq!(
++                choices
++                    .iter()
++                    .map(|choice| choice.name.as_str())
++                    .collect::<Vec<_>>(),
++                vec!["Lightning Bolt", "Shock"]
++            );
++        }
++        other => panic!("expected the opponent's choice, got {other:?}"),
++    }
++
++    runner
++        .act(GameAction::ChooseOutsideGameCards {
++            selections: vec![OutsideGameSelection::Sideboard { sideboard_index: 1 }],
++        })
++        .expect("opponent chooses Shock");
++
++    assert_eq!(
++        runner.state().players[0]
++            .hand
++            .iter()
++            .filter_map(|id| runner
++                .state()
++                .objects
++                .get(id)
++                .map(|object| object.name.as_str()))
++            .collect::<Vec<_>>(),
++        vec!["Shock"]
++    );
++    assert_eq!(runner.state().outside_game_cards_brought_in.len(), 1);
++    assert_eq!(
++        runner.state().outside_game_cards_brought_in[0].sideboard_index,
++        1
++    );
++    assert_eq!(runner.state().deck_pools[0].current_sideboard[0].count, 2);
++    assert_eq!(runner.state().deck_pools[0].current_sideboard[1].count, 1);
++    assert_eq!(runner.state().deck_pools[0].current_sideboard[2].count, 1);
++    assert_eq!(runner.state().objects[&spell].zone, Zone::Graveyard);
++}
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index 0b5cd0b2e..9b1edd82b 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -83,6 +83,7 @@ mod essence_burn;
+ mod etali_primal_sickness_poison;
+ mod etrata_cloak_enters_under_cloaker_5944;
+ mod exiled_card_power_linked_pile;
++mod extrapolate_the_impossible;
+ mod exuberant_wolfbear_base_pt_target;
+ mod fantastic_four_bounded_loop;
+ mod fin_sidequest_turn_history_conditions;
+@@ -255,6 +256,7 @@ mod thoughtweft_trample_regression;
+ mod total_war_attacking_player_scope;
+ mod types_ability;
+ mod types_statics;
++mod uldaros_theorix;
+ mod ultimate_spider_man_mass_counter_double;
+ mod unstoppable_slasher_half_life;
+ mod ureni_attack_trigger;
+diff --git a/crates/engine/tests/integration/uldaros_theorix.rs b/crates/engine/tests/integration/uldaros_theorix.rs
+new file mode 100644
+index 000000000..62d45eb9b
+--- /dev/null
++++ b/crates/engine/tests/integration/uldaros_theorix.rs
+@@ -0,0 +1,272 @@
++use engine::game::scenario::{GameRunner, GameScenario, P0};
++use engine::types::ability::TargetRef;
++use engine::types::actions::GameAction;
++use engine::types::game_state::WaitingFor;
++use engine::types::identifiers::ObjectId;
++use engine::types::mana::ManaCost;
++use engine::types::phase::Phase;
++use engine::types::player::PlayerId;
++use engine::types::zones::Zone;
++
++const ORACLE: &str = "Flying\nWhen Uldaros Theorix enters, if you cast him, exile up to one target nonland card of each card type from your graveyard. Copy those cards. You may cast any number of spells with total mana value 6 or less from among the copies without paying their mana costs. (Permanent spells cast this way become tokens.)";
++
++struct Setup {
++    runner: GameRunner,
++    uldaros: ObjectId,
++    instant: ObjectId,
++    sorcery: ObjectId,
++    other_sorcery: ObjectId,
++    creature: ObjectId,
++}
++
++fn setup() -> Setup {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let uldaros = scenario
++        .add_creature_to_hand_from_oracle(P0, "Uldaros Theorix", 6, 6, ORACLE)
++        .with_mana_cost(ManaCost::generic(0))
++        .id();
++    let instant = scenario
++        .add_spell_to_graveyard(P0, "One-Mana Instant", true)
++        .with_mana_cost(ManaCost::generic(1))
++        .from_oracle_text("You gain 1 life.")
++        .id();
++    let sorcery = scenario
++        .add_spell_to_graveyard(P0, "Two-Mana Sorcery", false)
++        .with_mana_cost(ManaCost::generic(2))
++        .from_oracle_text("You gain 2 life.")
++        .id();
++    let other_sorcery = scenario
++        .add_spell_to_graveyard(P0, "Other Two-Mana Sorcery", false)
++        .with_mana_cost(ManaCost::generic(2))
++        .from_oracle_text("You gain 3 life.")
++        .id();
++    let creature = scenario
++        .add_creature_to_graveyard(P0, "Four-Mana Creature", 3, 3)
++        .with_mana_cost(ManaCost::generic(4))
++        .id();
++    let mut runner = scenario.build();
++    runner.state_mut().active_player = P0;
++    runner.state_mut().priority_player = P0;
++    runner.state_mut().waiting_for = WaitingFor::Priority { player: P0 };
++    Setup {
++        runner,
++        uldaros,
++        instant,
++        sorcery,
++        other_sorcery,
++        creature,
++    }
++}
++
++fn cast_uldaros_to_target_prompt(setup: &mut Setup) {
++    let mut committed = setup.runner.cast(setup.uldaros).commit();
++    for _ in 0..16 {
++        match &committed.state().waiting_for {
++            WaitingFor::TargetSelection { .. }
++            | WaitingFor::TriggerTargetSelection { .. }
++            | WaitingFor::MultiTargetSelection { .. } => return,
++            WaitingFor::OrderTriggers { .. } => {
++                engine::game::triggers::drain_order_triggers_with_identity(committed.state_mut());
++            }
++            WaitingFor::Priority { .. } if !committed.state().stack.is_empty() => {
++                committed
++                    .act(GameAction::PassPriority)
++                    .expect("pass priority while resolving Uldaros");
++            }
++            waiting => panic!("expected Uldaros's ETB target prompt, got {waiting:?}"),
++        }
++    }
++    panic!("Uldaros's ETB target prompt did not appear");
++}
++
++fn select_targets(setup: &mut Setup, targets: &[ObjectId]) {
++    setup
++        .runner
++        .act(GameAction::SelectTargets {
++            targets: targets.iter().copied().map(TargetRef::Object).collect(),
++        })
++        .expect("select legal, differently typed graveyard cards");
++    setup.runner.advance_until_stack_empty();
++}
++
++fn p0_life(runner: &GameRunner) -> i32 {
++    runner
++        .state()
++        .players
++        .iter()
++        .find(|player| player.id == PlayerId(0))
++        .unwrap()
++        .life
++}
++
++#[test]
++fn casts_copies_for_free_and_enforces_the_total_mana_value_budget() {
++    let mut setup = setup();
++    let starting_life = p0_life(&setup.runner);
++    cast_uldaros_to_target_prompt(&mut setup);
++
++    assert!(
++        matches!(
++            setup.runner.state().waiting_for,
++            WaitingFor::TargetSelection { .. } | WaitingFor::TriggerTargetSelection { .. }
++        ),
++        "casting Uldaros should put its cast-qualified ETB trigger through target selection, got {:?}",
++        setup.runner.state().waiting_for
++    );
++    assert!(
++        setup
++            .runner
++            .act(GameAction::SelectTargets {
++                targets: vec![
++                    TargetRef::Object(setup.sorcery),
++                    TargetRef::Object(setup.other_sorcery),
++                ],
++            })
++            .is_err(),
++        "the target set cannot contain two cards of the same card type"
++    );
++    let targets = [setup.instant, setup.sorcery, setup.creature];
++    select_targets(&mut setup, &targets);
++
++    for original in [setup.instant, setup.sorcery, setup.creature] {
++        assert_eq!(
++            setup.runner.state().objects[&original].zone,
++            Zone::Exile,
++            "Uldaros exiles the selected originals before copying them"
++        );
++    }
++    assert_eq!(
++        setup.runner.state().objects[&setup.other_sorcery].zone,
++        Zone::Graveyard,
++        "an unselected card remains in the graveyard"
++    );
++
++    let offered = match &setup.runner.state().waiting_for {
++        WaitingFor::ChooseFromZoneChoice { cards, .. } => cards,
++        other => panic!("expected the copy-cast selection, got {other:?}"),
++    };
++    assert!(offered.contains(&setup.instant));
++    assert!(offered.contains(&setup.sorcery));
++    assert!(offered.contains(&setup.creature));
++    assert!(
++        setup
++            .runner
++            .act(GameAction::SelectCards {
++                cards: vec![setup.instant, setup.sorcery, setup.creature],
++            })
++            .is_err(),
++        "mana values 1 + 2 + 4 exceed Uldaros's total budget of 6"
++    );
++
++    setup
++        .runner
++        .act(GameAction::SelectCards {
++            cards: vec![setup.sorcery, setup.creature],
++        })
++        .expect("select copies totaling exactly six mana value");
++    setup.runner.advance_until_stack_empty();
++
++    assert_eq!(
++        p0_life(&setup.runner),
++        starting_life + 2,
++        "the sorcery copy resolves without paying its mana cost"
++    );
++    assert!(
++        setup.runner.state().objects.values().any(|object| {
++            object.name == "Four-Mana Creature"
++                && object.is_token
++                && object.zone == Zone::Battlefield
++        }),
++        "the permanent spell copy becomes a token"
++    );
++    assert_eq!(
++        setup.runner.state().objects[&setup.instant].zone,
++        Zone::Exile
++    );
++    assert_eq!(
++        setup.runner.state().objects[&setup.sorcery].zone,
++        Zone::Exile
++    );
++    assert_eq!(
++        setup.runner.state().objects[&setup.creature].zone,
++        Zone::Exile
++    );
++}
++
++#[test]
++fn choosing_no_copies_leaves_the_original_cards_exiled() {
++    let mut setup = setup();
++    let starting_life = p0_life(&setup.runner);
++    cast_uldaros_to_target_prompt(&mut setup);
++    let targets = [setup.instant, setup.creature];
++    select_targets(&mut setup, &targets);
++
++    setup
++        .runner
++        .act(GameAction::SelectCards { cards: vec![] })
++        .expect("casting zero copies is allowed");
++    setup.runner.advance_until_stack_empty();
++
++    assert_eq!(p0_life(&setup.runner), starting_life);
++    assert_eq!(
++        setup.runner.state().objects[&setup.instant].zone,
++        Zone::Exile
++    );
++    assert_eq!(
++        setup.runner.state().objects[&setup.creature].zone,
++        Zone::Exile
++    );
++    assert_eq!(
++        setup.runner.state().objects[&setup.sorcery].zone,
++        Zone::Graveyard
++    );
++}
++
++#[test]
++fn uldaros_put_onto_the_battlefield_without_being_cast_has_no_effect() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let uldaros = scenario
++        .add_creature_to_graveyard(P0, "Uldaros Theorix", 6, 6)
++        .from_oracle_text(ORACLE)
++        .id();
++    let reanimate = scenario
++        .add_spell_to_hand_from_oracle(
++            P0,
++            "Reanimate Uldaros",
++            true,
++            "Return target creature card from your graveyard to the battlefield.",
++        )
++        .with_mana_cost(ManaCost::generic(0))
++        .id();
++    let instant = scenario
++        .add_spell_to_graveyard(P0, "One-Mana Instant", true)
++        .with_mana_cost(ManaCost::generic(1))
++        .from_oracle_text("You gain 1 life.")
++        .id();
++    let mut runner = scenario.build();
++    runner.state_mut().active_player = P0;
++    runner.state_mut().priority_player = P0;
++    runner.state_mut().waiting_for = WaitingFor::Priority { player: P0 };
++
++    runner.cast(reanimate).target_object(uldaros).resolve();
++    runner.advance_until_stack_empty();
++
++    assert_eq!(runner.state().objects[&uldaros].zone, Zone::Battlefield);
++    assert_eq!(runner.state().objects[&instant].zone, Zone::Graveyard);
++    assert_eq!(p0_life(&runner), 20);
++    assert!(
++        !runner
++            .state()
++            .objects
++            .values()
++            .any(|object| object.name == "One-Mana Instant" && object.is_token),
++        "Uldaros's copy ability must not resolve when it entered without being cast"
++    );
++    assert!(
++        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
++        "the non-cast ETB must not leave a trigger-choice prompt: {:?}",
++        runner.state().waiting_for
++    );
++}
+diff --git a/crates/phase-ast/src/types/ability.rs b/crates/phase-ast/src/types/ability.rs
+index f689abcb4..aac1f513a 100644
+--- a/crates/phase-ast/src/types/ability.rs
++++ b/crates/phase-ast/src/types/ability.rs
+@@ -984,6 +984,19 @@ pub enum OutsideGameSourcePool {
+     SideboardAndFaceUpExile,
+ }
+ 
++/// CR 608.2d + CR 400.11: What happens after the controller selects cards
++/// from outside the game.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(tag = "type")]
++pub enum OutsideGameSelectionMode {
++    /// The controller takes the selected cards to the stated destination.
++    #[default]
++    ControllerTakesSelected,
++    /// The controller reveals exactly two differently named cards; an
++    /// opponent chooses one to be brought into the game.
++    OpponentChoosesOne,
++}
++
+ impl OutsideGameSourcePool {
+     pub fn includes_face_up_exile(self) -> bool {
+         matches!(self, OutsideGameSourcePool::SideboardAndFaceUpExile)
+@@ -23050,6 +23063,10 @@ pub enum Effect {
+         /// upper bound, never a forced count.
+         #[serde(default)]
+         count: Option<QuantityExpr>,
++        /// CR 202.3 + CR 707.12a: Additional legality constraint on the set of
++        /// copies the player elects to cast, such as a combined mana-value cap.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        selection_constraint: Option<ChooseFromZoneConstraint>,
+     },
+     /// CR 707.2 / CR 707.5: Create a token that's a copy of a permanent.
+     /// Copies copiable characteristics (name, mana cost, color, types, P/T, abilities, keywords)
+@@ -23755,6 +23772,8 @@ pub enum Effect {
+         destination: Zone,
+         #[serde(default, skip_serializing_if = "is_default_outside_game_source_pool")]
+         source_pool: OutsideGameSourcePool,
++        #[serde(default, skip_serializing_if = "is_controller_takes_selected")]
++        selection_mode: OutsideGameSelectionMode,
+     },
+     /// CR 400.11 + CR 400.11b + CR 701.20: Open a sealed Magic booster pack —
+     /// a set of cards from OUTSIDE the game — reveal them, and bring `count` of
+@@ -28402,6 +28421,10 @@ fn is_default_outside_game_source_pool(pool: &OutsideGameSourcePool) -> bool {
+     matches!(pool, OutsideGameSourcePool::Sideboard)
+ }
+ 
++fn is_controller_takes_selected(mode: &OutsideGameSelectionMode) -> bool {
++    matches!(mode, OutsideGameSelectionMode::ControllerTakesSelected)
++}
++
+ /// CR 701.23a: Default search zone set — library only, the overwhelming
+ /// majority of tutors. Used by `Effect::SearchLibrary.source_zones`.
+ fn default_search_zones() -> Vec<Zone> {
+diff --git a/crates/phase-ast/src/types/game_state_kinds.rs b/crates/phase-ast/src/types/game_state_kinds.rs
+index 08a35a646..d750bcec9 100644
+--- a/crates/phase-ast/src/types/game_state_kinds.rs
++++ b/crates/phase-ast/src/types/game_state_kinds.rs
+@@ -39,6 +39,9 @@ pub enum TargetSelectionConstraint {
+     DifferentTargetPlayers,
+     /// CR 115.1 + CR 601.2c: Object targets must be controlled by different players.
+     DifferentObjectControllers,
++    /// CR 115.1 + CR 601.2c + CR 205.2a: No two chosen object targets may
++    /// share a card type ("up to one target nonland card of each card type").
++    DistinctCardTypes,
+     /// CR 115.1 + CR 601.2c + CR 400.1: Object targets must come from the same
+     /// player-owned zone of the given kind, e.g. "from a single graveyard".
+     SameZoneOwner { zone: Zone },
+diff --git a/crates/phase-parser/src/parser/oracle_effect/assembly.rs b/crates/phase-parser/src/parser/oracle_effect/assembly.rs
+index 9f53aa5a2..0ac2bef46 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/assembly.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/assembly.rs
+@@ -3679,7 +3679,9 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
+         // `ChooseObjectsIntoTrackedSet` instead owns its selection cardinality in
+         // the effect's `min`/`max`; adding `multi_target` would duplicate that
+         // resolver-owned selection state.
+-        if !matches!(&*def.effect, Effect::ChooseObjectsIntoTrackedSet { .. }) {
++        if let Some(spec) = clause_ir.target_phrase_multi_target.clone() {
++            def = def.multi_target(spec);
++        } else if !matches!(&*def.effect, Effect::ChooseObjectsIntoTrackedSet { .. }) {
+             if let Some(spec) =
+                 extract_exact_target_multi_target(clause_ir.source.fragment().unwrap_or_default())
+             {
+@@ -3746,6 +3748,9 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
+         ) {
+             def = def.target_constraint(constraint);
+         }
++        for constraint in &clause_ir.target_selection_constraints {
++            def = def.target_constraint(constraint.clone());
++        }
+         // CR 601.2d: Propagate distribute flag.
+         if let Some(ref unit) = clause_ir.parsed.distribute {
+             def = def.distribute(unit.clone());
+diff --git a/crates/phase-parser/src/parser/oracle_effect/imperative.rs b/crates/phase-parser/src/parser/oracle_effect/imperative.rs
+index 04b5427bd..25599e222 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/imperative.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/imperative.rs
+@@ -59,9 +59,9 @@ use crate::types::ability::{
+     CounterKindDomain, DigSource, DoorLockOp, Duration, Effect, EffectScope, ExtraPhaseAnchor,
+     ExtraPhaseRecipient, FaceDownProfile, FilterProp, ForceBlockAttackerRef, GrantedAbilityScope,
+     LibraryPosition, MassLibraryShuffleMode, MultiTargetSpec, ObjectSelectionCardinality,
+-    ObjectSelectionEligibility, OutsideGameSourcePool, PerPlayerScope, PlayerFilter,
+-    PlayerRelation, PlayerScope, PossessionAxis, PreventionAmount, PreventionScope, PtStat,
+-    PtValue, QuantityExpr, QuantityRef, ReassembleControlMode, ReturnResultReadSpec,
++    ObjectSelectionEligibility, OutsideGameSelectionMode, OutsideGameSourcePool, PerPlayerScope,
++    PlayerFilter, PlayerRelation, PlayerScope, PossessionAxis, PreventionAmount, PreventionScope,
++    PtStat, PtValue, QuantityExpr, QuantityRef, ReassembleControlMode, ReturnResultReadSpec,
+     SearchSelectionConstraint, StaticDefinition, StickerTicketCostPayment, TapCreaturesRequirement,
+     TapStateChange, TargetChoiceTiming, TargetFilter, TargetSelectionMode, ThisWayCause,
+     TokenAttackDestination, TypeFilter, TypedFilter, ZoneChoiceCandidateSource, ZoneOwner, ZoneRef,
+@@ -4172,6 +4172,7 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
+             reveal,
+             destination,
+             source_pool,
++            selection_mode: OutsideGameSelectionMode::ControllerTakesSelected,
+         },
+         SearchCreationImperativeAst::Dig {
+             count,
+@@ -20884,6 +20885,7 @@ mod tests {
+                 reveal,
+                 destination,
+                 source_pool,
++                ..
+             } => {
+                 assert_eq!(count, QuantityExpr::up_to(QuantityExpr::Fixed { value: 1 }));
+                 assert!(reveal);
+@@ -21044,6 +21046,7 @@ mod tests {
+                 reveal,
+                 destination,
+                 source_pool,
++                ..
+             } => {
+                 assert_eq!(
+                     *filter,
+diff --git a/crates/phase-parser/src/parser/oracle_effect/mod.rs b/crates/phase-parser/src/parser/oracle_effect/mod.rs
+index b5c0abb18..e63e5dbf1 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/mod.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/mod.rs
+@@ -136,18 +136,18 @@ use crate::types::ability::{
+     GameRestriction, GuardReading, GuessSubject, IntensityScope, IterationKindBinding,
+     KeeperConstraint, KeeperCounterMark, LibraryPosition, ManaProduction, ManaSpendPermission,
+     ManaTargetRole, MassLibraryShuffleMode, MultiTargetSpec, NameStickerSet, NumberDistinctness,
+-    ObjectProperty, ObjectScope, OriginConstraint, PerPlayerScope, PerpetualModification,
+-    PlayPermissionInvalidation, PlayerChoiceDistinctness, PlayerFilter, PlayerRelation,
+-    PlayerScope, PreventionAmount, PreventionScope, ProhibitedActivity, PropertyAggregate, PtValue,
+-    QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole, ReplacementCondition,
+-    ReplacementDefinition, ResolutionCastWindow, RestrictionExpiry, RestrictionPlayerScope,
+-    RevealUntilDisposition, RoundingMode, SharedQuality, SharedQualityRelation, SiblingCondition,
+-    SkipScope, SpellStackToGraveyardReplacement, StaticCondition, StaticDefinition, StepSkipTarget,
+-    SubAbilityLink, TapStateChange, TargetFilter, TargetReadOrigin, TargetSelectionMode,
+-    ThisWayCause, TokenAttackDestination, TrackedAnaphorSource, TriggerCondition,
+-    TriggerDefinition, TurnGate, TypeFilter, TypedFilter, UnlessPayModifier, UnloweredGuard,
+-    UntilCondition, VoteSubject, WheneverEventExpiry, ZoneChoiceCandidateSource, ZoneChoiceChooser,
+-    ZoneChoiceGatherRole, ZoneOwner,
++    ObjectProperty, ObjectScope, OriginConstraint, OutsideGameSelectionMode, PerPlayerScope,
++    PerpetualModification, PlayPermissionInvalidation, PlayerChoiceDistinctness, PlayerFilter,
++    PlayerRelation, PlayerScope, PreventionAmount, PreventionScope, ProhibitedActivity,
++    PropertyAggregate, PtValue, QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole,
++    ReplacementCondition, ReplacementDefinition, ResolutionCastWindow, RestrictionExpiry,
++    RestrictionPlayerScope, RevealUntilDisposition, RoundingMode, SharedQuality,
++    SharedQualityRelation, SiblingCondition, SkipScope, SpellStackToGraveyardReplacement,
++    StaticCondition, StaticDefinition, StepSkipTarget, SubAbilityLink, TapStateChange,
++    TargetFilter, TargetReadOrigin, TargetSelectionMode, ThisWayCause, TokenAttackDestination,
++    TrackedAnaphorSource, TriggerCondition, TriggerDefinition, TurnGate, TypeFilter, TypedFilter,
++    UnlessPayModifier, UnloweredGuard, UntilCondition, VoteSubject, WheneverEventExpiry,
++    ZoneChoiceCandidateSource, ZoneChoiceChooser, ZoneChoiceGatherRole, ZoneOwner,
+ };
+ // `DoubleTarget` has no production use in this module since the counter-doubling
+ // discriminator moved to `Effect::is_counter_multiplication()`; the child
+@@ -35021,6 +35021,24 @@ fn is_free_cast_exile_instead_rider(input: &str) -> bool {
+ /// fold path (the 13 existing cast-a-copy cards) is left untouched.
+ fn try_parse_cast_copies_with_count(lower: &str) -> Option<Effect> {
+     let (rest, _) = tag::<_, _, OracleError<'_>>("cast ").parse(lower).ok()?;
++    if let Ok((_, (_, value, _, _))) = all_consuming((
++        tag::<_, _, OracleError<'_>>("any number of spells with total mana value "),
++        nom_primitives::parse_number,
++        tag(" or less from among the copies without paying their mana costs"),
++        opt(tag(".")),
++    ))
++    .parse(rest)
++    {
++        return Some(Effect::CastCopyOfCard {
++            target: tracked_set_filter(),
++            cost: ManaCost::zero(),
++            count: None,
++            selection_constraint: Some(ChooseFromZoneConstraint::TotalManaValue {
++                comparator: Comparator::LE,
++                value: value as i32,
++            }),
++        });
++    }
+     // CR 707.12a: optional "up to N of " / "N of " cap on how many copies to cast.
+     let (rest, count) = parse_cast_copies_count_prefix(rest);
+     // CR 707.12: the copies created by the preceding "Copy …" clause.
+@@ -35039,6 +35057,7 @@ fn try_parse_cast_copies_with_count(lower: &str) -> Option<Effect> {
+         target: tracked_set_filter(),
+         cost: ManaCost::zero(),
+         count,
++        selection_constraint: None,
+     })
+ }
+ 
+@@ -40155,6 +40174,7 @@ fn fold_cast_copy_of_card_defs(defs: &mut Vec<AbilityDefinition>) {
+                 target: tracked_set_filter(),
+                 cost: ManaCost::zero(),
+                 count: None,
++                selection_constraint: None,
+             };
+             defs[index].optional = false;
+             defs[index].repeat_for = None;
+@@ -45521,6 +45541,36 @@ fn clause_player_choice_count(clause: &ParsedEffectClause) -> u8 {
+         })
+ }
+ 
++/// CR 400.11 + CR 608.2d: "reveal exactly two ... different names ... an
++/// opponent chooses one" is a single outside-game choice process. Keep the
++/// selection and destination semantics together instead of interpreting the
++/// later sentences as independent instructions.
++fn parse_outside_game_reveal_pair_ir(text: &str, kind: AbilityKind) -> Option<EffectChainIr> {
++    let lower = text.to_ascii_lowercase();
++    let (_, (may, _, _, _, _)) = all_consuming((
++        opt(tag::<_, _, OracleError<'_>>("you may ")),
++        tag("reveal exactly two cards you own with different names from outside the game. "),
++        tag("an opponent chooses one of them. "),
++        tag("you put that card into your hand"),
++        opt(tag(".")),
++    ))
++    .parse(lower.as_str())
++    .ok()?;
++
++    let mut clause = parsed_clause(Effect::SearchOutsideGame {
++        filter: TargetFilter::Any,
++        count: QuantityExpr::Fixed { value: 2 },
++        reveal: true,
++        destination: Zone::Hand,
++        source_pool: crate::types::ability::OutsideGameSourcePool::Sideboard,
++        selection_mode: OutsideGameSelectionMode::OpponentChoosesOne,
++    });
++    clause.optional = may.is_some();
++    Some(EffectChainIr::single_clause(
++        text, kind, clause, None, None, false,
++    ))
++}
++
+ fn parse_effect_chain_ir_body(
+     text: &str,
+     kind: AbilityKind,
+@@ -45532,6 +45582,9 @@ fn parse_effect_chain_ir_body(
+     // CR 608.2c: the enclosing chain's player declaration, taken on entry so only
+     // the one nested call that set it can read it.
+     let enclosing_declared_player = ctx.enclosing_declared_player.take();
++    if let Some(ir) = parse_outside_game_reveal_pair_ir(text, kind) {
++        return ir;
++    }
+     if let Some(ir) = parse_reciprocal_graveyard_choice_ir(text, kind) {
+         return ir;
+     }
+@@ -49027,6 +49080,10 @@ fn parse_effect_chain_ir_body(
+                 .where_x_expression(where_x_expression.clone())
+                 .where_x_player_antecedents(chunk_ctx.player_antecedents())
+                 .target_selection_mode(chunk_ctx.target_selection_mode)
++                .target_phrase_multi_target(chunk_ctx.target_phrase_multi_target.take())
++                .target_selection_constraints(std::mem::take(
++                    &mut chunk_ctx.target_selection_constraints,
++                ))
+                 .target_chooser(chunk_ctx.target_chooser.clone())
+                 .declared_target_choice_timing(chunk_ctx.declared_target_choice_timing.take())
+                 .printed_color_choice(chunk_ctx.pending_printed_color_choice.take())
+@@ -50999,6 +51056,10 @@ fn parse_effect_chain_ir_body(
+                         .where_x_expression(where_x_expression)
+                         .where_x_player_antecedents(chunk_ctx.player_antecedents())
+                         .target_selection_mode(chunk_ctx.target_selection_mode)
++                        .target_phrase_multi_target(chunk_ctx.target_phrase_multi_target.take())
++                        .target_selection_constraints(std::mem::take(
++                            &mut chunk_ctx.target_selection_constraints,
++                        ))
+                         .target_chooser(chunk_ctx.target_chooser.clone())
+                         .declared_target_choice_timing(
+                             chunk_ctx.declared_target_choice_timing.take(),
+@@ -51168,6 +51229,10 @@ fn parse_effect_chain_ir_body(
+                 .where_x_player_antecedents(chunk_ctx.player_antecedents())
+                 .unless_pay(unless_pay)
+                 .target_selection_mode(chunk_ctx.target_selection_mode)
++                .target_phrase_multi_target(chunk_ctx.target_phrase_multi_target.take())
++                .target_selection_constraints(std::mem::take(
++                    &mut chunk_ctx.target_selection_constraints,
++                ))
+                 .target_chooser(chunk_ctx.target_chooser.clone())
+                 .declared_target_choice_timing(chunk_ctx.declared_target_choice_timing.take())
+                 .printed_color_choice(chunk_ctx.pending_printed_color_choice.take())
+diff --git a/crates/phase-parser/src/parser/oracle_effect/tests.rs b/crates/phase-parser/src/parser/oracle_effect/tests.rs
+index 54ae2e572..21d0c98b9 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/tests.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/tests.rs
+@@ -1961,6 +1961,73 @@ fn ability_chain_has_unimplemented(ability: &AbilityDefinition) -> bool {
+             .is_some_and(ability_chain_has_unimplemented)
+ }
+ 
++#[test]
++fn uldaros_theorix_full_oracle_text_parses_distinct_type_targets_and_budget() {
++    let parsed = parse_oracle_text(
++        "Flying\nWhen Uldaros Theorix enters, if you cast him, exile up to one target nonland card of each card type from your graveyard. Copy those cards. You may cast any number of spells with total mana value 6 or less from among the copies without paying their mana costs. (Permanent spells cast this way become tokens.)",
++        "Uldaros Theorix",
++        &[],
++        &["Creature".to_string()],
++        &[],
++    );
++    let trigger = parsed
++        .triggers
++        .first()
++        .expect("Uldaros has an enters-the-battlefield trigger");
++    assert!(
++        matches!(
++            trigger.condition,
++            Some(crate::types::ability::TriggerCondition::WasCast { .. })
++        ),
++        "the trigger must be conditioned on Uldaros being cast: {trigger:#?}"
++    );
++    let execute = trigger
++        .execute
++        .as_deref()
++        .expect("the ETB trigger must have an execute body");
++
++    fn has_distinct_type_target(def: &AbilityDefinition) -> bool {
++        (def.multi_target == Some(crate::types::ability::MultiTargetSpec::fixed(0, 8))
++            && def.target_constraints.contains(
++                &crate::types::game_state_kinds::TargetSelectionConstraint::DistinctCardTypes,
++            ))
++            || def
++                .sub_ability
++                .as_deref()
++                .is_some_and(has_distinct_type_target)
++    }
++    assert!(
++        has_distinct_type_target(execute),
++        "the target phrase must declare zero to eight distinct card types: {execute:#?}"
++    );
++
++    fn cast_copy_with_budget(def: &AbilityDefinition) -> bool {
++        matches!(
++            def.effect.as_ref(),
++            Effect::CastCopyOfCard {
++                selection_constraint: Some(
++                    crate::types::ability::ChooseFromZoneConstraint::TotalManaValue {
++                        comparator: crate::types::ability::Comparator::LE,
++                        value: 6,
++                    }
++                ),
++                ..
++            }
++        ) || def
++            .sub_ability
++            .as_deref()
++            .is_some_and(cast_copy_with_budget)
++    }
++    assert!(
++        cast_copy_with_budget(execute),
++        "the copies must have a total mana-value budget of six: {execute:#?}"
++    );
++    assert!(
++        !ability_chain_has_unimplemented(execute),
++        "the complete trigger body must parse without Unimplemented: {execute:#?}"
++    );
++}
++
+ /// CR 608.2c + CR 701.24a + CR 121.1 + CR 120.3: Molten Psyche's complete
+ /// Oracle text keeps the all-player hand-to-library shuffle inside each player
+ /// pass, then starts a distinct all-player draw instruction. Its Metalcraft
+diff --git a/crates/phase-parser/src/parser/oracle_ir/context.rs b/crates/phase-parser/src/parser/oracle_ir/context.rs
+index a336af245..43a79b1bc 100644
+--- a/crates/phase-parser/src/parser/oracle_ir/context.rs
++++ b/crates/phase-parser/src/parser/oracle_ir/context.rs
+@@ -11,6 +11,7 @@ use crate::types::ability::{
+     TargetSelectionMode, ZoneChoiceCandidateSource,
+ };
+ use crate::types::card_type::CoreType;
++use crate::types::game_state_kinds::TargetSelectionConstraint;
+ use crate::types::zones::Zone;
+ 
+ /// CR 611.2a + CR 608.2c: the window a chunk's clause printed at its head, read by
+@@ -646,6 +647,10 @@ pub struct ParseContext {
+     /// `parse_effect_chain_ir` snapshots this into the produced `ClauseIr` and
+     /// resets it to `Chosen` for the next chunk so the marker is per-clause.
+     pub target_selection_mode: TargetSelectionMode,
++    /// CR 115.1d: Bounded target cardinality produced by a target-phrase parser.
++    pub target_phrase_multi_target: Option<MultiTargetSpec>,
++    /// CR 115.3: Constraints produced by a target-phrase parser.
++    pub target_selection_constraints: Vec<TargetSelectionConstraint>,
+     /// CR 601.2c + CR 603.3d: When set, this player (not the controller) announces
+     /// the most recent target phrase's target(s) at stack placement. Set when a
+     /// targeted "of their choice" suffix is stripped from a `ScopedPlayer`-controlled
+diff --git a/crates/phase-parser/src/parser/oracle_ir/effect_chain.rs b/crates/phase-parser/src/parser/oracle_ir/effect_chain.rs
+index 8dcdb13b2..1a137f262 100644
+--- a/crates/phase-parser/src/parser/oracle_ir/effect_chain.rs
++++ b/crates/phase-parser/src/parser/oracle_ir/effect_chain.rs
+@@ -21,6 +21,7 @@ use crate::types::ability::{
+     ReturnResultReadSpec, RoundingMode, SiblingCondition, SubAbilityLink, TargetChoiceTiming,
+     TargetFilter, TargetReadOrigin, TargetSelectionMode, UnlessPayModifier,
+ };
++use crate::types::game_state_kinds::TargetSelectionConstraint;
+ use crate::types::keywords::Keyword;
+ use crate::types::mana::ManaExpiry;
+ use crate::types::zones::Zone;
+@@ -947,6 +948,12 @@ pub(crate) struct ClauseIr {
+     pub(crate) prefix_delayed_condition: Option<DelayedTriggerCondition>,
+     /// CR 115.1d: Multi-target spec.
+     pub(crate) multi_target: Option<MultiTargetSpec>,
++    /// CR 115.1d: Cardinality parsed from the target noun phrase.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub(crate) target_phrase_multi_target: Option<MultiTargetSpec>,
++    /// CR 115.3: Constraints parsed from the target noun phrase.
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub(crate) target_selection_constraints: Vec<TargetSelectionConstraint>,
+     /// CR 107.3i: "where X is <expr>" binding.
+     pub(crate) where_x_expression: Option<String>,
+     /// CR 608.2c + CR 115.1a: the players a controller anaphor inside
+@@ -1090,6 +1097,8 @@ impl ClauseIr {
+             delayed_condition,
+             prefix_delayed_condition,
+             multi_target,
++            target_phrase_multi_target,
++            target_selection_constraints,
+             where_x_expression,
+             where_x_player_antecedents,
+             unless_pay,
+@@ -1124,6 +1133,8 @@ impl ClauseIr {
+         *delayed_condition = None;
+         *prefix_delayed_condition = None;
+         *multi_target = None;
++        *target_phrase_multi_target = None;
++        target_selection_constraints.clear();
+         *where_x_expression = None;
+         // The antecedents only ever qualify `where_x_expression`; with the
+         // expression cleared they have nothing to bind and are reset with it.
+@@ -1304,6 +1315,8 @@ impl ClauseIrBuilder {
+             delayed_condition: None,
+             prefix_delayed_condition: None,
+             multi_target: None,
++            target_phrase_multi_target: None,
++            target_selection_constraints: Vec::new(),
+             where_x_expression: None,
+             where_x_player_antecedents: PlayerAntecedents::default(),
+             unless_pay: None,
+@@ -1434,6 +1447,8 @@ pub(crate) struct ClauseDraft<'a> {
+     delayed_condition: Option<DelayedTriggerCondition>,
+     prefix_delayed_condition: Option<DelayedTriggerCondition>,
+     multi_target: Option<MultiTargetSpec>,
++    target_phrase_multi_target: Option<MultiTargetSpec>,
++    target_selection_constraints: Vec<TargetSelectionConstraint>,
+     where_x_expression: Option<String>,
+     where_x_player_antecedents: PlayerAntecedents,
+     unless_pay: Option<UnlessPayModifier>,
+@@ -1490,6 +1505,17 @@ impl ClauseDraft<'_> {
+         self.multi_target = v;
+         self
+     }
++    pub(crate) fn target_phrase_multi_target(mut self, v: Option<MultiTargetSpec>) -> Self {
++        self.target_phrase_multi_target = v;
++        self
++    }
++    pub(crate) fn target_selection_constraints(
++        mut self,
++        v: Vec<TargetSelectionConstraint>,
++    ) -> Self {
++        self.target_selection_constraints = v;
++        self
++    }
+     pub(crate) fn where_x_expression(mut self, v: Option<String>) -> Self {
+         self.where_x_expression = v;
+         self
+@@ -1787,6 +1813,8 @@ impl ClauseDraft<'_> {
+             delayed_condition: self.delayed_condition,
+             prefix_delayed_condition: self.prefix_delayed_condition,
+             multi_target: self.multi_target,
++            target_phrase_multi_target: self.target_phrase_multi_target,
++            target_selection_constraints: self.target_selection_constraints,
+             where_x_expression: self.where_x_expression,
+             where_x_player_antecedents: self.where_x_player_antecedents,
+             unless_pay: self.unless_pay,
+diff --git a/crates/phase-parser/src/parser/oracle_target.rs b/crates/phase-parser/src/parser/oracle_target.rs
+index 84a97a90b..fbe6c03d3 100644
+--- a/crates/phase-parser/src/parser/oracle_target.rs
++++ b/crates/phase-parser/src/parser/oracle_target.rs
+@@ -1,5 +1,5 @@
+ use nom::branch::alt;
+-use nom::bytes::complete::{tag, take_till, take_till1};
++use nom::bytes::complete::{tag, take_till, take_till1, take_until1};
+ use nom::character::complete::{multispace0, one_of, satisfy, space1};
+ use nom::combinator::{eof, map, map_opt, not, opt, peek, success, value, verify};
+ use nom::multi::many0;
+@@ -9,14 +9,15 @@ use nom::Parser;
+ use crate::types::ability::{
+     AggregateFunction, AttachmentKind, AttachmentReferent, CardTypeSetSource, ChoiceType,
+     CombatHistoryScope, CombatRelation, CombatRelationSubject, Comparator, ControllerRef,
+-    CostCategory, CountScope, CrewRelation, DamageKindFilter, FilterProp, NameStickerSet,
+-    ObjectProperty, ObjectScope, Parity, ParitySource, PlayerFilter, PlayerRelation,
+-    PropertyAggregate, PtStat, PtValueScope, QuantityExpr, QuantityRef, SeatDirection,
+-    SharedQuality, SharedQualityRelation, TargetFilter, TargetSelectionMode, ThisWayCause,
+-    TypeFilter, TypedFilter,
++    CostCategory, CountScope, CrewRelation, DamageKindFilter, FilterProp, MultiTargetSpec,
++    NameStickerSet, ObjectProperty, ObjectScope, Parity, ParitySource, PlayerFilter,
++    PlayerRelation, PropertyAggregate, PtStat, PtValueScope, QuantityExpr, QuantityRef,
++    SeatDirection, SharedQuality, SharedQualityRelation, TargetFilter, TargetSelectionMode,
++    ThisWayCause, TypeFilter, TypedFilter,
+ };
+ use crate::types::card_type::{noncreature_subtype_set, SubtypeSet, Supertype};
+ use crate::types::counter::{CounterMatch, CounterType};
++use crate::types::game_state_kinds::TargetSelectionConstraint;
+ use crate::types::identifiers::TrackedSetId;
+ use crate::types::keywords::KeywordKind;
+ use crate::types::mana::ManaColor;
+@@ -842,6 +843,28 @@ pub fn parse_target_with_syntax<'a>(
+     let text = text.trim_start();
+     let lower = text.to_lowercase();
+ 
++    if let Some(((), suffix_rest)) = nom_on_lower(text, &lower, |input| {
++        let (input, _) = tag::<_, _, OracleError<'_>>("target ").parse(input)?;
++        let (input, _) = take_until1(" of each card type").parse(input)?;
++        let (input, _) = tag(" of each card type").parse(input)?;
++        let (input, _) = not(satisfy(char::is_alphanumeric)).parse(input)?;
++        Ok((input, ()))
++    }) {
++        let target_end = text.len() - suffix_rest.len() - " of each card type".len();
++        let filter_text = text["target ".len()..target_end].trim_end();
++        let (filter, _, _) = parse_target_with_syntax(filter_text, ctx);
++        ctx.target_phrase_multi_target = Some(MultiTargetSpec::fixed(0, 8));
++        if !ctx
++            .target_selection_constraints
++            .contains(&TargetSelectionConstraint::DistinctCardTypes)
++        {
++            ctx.target_selection_constraints
++                .push(TargetSelectionConstraint::DistinctCardTypes);
++        }
++        syntax = TargetSyntax::TargetKeyword;
++        return (filter, suffix_rest, syntax);
++    }
++
+     // CR 115.1 + CR 701.9b: Trailing " chosen at random" suffix on a noun-phrase
+     // target (e.g. Zaffai, Thunder Conductor — "an opponent chosen at random").
+     // This is the noun-phrase analogue of the leading "random target X"
+diff --git a/crates/phase-parser/src/parser/oracle_trigger.rs b/crates/phase-parser/src/parser/oracle_trigger.rs
+index 38e6dfd23..5cdf87e14 100644
+--- a/crates/phase-parser/src/parser/oracle_trigger.rs
++++ b/crates/phase-parser/src/parser/oracle_trigger.rs
+@@ -857,6 +857,7 @@ fn cost_x_sibling_slot_still_unbound(def: &crate::types::ability::AbilityDefinit
+             // one must be handled here or the build breaks — it cannot silently fabricate.
+             TargetSelectionConstraint::DifferentTargetPlayers
+             | TargetSelectionConstraint::DifferentObjectControllers
++            | TargetSelectionConstraint::DistinctCardTypes
+             | TargetSelectionConstraint::SameZoneOwner { .. } => {}
+         }
+     }
+@@ -7901,6 +7902,28 @@ fn parse_cast_from_zone_intervening_if(input: &str) -> OracleResult<'_, TriggerC
+     Ok((rest, scoped_you_cast_from_zone(zone)))
+ }
+ 
++/// CR 603.4 + CR 601.2: unzoned cast check for a permanent's intervening-if.
++fn parse_you_cast_source_intervening_if(input: &str) -> OracleResult<'_, TriggerCondition> {
++    let (rest, _) = tag("if you cast ").parse(input)?;
++    let (rest, _) = alt((
++        tag("this creature"),
++        tag("this card"),
++        tag("this spell"),
++        tag("it"),
++        tag("him"),
++        tag("her"),
++    ))
++    .parse(rest)?;
++    Ok((
++        rest,
++        TriggerCondition::WasCast {
++            zone: None,
++            controller: None,
++            owner: None,
++        },
++    ))
++}
++
+ /// CR 603.4 + CR 601.2: Parse "if you cast it/them [from <zone>] and
+ /// <game-state condition>" as a cast-provenance AND a second conjunct. The
+ /// game-state side is delegated to `parse_inner_condition` and bridged through
+@@ -8273,20 +8296,16 @@ fn extract_if_condition_with_card_name(
+         return IfExtraction::hoisted(strip_condition_clause(text, pos, clause_len), condition);
+     }
+ 
+-    // CR 701.57a: "if you cast it" — zoneless cast check (Discover ETBs).
+-    // Guard: must not be followed by " from" (zone-specific variant).
+-    if let Some(pos) = tp.find("if you cast it") {
+-        let after = &lower[pos + "if you cast it".len()..];
+-        if !after.starts_with(" from") {
+-            return IfExtraction::hoisted(
+-                strip_condition_clause(text, pos, "if you cast it".len()),
+-                TriggerCondition::WasCast {
+-                    zone: None,
+-                    controller: None,
+-                    owner: None,
+-                },
+-            );
+-        }
++    // CR 603.4 + CR 601.2: zoneless cast check. The zone-specific and
++    // conjunction forms above own their longer prefixes before this scan.
++    if let Some((before, condition, rest)) =
++        scan_preceded(&lower, parse_you_cast_source_intervening_if)
++    {
++        let clause_len = lower.len() - before.len() - rest.len();
++        return IfExtraction::hoisted(
++            strip_condition_clause(text, before.len(), clause_len),
++            condition,
++        );
+     }
+ 
+     // CR 603.4 + CR 601.2 + CR 603.2c: disjunctive
+diff --git a/crates/phase-parser/src/parser/oracle_trigger_tests.rs b/crates/phase-parser/src/parser/oracle_trigger_tests.rs
+index 4290b03fd..ae1f1b68d 100644
+--- a/crates/phase-parser/src/parser/oracle_trigger_tests.rs
++++ b/crates/phase-parser/src/parser/oracle_trigger_tests.rs
+@@ -8935,6 +8935,24 @@ fn extract_if_condition_cast_from_hand() {
+     );
+ }
+ 
++#[test]
++fn extract_if_condition_cast_the_source_with_personal_pronoun() {
++    let (cleaned, condition) =
++        extract_if_condition("if you cast him, exile up to one target nonland card of each card type from your graveyard.");
++    assert!(matches!(
++        condition,
++        Some(TriggerCondition::WasCast {
++            zone: None,
++            controller: None,
++            owner: None,
++        })
++    ));
++    assert_eq!(
++        cleaned,
++        "exile up to one target nonland card of each card type from your graveyard"
++    );
++}
++
+ /// CR 601.2 + CR 404.1: "if you cast it from exile" scopes the CASTER axis
+ /// to you but leaves the ORIGIN-ZONE-OWNER unscoped — exile is a shared
+ /// zone ("from exile" has no possessive), unlike hand/graveyard.
+diff --git a/crates/phase-parser/src/parser/swallow_check.rs b/crates/phase-parser/src/parser/swallow_check.rs
+index 0475b8e9c..b14167385 100644
+--- a/crates/phase-parser/src/parser/swallow_check.rs
++++ b/crates/phase-parser/src/parser/swallow_check.rs
+@@ -13114,6 +13114,7 @@ this spell's mana cost.\nDestroy target attacking creature without flying.",
+             },
+             cost: ManaCost::zero(),
+             count: None,
++            selection_constraint: None,
+         };
+         assert!(super::effect_has_internal_optionality(&effect));
+     }
+@@ -16285,6 +16286,7 @@ mod detect_condition_if_replacement_exemption_tests {
+                 },
+                 cost: ManaCost::zero(),
+                 count: None,
++                selection_constraint: None,
+             },
+         ))
+     }
+-- 
+2.56.0
+

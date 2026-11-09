@@ -1,0 +1,49 @@
+From fb406fbc44ae70d03cfb946cc9732608495e8ebd Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Mon, 9 Nov 2026 01:49:59 +0000
+Subject: [PATCH 16/16] Keep Uldaros target parsing within residue budget
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../phase-parser/src/parser/oracle_target.rs  | 24 +++++++++++--------
+ 1 file changed, 14 insertions(+), 10 deletions(-)
+
+diff --git a/crates/phase-parser/src/parser/oracle_target.rs b/crates/phase-parser/src/parser/oracle_target.rs
+index fbe6c03d3..4041b3d98 100644
+--- a/crates/phase-parser/src/parser/oracle_target.rs
++++ b/crates/phase-parser/src/parser/oracle_target.rs
+@@ -852,17 +852,21 @@ pub fn parse_target_with_syntax<'a>(
+     }) {
+         let target_end = text.len() - suffix_rest.len() - " of each card type".len();
+         let filter_text = text["target ".len()..target_end].trim_end();
+-        let (filter, _, _) = parse_target_with_syntax(filter_text, ctx);
+-        ctx.target_phrase_multi_target = Some(MultiTargetSpec::fixed(0, 8));
+-        if !ctx
+-            .target_selection_constraints
+-            .contains(&TargetSelectionConstraint::DistinctCardTypes)
+-        {
+-            ctx.target_selection_constraints
+-                .push(TargetSelectionConstraint::DistinctCardTypes);
++        let mut filter_ctx = ctx.clone();
++        let (filter, filter_rest) = parse_type_phrase_folding_unbound(filter_text, &mut filter_ctx);
++        if filter_rest.is_empty() {
++            *ctx = filter_ctx;
++            ctx.target_phrase_multi_target = Some(MultiTargetSpec::fixed(0, 8));
++            if !ctx
++                .target_selection_constraints
++                .contains(&TargetSelectionConstraint::DistinctCardTypes)
++            {
++                ctx.target_selection_constraints
++                    .push(TargetSelectionConstraint::DistinctCardTypes);
++            }
++            syntax = TargetSyntax::TargetKeyword;
++            return (filter, suffix_rest, syntax);
+         }
+-        syntax = TargetSyntax::TargetKeyword;
+-        return (filter, suffix_rest, syntax);
+     }
+ 
+     // CR 115.1 + CR 701.9b: Trailing " chosen at random" suffix on a noun-phrase
+-- 
+2.56.0
+

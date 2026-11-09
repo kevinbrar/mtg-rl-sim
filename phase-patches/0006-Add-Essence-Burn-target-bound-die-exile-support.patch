@@ -1,7 +1,7 @@
 From 81ddaa94d5ed2efdbcb4d3657c63df496925e011 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Sun, 8 Nov 2026 19:53:19 +0000
-Subject: [PATCH 06/14] Add Essence Burn target-bound die-exile support
+Subject: [PATCH 06/16] Add Essence Burn target-bound die-exile support
 
 Gate B analogues: Touch of the Void and Carbonize (damage-spell die-exile riders), Disintegrate (combined regeneration and die-exile riders), and Torch the Tower (runtime target-bound replacement).
 

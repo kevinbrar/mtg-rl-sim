@@ -1,7 +1,7 @@
 From f54786c9ff4d45108cee5f1aa39f384fc5eb0ca9 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Sun, 8 Nov 2026 19:19:24 +0000
-Subject: [PATCH 04/14] Fix Seasoned Cryomancer filtered discard count
+Subject: [PATCH 04/16] Fix Seasoned Cryomancer filtered discard count
 
 Bind the reflexive target cardinality to matching discarded cards, and preserve the target set announced by the reflexive body.
 

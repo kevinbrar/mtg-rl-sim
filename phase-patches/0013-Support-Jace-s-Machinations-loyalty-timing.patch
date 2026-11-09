@@ -1,7 +1,7 @@
 From 24d8853299066453f8922177e980658aef65ed2a Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Sun, 8 Nov 2026 23:58:59 +0000
-Subject: [PATCH 13/14] Support Jace's Machinations loyalty timing
+Subject: [PATCH 13/16] Support Jace's Machinations loyalty timing
 
 Intercept the subject-predicate route before it emits unbound_subject and lower the duration-bound permission through the existing ActivateAsInstant static mode. Preserve the live Jace/controller filter for this rules-modifying effect under CR 611.2c, and keep Empower Jace as the sub-ability.\n\nGate B: reuse parse_static_line and the existing ActivateAsInstant parser; the live transient permission follows the MayLookAtFaceDown and Chandra cast-permission patterns.\n\nTests: jace_machinations_full_card_permission_and_empower_parse; jace_loyalty_is_not_activatable_on_an_opponents_turn_without_permission; jace_machinations_does_not_grant_opponents_jace_timing; jace_machinations_allows_new_jace_on_opponents_turn_and_preserves_once_per_turn.
 

@@ -1,7 +1,7 @@
 # Local phase-rs fixes
 
 The phase submodule remains pinned at `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
-Card fixes are committed one per card on the local `local-fixes` branch and
+Card fixes are committed on the local `local-fixes` branch and
 exported here with `git format-patch 988bc34..local-fixes`. No upstream PRs or pushes are
 planned.
 
@@ -21,6 +21,8 @@ planned.
 | Kíli the Resourceful | Parked; unapplied diagnosis in `wip/kili-the-resourceful.diff`. Correct support needs a shared activation-cost choice that can substitute {0} for an equip cost once per turn; current numeric reductions and spell alternative costs do not model it. | — | Not fixed; no coverage or semantic-audit claim. | WIP diagnosis only; no implementation review. |
 | Case of the Uneaten Feast | Fixed in phase commit `9ef67fee1269aa26f3e614ebe89620f7d4cae76a`: snapshot GenericEffect recipients at resolution, pin each recipient incarnation, and route object-scoped `GraveyardCastPermission` through the graveyard-casting collector. | `case_of_the_uneaten_feast_grants_only_to_resolution_time_graveyard_creatures` passed: a resolution-time graveyard creature is castable, a later graveyard entrant is not, and the permission expires at cleanup. | `supported: true`, `gap_count: 0`; semantic audit has 0 Case findings. | Pass: self-review only; see §5(a–i) below. |
 | Jace's Machinations | Fixed in phase commit `24d8853299066453f8922177e980658aef65ed2a`: intercept the subject-predicate route and lower the duration-bound loyalty timing permission through the existing `ActivateAsInstant` mode. | `jace_loyalty_is_not_activatable_on_an_opponents_turn_without_permission`, `jace_machinations_does_not_grant_opponents_jace_timing`, and `jace_machinations_allows_new_jace_on_opponents_turn_and_preserves_once_per_turn` passed; the full-card parser regression passed. | `supported: true`, `gap_count: 0`; semantic audit has 0 Jace's Machinations findings. | Pass: self-review only; see §5(a–i) below. |
+| Uldaros Theorix | Fixed in phase commits `9a8a7017b` and `fb406fbc4`: parse the intervening cast condition, carry `DistinctCardTypes` and a 0..=8 target cardinality from the target-phrase parser, and reuse copy/free-cast machinery with a total mana-value limit. | `casts_copies_for_free_and_enforces_the_total_mana_value_budget`, `choosing_no_copies_leaves_the_original_cards_exiled`, and `uldaros_put_onto_the_battlefield_without_being_cast_has_no_effect` passed. Tests cover instant+sorcery+creature, reject two sorceries and a 1+2+4 budget, accept 2+4, verify selected originals are exiled, and observe free resolution/token creation. | Coverage and semantic audit deferred to the final sub-batch B gates. | Pass: self-review only; no independent review was available. |
+| Extrapolate the Impossible | Fixed in phase commit `9a8a7017b`: reuse sideboard/outside-game selection, require exactly two different names, then let an opponent choose which one the controller puts into their hand. | `fewer_than_two_different_names_cannot_reveal_a_partial_pair` and `caster_reveals_two_distinct_names_then_opponent_puts_only_one_into_hand` passed. | Coverage and semantic audit deferred to the final sub-batch B gates. | Pass: self-review only; no independent review was available. |
 
 ### Rottenmouth Viper self-review (AI-CONTRIBUTOR §5 a–i)
 
@@ -150,9 +152,13 @@ This was a self-review only; no independent reviewer was used.
 
 ## Final gates
 
-Results are for `local-fixes` head `55b63c91a446a419f7f725cb95797d4f9cbb39d5`,
-based on pinned upstream `988bc3412f5d4e475c1837fbc88062b14d1f5489`. The
-superproject submodule pointer remains pinned; no upstream push or PR was made.
+The full gate results below are for the sub-batch A `local-fixes` head
+`55b63c91a446a419f7f725cb95797d4f9cbb39d5`, based on pinned upstream
+`988bc3412f5d4e475c1837fbc88062b14d1f5489`. Uldaros and Extrapolate are
+committed at `fb406fbc4`; their focused parser/runtime tests, Gate A, and patch
+reproduction passed. Full-suite, coverage, audit, and smoke gates for these two
+cards remain deferred to the final sub-batch B gates. The superproject
+submodule pointer remains pinned; no upstream push or PR was made.
 
 - Cryomancer's commit message contains literal `\n\n` separators. The Jace
   commit has the same formatting issue. Both were left unchanged rather than
