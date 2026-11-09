@@ -112,7 +112,12 @@ def test_results_require_an_artifact_path_or_link(
 
 @pytest.mark.parametrize(
     "artifact",
-    ("artifacts/engine-tests.log", "[test log](https://example.test/engine.log)"),
+    (
+        "artifacts/engine-tests.log",
+        "tests/test_check_review_packet.py",
+        ".github/workflows/ci.yml",
+        "[test log](https://example.test/engine.log)",
+    ),
 )
 def test_results_accept_artifact_paths_and_links(artifact: str) -> None:
     row = f"Parser behavior | focused test | passed | {artifact} | N"
