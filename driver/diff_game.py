@@ -13,8 +13,9 @@ import subprocess
 import sys
 import time
 import unicodedata
+from collections.abc import Callable
 from collections import Counter
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,6 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MAGE_BENCH = Path("/home/ubuntu/repos/eng/mage-bench")
 PLAYER_NAMES = ("DiffA", "DiffB")
 MAX_TURNS = 30
+TERMINAL_STATUSES = frozenset(
+    ("completed", "completed_terminal_projection_unavailable")
+)
 
 
 def _reexec_with_mage_bench_python() -> None:
@@ -45,6 +49,18 @@ def normalize_name(value: str) -> str:
     decomposed = unicodedata.normalize("NFKD", front)
     plain = "".join(char for char in decomposed if not unicodedata.combining(char))
     return " ".join(plain.casefold().split())
+
+
+def summary_exit_code(summary: dict) -> int:
+    winner = summary.get("winner")
+    if (
+        summary.get("status") not in TERMINAL_STATUSES
+        or summary.get("divergences") != 0
+        or not isinstance(winner, dict)
+        or winner.get("phase") != winner.get("xmage")
+    ):
+        return 1
+    return 0
 
 
 def expand_deck(path: Path) -> list[str]:
@@ -844,6 +860,21 @@ async def _start_mage_bench(
         raise
 
 
+@asynccontextmanager
+async def _suppress_broken_resource_after_terminal(
+    stack: AsyncExitStack,
+    terminal_summary_recorded: Callable[[], bool],
+):
+    from anyio import BrokenResourceError
+
+    try:
+        async with stack:
+            yield
+    except* BrokenResourceError:
+        if not terminal_summary_recorded():
+            raise
+
+
 async def _advance_xmage_to_terminal(
     sessions: list,
     action_tasks: dict[int, asyncio.Task],
@@ -960,6 +991,7 @@ async def run_game(args: argparse.Namespace) -> dict:
     process = None
     log_file = None
     game_completed = False
+    terminal_summary_written = False
     action_tasks: dict[int, asyncio.Task] = {}
     phase = None
     try:
@@ -974,7 +1006,9 @@ async def run_game(args: argparse.Namespace) -> dict:
         urls_by_name = {path.name.split("_", 1)[0]: path.read_text().strip() for path in url_paths}
         urls = [urls_by_name[name] for name in PLAYER_NAMES]
         stack, sessions = await _connect_xmage(urls)
-        async with stack:
+        async with _suppress_broken_resource_after_terminal(
+            stack, lambda: terminal_summary_written
+        ):
             action_tasks = await _keep_opening_hands(sessions)
             phase = PhaseEnv(str(args.data_root.resolve()))
             rng = random.Random(args.seed)
@@ -1155,6 +1189,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                         "run_id": run_id,
                         "seed": args.seed,
                         "status": "turn_cap",
+                        "divergences": 0,
                         "turns": decision["state"]["turn"],
                         "steps": steps,
                         "winner": {"phase": None, "xmage": None},
@@ -1200,6 +1235,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                     "run_id": run_id,
                     "seed": args.seed,
                     "status": "completed_terminal_projection_unavailable",
+                    "divergences": 0,
                     "turns": decision["turns"],
                     "steps": steps,
                     "winner": {
@@ -1211,6 +1247,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                     "terminal_result": terminal_issue,
                 }
                 (run_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+                terminal_summary_written = True
                 return {"type": "summary", "run_dir": run_dir, **summary}
             if final_diff:
                 report = {
@@ -1243,6 +1280,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                 "run_id": run_id,
                 "seed": args.seed,
                 "status": "completed",
+                "divergences": 0,
                 "turns": decision["turns"],
                 "steps": steps,
                 "winner": {"phase": decision["winner"], "xmage": xmage_winner},
@@ -1250,6 +1288,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                 "final_projection": xmage_state,
             }
             (run_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+            terminal_summary_written = True
             return {"type": "summary", "run_dir": run_dir, **summary}
     finally:
         for task in action_tasks.values():
@@ -1289,7 +1328,7 @@ def main() -> int:
     _reexec_with_mage_bench_python()
     result = asyncio.run(run_game(parse_args()))
     print(json.dumps(result, default=str, indent=2))
-    return 0 if result["type"] == "summary" else 1
+    return summary_exit_code(result)
 
 
 if __name__ == "__main__":
