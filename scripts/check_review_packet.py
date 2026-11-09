@@ -74,7 +74,10 @@ def _is_engine_path(path: str) -> bool:
 
 
 def _is_card_data_path(path: str) -> bool:
-    return re.fullmatch(r"(?:[^/]+/)*card-data[^/]*\.json", path) is not None
+    return (
+        re.fullmatch(r"(?:[^/]+/)*card-data[^/]*\.json", path, re.IGNORECASE)
+        is not None
+    )
 
 
 def _is_per_card_xmage_path(path: str) -> bool:

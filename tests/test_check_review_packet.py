@@ -251,6 +251,7 @@ def test_cards_line_accepts_names_or_none_case_insensitively(cards: str) -> None
     (
         "phase-patches/0031-x.patch",
         "phase/client/public/card-data.json",
+        "phase/client/public/Card-Data.json",
     ),
 )
 def test_cards_none_is_rejected_for_patches_and_card_data(path: str) -> None:

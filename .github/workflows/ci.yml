@@ -236,10 +236,10 @@ jobs:
             git fetch origin main
             git diff --name-only origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
           fi
-          if grep -Eq '^(phase-patches/|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
+          if grep -Eiq '^(phase-patches/|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
             echo "mode=fail-closed" >> "$GITHUB_OUTPUT"
             echo "reason=phase-patches-card-data" >> "$GITHUB_OUTPUT"
-          elif ! grep -Eq '^(phase-patches/|phase(/|$)|phase-env/|oracle/|driver/diff_game\.py$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
+          elif ! grep -Eiq '^(phase-patches/|phase(/|$)|phase-env/|oracle/|driver/diff_game\.py$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
             echo "mode=skip" >> "$GITHUB_OUTPUT"
             echo "No XMage-gated paths changed."
           elif [[ "$EVENT_NAME" != "pull_request" ]]; then
