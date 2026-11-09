@@ -57,8 +57,6 @@ jobs:
     timeout-minutes: 150
     env:
       CARGO_INCREMENTAL: 0
-      PHASE_PATCHED_CARD_DATA_URL: ${{ vars.PHASE_PATCHED_CARD_DATA_URL }}
-      PHASE_PATCHED_CARD_DATA_SHA256: ${{ vars.PHASE_PATCHED_CARD_DATA_SHA256 }}
     steps:
       - name: Free runner disk space
         run: |
@@ -75,16 +73,50 @@ jobs:
         with:
           workspaces: phase -> target
           shared-key: test-full-${{ hashFiles('phase-patches/*.patch') }}
-      - name: Install matching patched card data when configured
+      - name: Download and verify matching patched card data
         working-directory: phase
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ -n "$PHASE_PATCHED_CARD_DATA_URL" && -n "$PHASE_PATCHED_CARD_DATA_SHA256" ]]; then
-            curl --fail --location "$PHASE_PATCHED_CARD_DATA_URL" --output "$RUNNER_TEMP/card-data.json"
-            printf '%s  %s\n' "$PHASE_PATCHED_CARD_DATA_SHA256" "$RUNNER_TEMP/card-data.json" | sha256sum --check
-            install -D "$RUNNER_TEMP/card-data.json" client/public/card-data.json
-          else
-            echo "::warning::No matching patched card-data export configured; export-wide census tests may return early. Expected local SHA-256: 54ebe1c98e5d15de9d3e844845cb96a7cd87e3229957222616bec782827a8d6a"
+          mapfile -t card_data < ../ci/card-data.txt
+          if [[ "${#card_data[@]}" -ne 2 ]]; then
+            echo "::error::ci/card-data.txt must contain exactly a release tag and SHA-256"
+            exit 1
           fi
+          tag="${card_data[0]}"
+          expected_sha="${card_data[1]}"
+          if [[ -z "$tag" || ! "$expected_sha" =~ ^[[:xdigit:]]{64}$ ]]; then
+            echo "::error::ci/card-data.txt contains an invalid release tag or SHA-256"
+            exit 1
+          fi
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p 'card-data.json*' -D "$RUNNER_TEMP"
+          shopt -s nullglob
+          assets=("$RUNNER_TEMP"/card-data.json*)
+          if [[ "${#assets[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one card-data.json release asset, found ${#assets[@]}"
+            exit 1
+          fi
+          downloaded="${assets[0]}"
+          case "$downloaded" in
+            *.json.gz)
+              gzip --decompress --stdout "$downloaded" > "$RUNNER_TEMP/card-data.json"
+              data_file="$RUNNER_TEMP/card-data.json"
+              ;;
+            *.json)
+              data_file="$downloaded"
+              ;;
+            *)
+              echo "::error::Unsupported card-data release asset: $downloaded"
+              exit 1
+              ;;
+          esac
+          actual_sha="$(sha256sum "$data_file" | cut -d' ' -f1)"
+          if [[ "$actual_sha" != "$expected_sha" ]]; then
+            echo "::error::Patched card-data SHA-256 mismatch: expected $expected_sha, got $actual_sha"
+            exit 1
+          fi
+          install -D "$data_file" client/public/card-data.json
+          echo "Installed patched card data with SHA-256 $actual_sha"
       - name: Run the complete phase-engine suite
         working-directory: phase
         run: |
