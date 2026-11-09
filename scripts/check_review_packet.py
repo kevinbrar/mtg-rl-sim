@@ -25,6 +25,10 @@ ENGINE_PATHS = (
     "driver/diff_game.py",
 )
 REQUIRED_EVIDENCE_COLUMNS = ("claim", "check", "result", "artifact", "independent")
+CARDS_NONE_PATCH_OR_DATA_ERROR = (
+    "phase-patches/card-data changes need per-card XMage diffs (harness v1); "
+    "cards: none is not accepted for them"
+)
 
 
 def _section_lines(body: str, heading: str) -> list[str] | None:
@@ -66,11 +70,15 @@ def _header_name(cell: str) -> str:
 
 
 def _is_engine_path(path: str) -> bool:
-    return (
-        path == "phase"
-        or path.startswith(ENGINE_PATHS)
-        or bool(re.search(r"(?:^|/)card-data(?:-[^/]*)?\.json$", path, re.IGNORECASE))
-    )
+    return path == "phase" or path.startswith(ENGINE_PATHS) or _is_card_data_path(path)
+
+
+def _is_card_data_path(path: str) -> bool:
+    return re.fullmatch(r"(?:[^/]+/)*card-data[^/]*\.json", path) is not None
+
+
+def _is_per_card_xmage_path(path: str) -> bool:
+    return path.startswith("phase-patches/") or _is_card_data_path(path)
 
 
 def _result_has_evidence(result: str) -> bool:
@@ -192,6 +200,10 @@ def validate_review_packet(body: str, changed_files: Sequence[str]) -> list[str]
                 errors.append(
                     "cards: must be `none` or a comma-separated list of card names"
                 )
+            if cards.casefold() == "none" and any(
+                _is_per_card_xmage_path(path) for path in changed_files
+            ):
+                errors.append(CARDS_NONE_PATCH_OR_DATA_ERROR)
 
     return errors
 

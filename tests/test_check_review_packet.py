@@ -166,13 +166,11 @@ def test_nonpositive_result_with_artifact_is_valid() -> None:
 @pytest.mark.parametrize(
     "path",
     (
-        "phase-patches/0001-example.patch",
         "phase",
         "phase/crates/engine/src/lib.rs",
         "phase-env/src/main.rs",
         "driver/diff_game.py",
         "oracle/README.md",
-        "card-data.json",
     ),
 )
 def test_engine_paths_require_cards_and_independent_evidence(path: str) -> None:
@@ -245,7 +243,42 @@ def test_cards_line_accepts_names_or_none_case_insensitively(cards: str) -> None
         cards=cards,
         evidence_rows=(DEFAULT_ROW.replace(" | N", " | Y, mutants"),),
     )
-    assert validate_review_packet(body, ["phase-patches/0001-example.patch"]) == []
+    assert validate_review_packet(body, ["phase-env/src/main.rs"]) == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "phase-patches/0031-x.patch",
+        "phase/client/public/card-data.json",
+    ),
+)
+def test_cards_none_is_rejected_for_patches_and_card_data(path: str) -> None:
+    body = packet(
+        cards="cards: none",
+        evidence_rows=(DEFAULT_ROW.replace(" | N", " | Y, mutants"),),
+    )
+    errors = validate_review_packet(body, [path])
+    assert (
+        "phase-patches/card-data changes need per-card XMage diffs (harness v1); "
+        "cards: none is not accepted for them"
+    ) in errors
+
+
+def test_cards_none_is_allowed_for_phase_env_changes() -> None:
+    body = packet(
+        cards="cards: none",
+        evidence_rows=(DEFAULT_ROW.replace(" | N", " | Y, mutants"),),
+    )
+    assert validate_review_packet(body, ["phase-env/src/main.rs"]) == []
+
+
+def test_card_names_are_allowed_for_phase_patch_changes() -> None:
+    body = packet(
+        cards="cards: Lost in the Maze",
+        evidence_rows=(DEFAULT_ROW.replace(" | N", " | Y, mutants"),),
+    )
+    assert validate_review_packet(body, ["phase-patches/0031-x.patch"]) == []
 
 
 @pytest.mark.parametrize(

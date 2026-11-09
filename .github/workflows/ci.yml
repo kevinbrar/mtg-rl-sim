@@ -236,7 +236,10 @@ jobs:
             git fetch origin main
             git diff --name-only origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
           fi
-          if ! grep -Eq '^(phase-patches/|phase(/|$)|phase-env/|oracle/|driver/diff_game\.py$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
+          if grep -Eq '^(phase-patches/|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
+            echo "mode=fail-closed" >> "$GITHUB_OUTPUT"
+            echo "reason=phase-patches-card-data" >> "$GITHUB_OUTPUT"
+          elif ! grep -Eq '^(phase-patches/|phase(/|$)|phase-env/|oracle/|driver/diff_game\.py$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
             echo "mode=skip" >> "$GITHUB_OUTPUT"
             echo "No XMage-gated paths changed."
           elif [[ "$EVENT_NAME" != "pull_request" ]]; then
@@ -260,10 +263,16 @@ jobs:
               echo "mode=smoke" >> "$GITHUB_OUTPUT"
             else
               echo "mode=fail-closed" >> "$GITHUB_OUTPUT"
+              echo "reason=cards-listed-or-missing" >> "$GITHUB_OUTPUT"
             fi
           fi
+      - name: Fail closed for phase-patches/card-data changes
+        if: steps.scope.outputs.mode == 'fail-closed' && steps.scope.outputs.reason == 'phase-patches-card-data'
+        run: |
+          echo "::error::phase-patches/card-data changes need per-card XMage diffs (harness v1); cards: none is not accepted for them"
+          exit 1
       - name: Fail closed for per-card XMage changes until harness v1
-        if: steps.scope.outputs.mode == 'fail-closed'
+        if: steps.scope.outputs.mode == 'fail-closed' && steps.scope.outputs.reason == 'cards-listed-or-missing'
         run: |
           echo "::error::xmage-diff not implemented yet; see docs/harness-v1-plan.md"
           exit 1
