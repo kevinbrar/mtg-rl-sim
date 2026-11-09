@@ -95,6 +95,7 @@ def test_evidence_table_requires_each_header(header: str) -> None:
         "success: 29417",
         "needs follow-up",
         "skipped 2, passed 38",
+        "skipped: 2, passed 38",
     ),
 )
 @pytest.mark.parametrize("artifact", ("", "ran focused test"))

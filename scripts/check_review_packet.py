@@ -77,14 +77,13 @@ def _result_has_evidence(result: str) -> bool:
     value = result.strip()
     if not value:
         return False
-    return (
-        re.fullmatch(
-            r"(?:not[\s_-]*run|skipped|skip|n\s*/\s*a|not applicable)(?:\s*[:(\-—–].*)?",
-            value,
-            re.IGNORECASE,
-        )
-        is None
+    not_run = re.fullmatch(
+        r"(?:not[\s_-]*run|skipped|skip|n\s*/\s*a|not applicable)"
+        r"(?:\s*[:(\-—–](?P<reason>.*))?",
+        value,
+        re.IGNORECASE,
     )
+    return not_run is None or bool(re.search(r"\d", not_run.group("reason") or ""))
 
 
 def _has_artifact_reference(artifact: str) -> bool:
