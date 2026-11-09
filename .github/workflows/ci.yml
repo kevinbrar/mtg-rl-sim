@@ -222,8 +222,8 @@ jobs:
           git fetch origin "$BASE_REF"
           base_commit="$(git rev-parse "origin/$BASE_REF")"
           head_commit="$GITHUB_SHA"
-          base_phase="$(git -C phase rev-parse "$base_commit:phase")"
-          head_phase="$(git -C phase rev-parse "$head_commit:phase")"
+          base_phase="$(git rev-parse "$base_commit:phase")"
+          head_phase="$(git rev-parse "$head_commit:phase")"
           base_tree="$RUNNER_TEMP/phase-base"
           head_tree="$RUNNER_TEMP/phase-head"
           git -C phase fetch --no-tags origin "$base_phase" || true
