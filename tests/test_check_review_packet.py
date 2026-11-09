@@ -94,6 +94,7 @@ def test_evidence_table_requires_each_header(header: str) -> None:
         "Passed with warnings",
         "success: 29417",
         "needs follow-up",
+        "skipped 2, passed 38",
     ),
 )
 @pytest.mark.parametrize("artifact", ("", "ran focused test"))
@@ -118,7 +119,18 @@ def test_results_accept_artifact_paths_and_links(artifact: str) -> None:
     assert validate_review_packet(packet(evidence_rows=(row,)), ["README.md"]) == []
 
 
-@pytest.mark.parametrize("result", ("not run", "Skipped", "n/a", "not applicable"))
+@pytest.mark.parametrize(
+    "result",
+    (
+        "not run",
+        "not run: needs runner",
+        "Skipped",
+        "skipped (no XMage)",
+        "n/a",
+        "N/A",
+        "not applicable",
+    ),
+)
 def test_not_run_results_do_not_require_an_artifact(result: str) -> None:
     row = f"Parser behavior | focused test | {result} |  | N"
     assert validate_review_packet(packet(evidence_rows=(row,)), ["README.md"]) == []
@@ -176,7 +188,9 @@ def test_independent_row_requires_result_and_artifact(
     artifact: str,
 ) -> None:
     row = f"Parser behavior | focused test | {result} | {artifact} | Y, reviewer"
-    errors = validate_review_packet(packet(evidence_rows=(row,)), ["phase-env/src/main.rs"])
+    errors = validate_review_packet(
+        packet(evidence_rows=(row,)), ["phase-env/src/main.rs"]
+    )
     assert (
         "Engine-path changes require an Evidence row whose Independent value starts with Y"
         in errors
