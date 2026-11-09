@@ -147,6 +147,39 @@ def test_engine_path_without_independent_row_fails() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("result", "artifact"),
+    (
+        ("not run", "artifacts/test-results.log"),
+        ("SKIPPED", "artifacts/test-results.log"),
+        ("n/a", "artifacts/test-results.log"),
+        ("passed", ""),
+        ("", "artifacts/test-results.log"),
+    ),
+)
+def test_independent_row_requires_result_and_artifact(
+    result: str,
+    artifact: str,
+) -> None:
+    row = f"Parser behavior | focused test | {result} | {artifact} | Y, reviewer"
+    errors = validate_review_packet(packet(evidence_rows=(row,)), ["phase-env/src/main.rs"])
+    assert (
+        "Engine-path changes require an Evidence row whose Independent value starts with Y"
+        in errors
+    )
+
+
+def test_independent_row_with_result_and_artifact_counts() -> None:
+    row = (
+        "Parser behavior | fresh-context review | behavior checked "
+        "| artifacts/review.md | Y, reviewer"
+    )
+    assert (
+        validate_review_packet(packet(evidence_rows=(row,)), ["phase-env/src/main.rs"])
+        == []
+    )
+
+
 def test_engine_path_without_cards_line_fails() -> None:
     body = packet(cards="")
     errors = validate_review_packet(body, ["phase-patches/0001-example.patch"])

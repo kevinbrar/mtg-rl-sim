@@ -83,6 +83,17 @@ def _result_is_verified(result: str) -> bool:
     return positive is not None and negative is None
 
 
+def _result_has_evidence(result: str) -> bool:
+    value = result.strip()
+    if not value:
+        return False
+    return re.match(
+        r"^(?:not[\s_-]*run|skipped|skip|n\s*/\s*a|not applicable)(?:\s|$)",
+        value,
+        re.IGNORECASE,
+    ) is None
+
+
 def _has_artifact_reference(artifact: str) -> bool:
     return bool(
         re.search(r"https?://\S+|\[[^\]]+\]\([^)]+\)", artifact, re.IGNORECASE)
@@ -152,7 +163,11 @@ def validate_review_packet(body: str, changed_files: Sequence[str]) -> list[str]
                     f"Evidence table row {row_number} has a verified/pass result but "
                     "Artifact must contain a link or path"
                 )
-            if row[indexes["independent"]].strip().casefold().startswith("y"):
+            if (
+                row[indexes["independent"]].strip().casefold().startswith("y")
+                and _result_has_evidence(result)
+                and _has_artifact_reference(artifact)
+            ):
                 independent_yes = True
 
         needs_independent = any(_is_engine_path(path) for path in changed_files)
