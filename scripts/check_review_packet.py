@@ -73,16 +73,6 @@ def _is_engine_path(path: str) -> bool:
     )
 
 
-def _result_is_verified(result: str) -> bool:
-    positive = re.search(r"\b(?:verified|pass(?:ed)?)\b", result, re.IGNORECASE)
-    negative = re.search(
-        r"\b(?:not|never|un)\s+(?:verified|pass(?:ed)?)\b",
-        result,
-        re.IGNORECASE,
-    )
-    return positive is not None and negative is None
-
-
 def _result_has_evidence(result: str) -> bool:
     value = result.strip()
     if not value:
@@ -158,9 +148,9 @@ def validate_review_packet(body: str, changed_files: Sequence[str]) -> list[str]
                 continue
             result = row[indexes["result"]].strip()
             artifact = row[indexes["artifact"]].strip()
-            if _result_is_verified(result) and not _has_artifact_reference(artifact):
+            if _result_has_evidence(result) and not _has_artifact_reference(artifact):
                 errors.append(
-                    f"Evidence table row {row_number} has a verified/pass result but "
+                    f"Evidence table row {row_number} has a result but "
                     "Artifact must contain a link or path"
                 )
             if (

@@ -86,17 +86,25 @@ def test_evidence_table_requires_each_header(header: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "result", ("verified", "pass", "passed", "Passed with warnings")
+    "result",
+    (
+        "verified",
+        "pass",
+        "passed",
+        "Passed with warnings",
+        "success: 29417",
+        "needs follow-up",
+    ),
 )
 @pytest.mark.parametrize("artifact", ("", "ran focused test"))
-def test_verified_results_require_an_artifact_path_or_link(
+def test_results_require_an_artifact_path_or_link(
     result: str,
     artifact: str,
 ) -> None:
     row = f"Parser behavior | focused test | {result} | {artifact} | N"
     errors = validate_review_packet(packet(evidence_rows=(row,)), ["README.md"])
     assert (
-        "Evidence table row 1 has a verified/pass result but Artifact must contain a link or path"
+        "Evidence table row 1 has a result but Artifact must contain a link or path"
         in errors
     )
 
@@ -105,13 +113,19 @@ def test_verified_results_require_an_artifact_path_or_link(
     "artifact",
     ("artifacts/engine-tests.log", "[test log](https://example.test/engine.log)"),
 )
-def test_verified_results_accept_artifact_paths_and_links(artifact: str) -> None:
+def test_results_accept_artifact_paths_and_links(artifact: str) -> None:
     row = f"Parser behavior | focused test | passed | {artifact} | N"
     assert validate_review_packet(packet(evidence_rows=(row,)), ["README.md"]) == []
 
 
-def test_unverified_result_does_not_require_an_artifact() -> None:
-    row = "Parser behavior | focused test | not run |  | N"
+@pytest.mark.parametrize("result", ("not run", "Skipped", "n/a", "not applicable"))
+def test_not_run_results_do_not_require_an_artifact(result: str) -> None:
+    row = f"Parser behavior | focused test | {result} |  | N"
+    assert validate_review_packet(packet(evidence_rows=(row,)), ["README.md"]) == []
+
+
+def test_nonpositive_result_with_artifact_is_valid() -> None:
+    row = "Parser behavior | focused test | needs follow-up | artifacts/review.md | N"
     assert validate_review_packet(packet(evidence_rows=(row,)), ["README.md"]) == []
 
 
