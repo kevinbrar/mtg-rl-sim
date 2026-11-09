@@ -1,7 +1,7 @@
 From 37f86de726ffefa5f5031747cc96728e6a75d193 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Sun, 8 Nov 2026 23:23:36 +0000
-Subject: [PATCH 12/16] Add interactive Behold as-enters replacements
+Subject: [PATCH 12/21] Add interactive Behold as-enters replacements
 
 Support single-object Behold costs on as-enters replacements, including the choice/resume path and automatic decline when unpayable. Anchors: reveal-land and shock-land replacement parsers, plus the Mox Diamond and Mimeoplasm MayCost payment/resume paths. CR 614.12a, 118.3, 701.4a. Tests: theorists_sanctum* and mox_diamond_unpayable_cost_declines_without_prompt.
 

@@ -1,0 +1,29 @@
+From 4b1a7bedbd2698f69bb474cf99c80f0a0d27afb0 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Mon, 9 Nov 2026 03:11:29 +0000
+Subject: [PATCH 21/21] Classify equip alternative costs in coverage
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/coverage.rs | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/crates/engine/src/game/coverage.rs b/crates/engine/src/game/coverage.rs
+index b5d382818..96ef1adc2 100644
+--- a/crates/engine/src/game/coverage.rs
++++ b/crates/engine/src/game/coverage.rs
+@@ -81,6 +81,11 @@ pub(crate) fn is_data_carrying_static(mode: &StaticMode) -> bool {
+             // permanents. Not registry-keyed (mirrors the marker cluster).
+             | StaticMode::CantBecomeSuspected
+             | StaticMode::ReduceAbilityCost { .. }
++            | StaticMode::AlternativeKeywordCost {
++                keyword: crate::types::keywords::KeywordKind::Cycling
++                    | crate::types::keywords::KeywordKind::Equip,
++                ..
++            }
+             // CR 116.2 + CR 118.7a: ReduceActionCost carries `action`
+             // (SpecialAction), `mode`, and `amount`. Runtime enforcement is the
+             // special-action cost-reduction resolver
+-- 
+2.56.0
+

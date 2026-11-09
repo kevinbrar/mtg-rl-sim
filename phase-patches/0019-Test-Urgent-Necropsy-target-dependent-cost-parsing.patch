@@ -1,0 +1,57 @@
+From 7b75abb6e85ab2c2146e1ff3d52eb2254c1f1252 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Mon, 9 Nov 2026 02:40:27 +0000
+Subject: [PATCH 19/21] Test Urgent Necropsy target-dependent cost parsing
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../phase-parser/src/parser/oracle_tests.rs   | 33 +++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/crates/phase-parser/src/parser/oracle_tests.rs b/crates/phase-parser/src/parser/oracle_tests.rs
+index 3a6b1bf10..d4fd0a2cc 100644
+--- a/crates/phase-parser/src/parser/oracle_tests.rs
++++ b/crates/phase-parser/src/parser/oracle_tests.rs
+@@ -9795,6 +9795,39 @@ fn kili_alternative_equip_cost_is_conditional_and_once_per_turn() {
+     );
+ }
+ 
++#[test]
++fn urgent_necropsy_collect_evidence_uses_its_target_mana_values() {
++    let r = parse(
++        "As an additional cost to cast this spell, collect evidence X, where X is the total mana value of the permanents this spell targets.\nDestroy up to one target artifact, up to one target creature, up to one target enchantment, and up to one target planeswalker.",
++        "Urgent Necropsy",
++        &[],
++        &["Instant"],
++        &[],
++    );
++    assert!(
++        !parsed_has_unimplemented(&r),
++        "Urgent Necropsy must have no unimplemented effects: {r:#?}"
++    );
++    let Some(AdditionalCost::Required(AbilityCost::CollectEvidence {
++        amount:
++            crate::types::ability::CollectEvidenceAmount::Quantity(QuantityExpr::Ref {
++                qty: QuantityRef::PropertyAggregate(aggregate),
++            }),
++    })) = r.additional_cost.as_ref()
++    else {
++        panic!(
++            "expected target-dependent Collect Evidence additional cost: {:?}",
++            r.additional_cost
++        );
++    };
++    assert_eq!(aggregate.function(), AggregateFunction::Sum);
++    assert_eq!(aggregate.property(), ObjectProperty::ManaValue);
++    assert!(matches!(
++        aggregate.source(),
++        crate::types::ability::CardTypeSetSource::TargetedObjects { slot: None }
++    ));
++}
++
+ // CR 118.9 + CR 701.20a + CR 601.3: Land Grant — "If you have no land cards in
+ // hand, you may reveal your hand rather than pay this spell's mana cost."
+ // routes to a conditional alternative-cost casting option whose cost is an
+-- 
+2.56.0
+

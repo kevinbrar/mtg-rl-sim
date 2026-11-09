@@ -1,7 +1,7 @@
 From 9a8a7017b1ed3062bedeffcbac4143db75e18886 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Mon, 9 Nov 2026 01:46:23 +0000
-Subject: [PATCH 15/16] Implement Uldaros and Extrapolate card abilities
+Subject: [PATCH 15/21] Implement Uldaros and Extrapolate card abilities
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---

@@ -15,14 +15,14 @@ planned.
 | Seasoned Cryomancer | Fixed in phase commit `f54786c9ff4d45108cee5f1aa39f384fc5eb0ca9`: filtered discard reflexive target counts use the matching discarded-card set, and the reflexive body preserves its own announced target set. | `seasoned_cryomancer_targets_up_to_the_number_of_nonland_cards_discarded` passed through `GameRunner`; two nonland discards offer two target slots, one nonland plus one land offers one, and land-only discards create no target prompt. | `supported: true`, `gap_count: 0`; semantic audit has 0 Seasoned Cryomancer findings. Final aggregate: 32,321/36,280 supported. | Pass: self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
 | Essence Burn | Fixed in phase commit `81ddaa94d5ed2efdbcb4d3657c63df496925e011`: die-exile rider parsing accepts the generic “that permanent” referent, and the target parser scopes a color disjunction over each branch of a type disjunction. | `essence_burn_exiles_lethally_damaged_creature_and_planeswalker` and `essence_burn_does_not_target_a_black_noncreature_artifact` passed through `GameRunner`; the latter also rejects a colorless creature and includes a legal-target positive control. Parser regression `essence_burn_parses_its_target_permanent_die_exile_rider` and target-shape regression `color_disjunction_distributes_over_type_disjunction` passed. `color_or_type_union`, `colorless_adjective_does_not_distribute_across_or`, the Carbonize/Disintegrate die-exile parser tests, and Torch the Tower's lethal-damage runtime test also passed. | `supported: true`, `gap_count: 0`; semantic audit has 0 Essence Burn findings. Final aggregate: 32,321/36,280 supported. | Pass: self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
 | Anzrag's Rampage | Fixed in phase commit `a7db66350015a7d77f11b88d5064a93aec3a08d7`: binds typed battlefield-to-graveyard counts through `ZoneChangeCountThisTurn`; the same wording on Structural Assault is covered. | `anzrags_rampage_exiles_one_card_per_destroyed_artifact` passed through `GameRunner::cast` using the printed Oracle text; two opposing artifacts go to graveyards, exactly two library cards are exiled, and the third remains. | `supported: true`, `gap_count: 0`; semantic audit has 0 Anzrag's Rampage findings. Final aggregate: 32,321/36,280 supported. | Pass with corpus note: the shared typed-quantity pattern has two known printed consumers, Anzrag's Rampage and Structural Assault. Self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
-| Urgent Necropsy | Parked; unapplied diagnosis in `wip/urgent-necropsy.diff`. `CollectEvidence.amount` is fixed-width and target-dependent X must flow through shared casting-cost resolution; a correct fix must defer payability until targets exist and resolve the amount before evidence payment. | — | Not fixed; no coverage or semantic-audit claim. | WIP diagnosis only; no implementation review. |
+| Urgent Necropsy | Fixed in phase commits `32412a72a`, `7b75abb6e`, and `a4f5cd961`: Collect Evidence resolves target-set mana value after target selection, and payability uses the same computed requirement. Resolution-time target aggregates now recover the full resolving ability chain. | `urgent_necropsy_requires_the_targets_total_mana_value`, `urgent_necropsy_cannot_be_cast_when_graveyard_cannot_cover_targets`, and `urgent_necropsy_requirement_changes_with_its_target_set` passed; Command the Dreadhorde's three target-set regression tests also passed. | `supported: true`, `gap_count: 0`; semantic audit has 0 Urgent Necropsy findings. | Pass: self-review only; no independent reviewer was available. |
 | Vren, the Relentless | Fixed in phase commit `7cd439def8d3c7159c0824d43023d59d45f12234`: parses typed objects exiled from the battlefield under a controller's control this turn into `ZoneChangeCountThisTurn`, filtered by last-known controller. | `vren_counts_creatures_exiled_under_opponents_control_this_turn` passed through `GameRunner`; Vren's replacement exile and a direct exile of opponent-controlled creatures count, while a P1-owned creature controlled by P0 does not. | `supported: true`, `gap_count: 0`; semantic audit has 0 Vren findings. Final aggregate: 32,321/36,280 supported. | Pass: self-review only; see Vren self-review below. |
 | Theorist's Sanctum | Fixed in phase commit `37f86de726ffefa5f5031747cc96728e6a75d193`: as-enters `MayCost` replacements now support interactive Behold payment/resume and automatically decline when the cost is unpayable. | `theorists_sanctum_beholding_a_jace_enters_untapped`, `theorists_sanctum_interactive_behold_resumes_entry_untapped`, `theorists_sanctum_declining_behold_enters_tapped`, and `theorists_sanctum_without_a_jace_enters_tapped_without_prompt` passed. | `supported: true`, `gap_count: 0`; semantic audit has 0 Theorist's Sanctum findings. | Pass: self-review only; see §5(a–i) below. |
-| Kíli the Resourceful | Parked; unapplied diagnosis in `wip/kili-the-resourceful.diff`. Correct support needs a shared activation-cost choice that can substitute {0} for an equip cost once per turn; current numeric reductions and spell alternative costs do not model it. | — | Not fixed; no coverage or semantic-audit claim. | WIP diagnosis only; no implementation review. |
+| Kíli the Resourceful | Fixed in phase commits `52c928d34` and `4b1a7bedb`: shared activated-ability cost selection offers the static-granted `{0}` Equip alternative once per turn, without card-name dispatch; Equip alternative costs are included in coverage classification. | `kili_alternative_equip_cost_is_story_gated_and_first_per_turn` and `kili_uses_the_normal_equip_cost_without_an_enduring_story` passed; the first activation uses `{0}`, the second pays full cost, and `{0}` returns next turn. | `supported: true`, `gap_count: 0`; semantic audit has 0 Kíli findings. | Pass: self-review only; no independent reviewer was available. |
 | Case of the Uneaten Feast | Fixed in phase commit `9ef67fee1269aa26f3e614ebe89620f7d4cae76a`: snapshot GenericEffect recipients at resolution, pin each recipient incarnation, and route object-scoped `GraveyardCastPermission` through the graveyard-casting collector. | `case_of_the_uneaten_feast_grants_only_to_resolution_time_graveyard_creatures` passed: a resolution-time graveyard creature is castable, a later graveyard entrant is not, and the permission expires at cleanup. | `supported: true`, `gap_count: 0`; semantic audit has 0 Case findings. | Pass: self-review only; see §5(a–i) below. |
 | Jace's Machinations | Fixed in phase commit `24d8853299066453f8922177e980658aef65ed2a`: intercept the subject-predicate route and lower the duration-bound loyalty timing permission through the existing `ActivateAsInstant` mode. | `jace_loyalty_is_not_activatable_on_an_opponents_turn_without_permission`, `jace_machinations_does_not_grant_opponents_jace_timing`, and `jace_machinations_allows_new_jace_on_opponents_turn_and_preserves_once_per_turn` passed; the full-card parser regression passed. | `supported: true`, `gap_count: 0`; semantic audit has 0 Jace's Machinations findings. | Pass: self-review only; see §5(a–i) below. |
-| Uldaros Theorix | Fixed in phase commits `9a8a7017b` and `fb406fbc4`: parse the intervening cast condition, carry `DistinctCardTypes` and a 0..=8 target cardinality from the target-phrase parser, and reuse copy/free-cast machinery with a total mana-value limit. | `casts_copies_for_free_and_enforces_the_total_mana_value_budget`, `choosing_no_copies_leaves_the_original_cards_exiled`, and `uldaros_put_onto_the_battlefield_without_being_cast_has_no_effect` passed. Tests cover instant+sorcery+creature, reject two sorceries and a 1+2+4 budget, accept 2+4, verify selected originals are exiled, and observe free resolution/token creation. | Coverage and semantic audit deferred to the final sub-batch B gates. | Pass: self-review only; no independent review was available. |
-| Extrapolate the Impossible | Fixed in phase commit `9a8a7017b`: reuse sideboard/outside-game selection, require exactly two different names, then let an opponent choose which one the controller puts into their hand. | `fewer_than_two_different_names_cannot_reveal_a_partial_pair` and `caster_reveals_two_distinct_names_then_opponent_puts_only_one_into_hand` passed. | Coverage and semantic audit deferred to the final sub-batch B gates. | Pass: self-review only; no independent review was available. |
+| Uldaros Theorix | Fixed in phase commits `9a8a7017b` and `fb406fbc4`: parse the intervening cast condition, carry `DistinctCardTypes` and a 0..=8 target cardinality from the target-phrase parser, and reuse copy/free-cast machinery with a total mana-value limit. | `casts_copies_for_free_and_enforces_the_total_mana_value_budget`, `choosing_no_copies_leaves_the_original_cards_exiled`, and `uldaros_put_onto_the_battlefield_without_being_cast_has_no_effect` passed. Tests cover instant+sorcery+creature, reject two sorceries and a 1+2+4 budget, accept 2+4, verify selected originals are exiled, and observe free resolution/token creation. | `supported: true`, `gap_count: 0`; semantic audit has 0 Uldaros findings. | Pass: self-review only; no independent review was available. |
+| Extrapolate the Impossible | Runtime implementation in phase commit `9a8a7017b` reuses sideboard/outside-game selection, requires exactly two different names, then lets an opponent choose which one the controller puts into their hand. | `fewer_than_two_different_names_cannot_reveal_a_partial_pair` and `caster_reveals_two_distinct_names_then_opponent_puts_only_one_into_hand` passed, including the optional reveal and resulting zones. | **Coverage remains unsupported:** one `Swallow:Optional_YouMay` gap despite the runtime optional-choice test; semantic audit excludes unsupported cards, so no semantic-audit result is claimed. | Pass: self-review only; no independent reviewer was available. |
 
 ### Rottenmouth Viper self-review (AI-CONTRIBUTOR §5 a–i)
 
@@ -152,7 +152,7 @@ This was a self-review only; no independent reviewer was used.
 
 ## Final gates
 
-The full gate results below are for the sub-batch A `local-fixes` head
+The gate results below first record sub-batch A at its then-current `local-fixes` head
 `55b63c91a446a419f7f725cb95797d4f9cbb39d5`, based on pinned upstream
 `988bc3412f5d4e475c1837fbc88062b14d1f5489`. Uldaros and Extrapolate are
 committed at `fb406fbc4`; their focused parser/runtime tests, Gate A, and patch
@@ -224,3 +224,45 @@ submodule pointer remains pinned; no upstream push or PR was made.
 
 The engine implementation reviews recorded here were self-reviews only; no
 independent review was performed.
+
+## Sub-batch B final gates
+
+The final `local-fixes` head is `4b1a7bedbd2698f69bb474cf99c80f0a0d27afb0`,
+based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`. The phase submodule remains
+pinned in the superproject; only the local patch series is exported. No upstream
+PR or push was made.
+
+- Gate A passed against the pinned base: scanned 17 parser files; Gate G/H
+  passed with 121 residue obligations under the 123 ceiling.
+- `cargo fmt --all` and the full `cargo test -p phase-engine` passed. The run
+  reported 29,404 passed, 0 failed, and 18 ignored tests across unit,
+  integration, and doc-test targets. Kíli's two runtime tests and Urgent
+  Necropsy's three runtime tests passed.
+- Regenerated card data is
+  `/home/ubuntu/repos/eng/pdata/patched/card-data.json`, SHA-256
+  `77eccbfd664ee9ec42f7fd742d8755e3f24adcefda83a3400c61c323ed640151`.
+  Coverage is 32,326/36,280 (89.1%), up from 32,303/36,280 in the baseline;
+  the supported-to-unsupported comparison found zero flips.
+- Coverage and semantic audit: Uldaros, Kíli, and Urgent Necropsy are
+  `supported: true`, `gap_count: 0`, with zero semantic findings. Extrapolate
+  remains unsupported with one `Swallow:Optional_YouMay` gap; although its
+  runtime test reaches the optional reveal, it is not included in the semantic
+  audit. The audit covered 32,839 supported cards and found 191 global
+  findings.
+- Parsed-ability diff is saved in
+  `/home/ubuntu/repos/eng/pdata/patched/parsed-ability-diff.json`. The
+  non-target changes relevant to the new seams were expected: Bruenor
+  Battlehammer and Forge Anew now parse Equip alternatives; Gavi, Nest Warden
+  and New Perspectives receive Cycling alternative-cost coverage; Conspiracy
+  Unraveler's fixed Collect Evidence amount is represented as `Fixed(10)`.
+  No non-target changes were found for cast-copy, “of each card type,” or
+  outside-game/Wish/Learn classes.
+- Card-data generation reported 553 parser warnings in three categories. The
+  generated `known-tokens.toml` and `mtgjson-vintage` changes were reverted.
+- Re-exported 21 phase patches. The apply-script check reproduced tree
+  `c5e81a62fa669acfa138001112f61edaa0639442`, matching `local-fixes`.
+- `cargo build --release -p phase-env` passed (workspace resolver and unused
+  `Out` warnings). The smoke game included all 14 fixed cards in both decks,
+  plus `Opt` and `Shock` in each sideboard; it reached `game_over` after 75
+  turns and 1,863 decisions with no unresolved cards. The focused Extrapolate
+  runtime tests verify the outside-game selection and opponent choice.

@@ -1,0 +1,46 @@
+From a4f5cd961473df1455f14883bc9465486bb7a89e Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Mon, 9 Nov 2026 03:01:20 +0000
+Subject: [PATCH 20/21] Fix target-set collect evidence resolution
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/effects/collect_evidence.rs | 2 +-
+ crates/engine/src/game/quantity.rs                 | 3 ++-
+ 2 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/crates/engine/src/game/effects/collect_evidence.rs b/crates/engine/src/game/effects/collect_evidence.rs
+index d458bb979..a63a66df4 100644
+--- a/crates/engine/src/game/effects/collect_evidence.rs
++++ b/crates/engine/src/game/effects/collect_evidence.rs
+@@ -712,7 +712,7 @@ mod tests {
+         // Bare collect-evidence cost.
+         assert_eq!(
+             mana_abilities::collect_evidence_cost_amount(&AbilityCost::CollectEvidence {
+-                amount: 3
++                amount: CollectEvidenceAmount::Fixed(3)
+             }),
+             Some(3)
+         );
+diff --git a/crates/engine/src/game/quantity.rs b/crates/engine/src/game/quantity.rs
+index 559b60d48..f42f0cc56 100644
+--- a/crates/engine/src/game/quantity.rs
++++ b/crates/engine/src/game/quantity.rs
+@@ -807,12 +807,13 @@ fn visit_characteristic_leaf<'s>(
+             // so the read below measures the SELECTED occurrence.
+             match filter_ctx.ability {
+                 Some(_) => {
++                    let ability = filter_ctx.ability.unwrap();
+                     // CR 115.1 + CR 601.2c: an unqualified spell-target
+                     // aggregate reads every declared target slot across the
+                     // chain, not only the root effect's local targets.
+                     let selected = if slot.is_none() {
+                         crate::game::ability_utils::declared_target_entries_in_chain(
+-                            filter_ctx.ability.unwrap(),
++                            crate::game::targeting::resolving_root_ability(state, ability),
+                         )
+                         .into_iter()
+                         .map(|entry| (entry.target, entry.pin))
+-- 
+2.56.0
+

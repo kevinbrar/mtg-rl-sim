@@ -1,7 +1,7 @@
 From fb406fbc44ae70d03cfb946cc9732608495e8ebd Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Mon, 9 Nov 2026 01:49:59 +0000
-Subject: [PATCH 16/16] Keep Uldaros target parsing within residue budget
+Subject: [PATCH 16/21] Keep Uldaros target parsing within residue budget
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---

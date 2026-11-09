@@ -1,7 +1,7 @@
 From 3063c3e9ea3549a157b8ebf097c91f4eabc06719 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Sun, 8 Nov 2026 21:28:46 +0000
-Subject: [PATCH 09/16] Preserve anaphoric damage binding with typed targets
+Subject: [PATCH 09/21] Preserve anaphoric damage binding with typed targets
 
 Run one-sided damage-source binding before preserving the clause's explicit recipient, so anaphoric power is not left unresolved.
 

@@ -1,7 +1,7 @@
 From 7cd439def8d3c7159c0824d43023d59d45f12234 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Sun, 8 Nov 2026 19:32:26 +0000
-Subject: [PATCH 05/16] Add controller-scoped exile count parser
+Subject: [PATCH 05/21] Add controller-scoped exile count parser
 
 Vren's end-step X now uses battlefield-to-exile zone-change records filtered by type and last-known controller. Gate B: reuse the parse_number_of_creatures_died_this_turn and parse_entered_this_turn_ref patterns; Cruel Calculations' origin-scoped graveyard quantity uses the same ZoneChangeCountThisTurn building block. The runtime scenario uses Vren, Shock, and Swords to Plowshares Oracle text and distinguishes controller from owner.
 
