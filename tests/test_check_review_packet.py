@@ -1,6 +1,10 @@
 import pytest
 
-from scripts.check_review_packet import REQUIRED_SECTIONS, validate_review_packet
+from scripts.check_review_packet import (
+    REQUIRED_SECTIONS,
+    parse_cards_line,
+    validate_review_packet,
+)
 
 
 DEFAULT_ROW = (
@@ -259,3 +263,18 @@ def test_cards_line_must_be_none_or_comma_separated_names(cards: str) -> None:
     )
     errors = validate_review_packet(body, ["phase-patches/0001-example.patch"])
     assert "cards: must be `none` or a comma-separated list of card names" in errors
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    (
+        ("cards: none", "none"),
+        ("## Surfaces\nCards: Forest", "Forest"),
+        ("cards: Forest\ncards: none", "Forest"),
+        ("## Surfaces\nNo card claim", None),
+    ),
+)
+def test_parse_cards_line_returns_the_first_case_insensitive_line(
+    body: str, expected: str | None
+) -> None:
+    assert parse_cards_line(body) == expected

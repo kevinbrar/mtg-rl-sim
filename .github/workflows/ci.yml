@@ -210,17 +210,22 @@ jobs:
 
   xmage-diff:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           submodules: recursive
-      - name: Fail closed until differential harness v1
+      - name: Detect XMage scope
+        id: scope
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
           BEFORE_SHA: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             git fetch origin "$BASE_REF"
@@ -231,11 +236,180 @@ jobs:
             git fetch origin main
             git diff --name-only origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
           fi
-          if grep -E '^(phase-patches/|phase(/|$)|phase-env/|oracle/|driver/diff_game\.py$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
-            echo "::error::xmage-diff not implemented yet; see docs/harness-v1-plan.md"
+          if ! grep -Eq '^(phase-patches/|phase(/|$)|phase-env/|oracle/|driver/diff_game\.py$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+            echo "No XMage-gated paths changed."
+          elif [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "mode=smoke" >> "$GITHUB_OUTPUT"
+          else
+            cards_mode="$(python3 - <<'PY'
+          import os
+
+          from scripts.check_review_packet import parse_cards_line
+
+          cards = parse_cards_line(os.environ.get("PR_BODY", ""))
+          if cards is None:
+              print("missing")
+          elif cards.casefold() == "none":
+              print("none")
+          else:
+              print("listed")
+          PY
+          )"
+            if [[ "$cards_mode" == "none" ]]; then
+              echo "mode=smoke" >> "$GITHUB_OUTPUT"
+            else
+              echo "mode=fail-closed" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+      - name: Fail closed for per-card XMage changes until harness v1
+        if: steps.scope.outputs.mode == 'fail-closed'
+        run: |
+          echo "::error::xmage-diff not implemented yet; see docs/harness-v1-plan.md"
+          exit 1
+      - name: Read pinned mage-bench revision
+        id: mage-bench-pin
+        if: steps.scope.outputs.mode == 'smoke'
+        run: |
+          mapfile -t pin < oracle/mage-bench.txt
+          if [[ "${#pin[@]}" -ne 2 ]]; then
+            echo "::error::oracle/mage-bench.txt must contain a repository URL and commit SHA"
             exit 1
           fi
-          echo "No XMage-gated paths changed."
+          repo_url="${pin[0]}"
+          repo="${repo_url#https://github.com/}"
+          sha="${pin[1]}"
+          if [[ "$repo_url" != https://github.com/* || "$repo" != */* ]]; then
+            echo "::error::oracle/mage-bench.txt must contain a GitHub repository URL"
+            exit 1
+          fi
+          if [[ ! "$sha" =~ ^[[:xdigit:]]{40}$ ]]; then
+            echo "::error::oracle/mage-bench.txt must contain a full commit SHA"
+            exit 1
+          fi
+          echo "repository=$repo" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        if: steps.scope.outputs.mode == 'smoke'
+        with:
+          repository: ${{ steps.mage-bench-pin.outputs.repository }}
+          ref: ${{ steps.mage-bench-pin.outputs.sha }}
+          path: mage-bench
+          fetch-depth: 1
+      - uses: actions/setup-java@v4
+        if: steps.scope.outputs.mode == 'smoke'
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: mage-bench/**/pom.xml
+      - name: Apply local external-pilot patch
+        if: steps.scope.outputs.mode == 'smoke'
+        run: |
+          (cd mage-bench && git apply ../oracle/patches/mage-bench-external-pilot.patch)
+      - name: Cache mage-bench build output
+        if: steps.scope.outputs.mode == 'smoke'
+        uses: actions/cache@v4
+        with:
+          path: mage-bench/**/target
+          key: mage-bench-${{ runner.os }}-${{ steps.mage-bench-pin.outputs.sha }}-${{ hashFiles('oracle/patches/mage-bench-external-pilot.patch') }}
+      - name: Build mage-bench
+        if: steps.scope.outputs.mode == 'smoke'
+        working-directory: mage-bench
+        run: mvn install package -DskipTests
+      - uses: astral-sh/setup-uv@v6
+        if: steps.scope.outputs.mode == 'smoke'
+        with:
+          enable-cache: true
+          cache-dependency-glob: mage-bench/uv.lock
+      - name: Install mage-bench Python dependencies
+        if: steps.scope.outputs.mode == 'smoke'
+        working-directory: mage-bench
+        run: uv sync --locked
+      - name: Apply local engine patches
+        if: steps.scope.outputs.mode == 'smoke'
+        run: ./scripts/apply-phase-patches.sh
+      - uses: dtolnay/rust-toolchain@master
+        if: steps.scope.outputs.mode == 'smoke'
+        with:
+          toolchain: nightly-2026-04-19
+      - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.mode == 'smoke'
+        with:
+          workspaces: . -> target
+          shared-key: xmage-diff-${{ hashFiles('phase-patches/*.patch') }}
+      - name: Download and verify matching patched card data
+        if: steps.scope.outputs.mode == 'smoke'
+        working-directory: phase
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -t card_data < ../ci/card-data.txt
+          if [[ "${#card_data[@]}" -ne 2 ]]; then
+            echo "::error::ci/card-data.txt must contain exactly a release tag and SHA-256"
+            exit 1
+          fi
+          tag="${card_data[0]}"
+          expected_sha="${card_data[1]}"
+          if [[ -z "$tag" || ! "$expected_sha" =~ ^[[:xdigit:]]{64}$ ]]; then
+            echo "::error::ci/card-data.txt contains an invalid release tag or SHA-256"
+            exit 1
+          fi
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p 'card-data.json*' -D "$RUNNER_TEMP"
+          shopt -s nullglob
+          assets=("$RUNNER_TEMP"/card-data.json*)
+          if [[ "${#assets[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one card-data.json release asset, found ${#assets[@]}"
+            exit 1
+          fi
+          downloaded="${assets[0]}"
+          case "$downloaded" in
+            *.json.gz)
+              gzip --decompress --stdout "$downloaded" > "$RUNNER_TEMP/card-data.json"
+              data_file="$RUNNER_TEMP/card-data.json"
+              ;;
+            *.json)
+              data_file="$downloaded"
+              ;;
+            *)
+              echo "::error::Unsupported card-data release asset: $downloaded"
+              exit 1
+              ;;
+          esac
+          actual_sha="$(sha256sum "$data_file" | cut -d' ' -f1)"
+          if [[ "$actual_sha" != "$expected_sha" ]]; then
+            echo "::error::Patched card-data SHA-256 mismatch: expected $expected_sha, got $actual_sha"
+            exit 1
+          fi
+          install -D "$data_file" client/public/card-data.json
+          echo "Installed patched card data with SHA-256 $actual_sha"
+      - name: Build phase-env
+        if: steps.scope.outputs.mode == 'smoke'
+        run: cargo build --release -p phase-env
+      - uses: actions/setup-python@v5
+        if: steps.scope.outputs.mode == 'smoke'
+        with:
+          python-version: "3.12"
+      - name: Run two-seed mono-green differential smoke
+        if: steps.scope.outputs.mode == 'smoke'
+        env:
+          MAGE_BENCH_ROOT: ${{ github.workspace }}/mage-bench
+        run: |
+          failed=0
+          for seed in 17 42; do
+            if ! python driver/diff_game.py oracle/decks/mono-green-v0.txt \
+              oracle/decks/mono-green-v0.txt --seed "$seed" \
+              --data-root phase/client/public; then
+              failed=1
+            fi
+          done
+          exit "$failed"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.scope.outputs.mode == 'smoke'
+        with:
+          name: xmage-diff-runs
+          path: runs/
+          if-no-files-found: warn
 
   mutants:
     if: github.event_name == 'pull_request'

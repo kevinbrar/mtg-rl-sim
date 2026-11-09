@@ -125,6 +125,14 @@ def _evidence_table(
     return None
 
 
+def parse_cards_line(body: str) -> str | None:
+    for line in body.splitlines():
+        match = re.match(r"^\s*cards:\s*(.*)$", line, re.IGNORECASE)
+        if match is not None:
+            return match.group(1).strip()
+    return None
+
+
 def validate_review_packet(body: str, changed_files: Sequence[str]) -> list[str]:
     errors: list[str] = []
     for heading in REQUIRED_SECTIONS:
@@ -169,15 +177,10 @@ def validate_review_packet(body: str, changed_files: Sequence[str]) -> list[str]
             )
 
     if any(_is_engine_path(path) for path in changed_files):
-        cards_lines = [
-            re.match(r"^\s*cards:\s*(.*)$", line, re.IGNORECASE)
-            for line in body.splitlines()
-        ]
-        cards_lines = [match for match in cards_lines if match is not None]
-        if not cards_lines:
+        cards = parse_cards_line(body)
+        if cards is None:
             errors.append("Engine-path changes require a cards: line")
         else:
-            cards = cards_lines[0].group(1).strip()
             entries = [entry.strip() for entry in cards.split(",")]
             if not cards or (
                 cards.casefold() != "none"
