@@ -1,7 +1,7 @@
 From 75a091949084ddd19609739a9d36076742bb0c48 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Sun, 8 Nov 2026 21:47:52 +0000
-Subject: [PATCH 10/10] Keep conditional target binding outside reflexive
+Subject: [PATCH 10/14] Keep conditional target binding outside reflexive
  triggers
 
 Only preserve a clause's explicit typed target when its condition marks a separate reflexive trigger. Ordinary If-you-do-this-way clauses such as Cragganwick Cremator still bind their recipient to the enclosing ability, while When-you-do-this-way triggers such as Narset and Vivien keep their own target selection.\n\nRegression coverage includes Cragganwick's ParentTarget/runtime damage, Narset's printed reflexive target and discarded-card mana value, and Vivien's printed reflexive target and entering-creature power. Ambuscade, Bite Down on Crime, and Venom Blast remain the analogues for the unconditional one-sided-fight binder.

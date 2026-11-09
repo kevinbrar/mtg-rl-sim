@@ -1,0 +1,668 @@
+From 9ef67fee1269aa26f3e614ebe89620f7d4cae76a Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sun, 8 Nov 2026 23:00:19 +0000
+Subject: [PATCH 11/14] Add object-scoped Case graveyard casting
+
+Snapshot GenericEffect recipients at resolution and route their GraveyardCastPermission modes through the graveyard casting collector. Pin each recipient incarnation so a later object at the same id cannot inherit the permission.
+
+Anchors: GenericEffect recipient broadcasting in game/effects/effect.rs; player-scoped transient graveyard permission collection in game/casting.rs (Yawgmoth's Will); AddStaticMode materialization in game/layers.rs.
+
+Runtime: case_of_the_uneaten_feast_grants_only_to_resolution_time_graveyard_creatures. Parser: kethis_and_case_of_the_uneaten_feast_recognize_optional_cast_permissions.
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/casting.rs             | 253 ++++++++++--------
+ crates/engine/src/game/effects/effect.rs      |  36 ++-
+ crates/engine/src/game/layers.rs              |  25 ++
+ .../integration/swallow_optional_you_may.rs   | 124 ++++++++-
+ .../phase-parser/src/parser/swallow_check.rs  |   5 +
+ 5 files changed, 321 insertions(+), 122 deletions(-)
+
+diff --git a/crates/engine/src/game/casting.rs b/crates/engine/src/game/casting.rs
+index 84f86e6e1..af74fbd31 100644
+--- a/crates/engine/src/game/casting.rs
++++ b/crates/engine/src/game/casting.rs
+@@ -49,6 +49,7 @@ use crate::types::statics::{
+ };
+ use crate::types::zones::{ExileCostSourceZone, Zone};
+ 
++use std::borrow::Cow;
+ use std::cell::{OnceCell, RefCell};
+ use std::collections::{BTreeSet, HashMap, HashSet};
+ 
+@@ -4714,6 +4715,10 @@ pub(super) fn selected_static_permission_enters_with_counter(
+                 return None;
+             }
+             transient_graveyard_permission_sources(state, player, Some(CardPlayMode::Cast))
++                .chain(object_transient_graveyard_permission_sources(
++                    state,
++                    Some(CardPlayMode::Cast),
++                ))
+                 .find(|candidate| candidate.source_id == source)
+                 .and_then(|candidate| candidate.enters_with_counter.clone())
+         })
+@@ -5574,26 +5579,25 @@ fn has_during_resolution_alt_cost_permission(
+     })
+ }
+ 
+-#[derive(Clone, Copy)]
++#[derive(Clone)]
+ struct GraveyardPermissionSource<'a> {
+     source_id: ObjectId,
+     /// CR 601.2a: which grant this is: the source plus the grant on it, so two
+     /// grants from one source are two permissions the player can announce.
+     permission: crate::types::game_state::GraveyardPermissionId,
+     /// The grant's full definition, from which its digest is taken.
+-    definition: &'a StaticDefinition,
+-    filter: &'a TargetFilter,
++    definition: Cow<'a, StaticDefinition>,
++    filter: TargetFilter,
+     frequency: CastFrequency,
+     graveyard_destination_replacement: Option<Zone>,
+     /// CR 118.9 + CR 601.2f: Optional non-mana cost rider on the graveyard-cast
+-    /// static (Festival of Embers: additional pay-life). Borrowed from the static
+-    /// definition (kept `Copy` so the source struct stays `Copy`).
+-    extra_cost: &'a Option<crate::types::statics::CastExtraCost>,
++    /// static (Festival of Embers: additional pay-life).
++    extra_cost: Option<crate::types::statics::CastExtraCost>,
+     /// CR 122.1 + CR 607.1: Optional "if you cast a spell this way, that creature
+     /// enters with a [counter] counter on it" rider (Leonardo, Noctis). Applied at
+     /// the `finalize_cast` seam by `selected_static_permission_enters_with_counter`;
+     /// carried here so permission selection can see every rider a choice brings.
+-    enters_with_counter: &'a Option<crate::types::counter::CounterType>,
++    enters_with_counter: Option<crate::types::counter::CounterType>,
+     /// CR 118.9b: the casting method this permission requires ("using its
+     /// blitz ability"), or `None` when it leaves the method open, including the
+     /// printed cost.
+@@ -5608,7 +5612,49 @@ struct GraveyardPermissionSource<'a> {
+     mana_spend_permission: Option<crate::types::ability::ManaSpendPermission>,
+     /// CR 614.1c + CR 613.1d: modifications the spell cast through this grant
+     /// keeps as a permanent (The Tomb of Aclazotz: "is a Vampire").
+-    enters_modifications: &'a crate::types::ability::PendingEntersModifications,
++    enters_modifications: crate::types::ability::PendingEntersModifications,
++}
++
++fn graveyard_permission_source_from_definition<'a>(
++    source_id: ObjectId,
++    permission: crate::types::game_state::GraveyardPermissionId,
++    definition: Cow<'a, StaticDefinition>,
++    filter: TargetFilter,
++    play_mode_filter: Option<CardPlayMode>,
++) -> Option<GraveyardPermissionSource<'a>> {
++    let StaticMode::GraveyardCastPermission {
++        frequency,
++        play_mode,
++        graveyard_destination_replacement,
++        extra_cost,
++        enters_with_counter,
++        required_cast_keyword,
++        pool,
++        cast_limit,
++        mana_spend_permission,
++        enters_modifications,
++    } = definition.mode.clone()
++    else {
++        return None;
++    };
++    if !graveyard_permission_play_mode_matches(play_mode, play_mode_filter) {
++        return None;
++    }
++    Some(GraveyardPermissionSource {
++        source_id,
++        permission,
++        definition,
++        filter,
++        frequency,
++        graveyard_destination_replacement,
++        extra_cost,
++        enters_with_counter,
++        required_cast_keyword,
++        pool,
++        cast_limit,
++        mana_spend_permission,
++        enters_modifications,
++    })
+ }
+ 
+ /// The [`GraveyardPermissionPool`] membership check. It reads the live game
+@@ -5669,7 +5715,7 @@ impl GraveyardPermissionSource<'_> {
+             state,
+             obj_id,
+             Zone::Graveyard,
+-            self.filter,
++            &self.filter,
+             &ctx,
+         )
+     }
+@@ -5688,7 +5734,7 @@ impl GraveyardPermissionSource<'_> {
+     /// Called only on `graveyard_permission_candidates`, which admits a grant
+     /// only when its digest can be taken.
+     fn digest(&self) -> crate::types::game_state::GrantDigest {
+-        grant_digest(self.definition)
++        grant_digest(self.definition.as_ref())
+             .expect("graveyard_permission_candidates admits only grants with a digest")
+     }
+ 
+@@ -6266,53 +6312,23 @@ fn graveyard_permission_sources(
+             // permission (identified by its position), so the player can
+             // announce any of them.
+             super::functioning_abilities::active_static_definitions_indexed(state, obj, holder)
+-                .filter_map(move |(index, definition)| match definition.mode {
+-                    StaticMode::GraveyardCastPermission {
+-                        frequency,
+-                        play_mode,
+-                        graveyard_destination_replacement,
+-                        ref extra_cost,
+-                        // Applied at the finalize_cast seam from the cast's
+-                        // latched terms; carried here so the menu shows it.
+-                        ref enters_with_counter,
+-                        required_cast_keyword,
+-                        pool,
+-                        cast_limit,
+-                        mana_spend_permission,
+-                        ref enters_modifications,
+-                    } if graveyard_permission_play_mode_matches(play_mode, play_mode_filter)
+-                        // CR 601.3: a `Single` grant is used up by ending the
+-                        // effect that granted it; a printed static has no such
+-                        // effect, so it would never be used up. Refused (fail
+-                        // closed): the parser builds `Single` only for a
+-                        // resolution-created grant.
+-                        && cast_limit.is_unlimited() =>
+-                    {
+-                        definition
+-                            .affected
+-                            .as_ref()
+-                            .map(|filter| GraveyardPermissionSource {
+-                                source_id,
+-                                permission: crate::types::game_state::GraveyardPermissionId {
+-                                    source: source_id,
+-                                    grant: crate::types::game_state::PermissionGrant::Static {
+-                                        index: index as u32,
+-                                    },
+-                                },
+-                                definition,
+-                                filter,
+-                                frequency,
+-                                graveyard_destination_replacement,
+-                                extra_cost,
+-                                enters_with_counter,
+-                                required_cast_keyword,
+-                                pool,
+-                                cast_limit,
+-                                mana_spend_permission,
+-                                enters_modifications,
+-                            })
+-                    }
+-                    _ => None,
++                .filter_map(move |(index, definition)| {
++                    // CR 601.3: a `Single` grant is used up by ending the effect
++                    // that granted it; a printed static has no such effect.
++                    let filter = definition.affected.as_ref()?.clone();
++                    let source = graveyard_permission_source_from_definition(
++                        source_id,
++                        crate::types::game_state::GraveyardPermissionId {
++                            source: source_id,
++                            grant: crate::types::game_state::PermissionGrant::Static {
++                                index: index as u32,
++                            },
++                        },
++                        Cow::Borrowed(definition),
++                        filter,
++                        play_mode_filter,
++                    )?;
++                    source.cast_limit.is_unlimited().then_some(source)
+                 })
+         })
+         .chain(transient_graveyard_permission_sources(
+@@ -6320,6 +6336,10 @@ fn graveyard_permission_sources(
+             player,
+             play_mode_filter,
+         ))
++        .chain(object_transient_graveyard_permission_sources(
++            state,
++            play_mode_filter,
++        ))
+         .fold(Vec::new(), |mut sources, source| {
+             // CR 601.2a: one entry per grant. Two grants with the same terms are
+             // still two effects the player can announce, so only the same grant
+@@ -6349,7 +6369,7 @@ fn graveyard_permission_sources(
+ /// exactly this shape ("Prevent all damage creatures would deal this turn" also
+ /// covers creatures that arrive later).
+ ///
+-/// That is load-bearing for THIS card and not a technicality. Yawgmoth's Will's
++/// That is load-bearing for Yawgmoth's Will and not a technicality. Its
+ /// second sentence — "If a card would be put into your graveyard from anywhere
+ /// this turn, exile that card instead" — only makes sense because the first
+ /// sentence covers cards that reach the graveyard AFTER it resolved: you cast a
+@@ -6369,7 +6389,9 @@ fn graveyard_permission_sources(
+ /// `reduce_activated_ability_cost` (`ReduceAbilityCost`) and
+ /// `transient_cast_free_permission` (`CastFromHandFree`). The closest of them,
+ /// `transient_granted_spell_keywords_for`, likewise unwraps a
+-/// `GrantStaticAbility` off a raw TCE.
++/// `GrantStaticAbility` off a raw TCE. By contrast, an object-scoped
++/// `AddStaticMode` is collected separately below: CR 611.2c fixes its recipients
++/// when that effect begins.
+ fn transient_graveyard_permission_sources(
+     state: &GameState,
+     player: PlayerId,
+@@ -6405,22 +6427,7 @@ fn transient_graveyard_permission_sources(
+                     else {
+                         return None;
+                     };
+-                    let StaticMode::GraveyardCastPermission {
+-                        frequency,
+-                        play_mode,
+-                        graveyard_destination_replacement,
+-                        ref extra_cost,
+-                        ref enters_with_counter,
+-                        required_cast_keyword,
+-                        pool,
+-                        cast_limit,
+-                        mana_spend_permission,
+-                        ref enters_modifications,
+-                    } = definition.mode
+-                    else {
+-                        return None;
+-                    };
+-                    if !graveyard_permission_play_mode_matches(play_mode, play_mode_filter) {
++                    if !matches!(&definition.mode, StaticMode::GraveyardCastPermission { .. }) {
+                         return None;
+                     }
+                     // CR 113.1b + CR 109.5: a permission granted to a PLAYER is
+@@ -6440,39 +6447,75 @@ fn transient_graveyard_permission_sources(
+                             return None;
+                         }
+                     }
+-                    definition
+-                        .affected
+-                        .as_ref()
+-                        .map(|filter| GraveyardPermissionSource {
+-                            // CR 601.2a: the per-source frequency slots
+-                            // (`graveyard_cast_permissions_used*`) are keyed on this id,
+-                            // so a resolution-created grant keys on the card that
+-                            // created it exactly as a battlefield permanent does.
+-                            source_id: tce.source_id,
+-                            permission: crate::types::game_state::GraveyardPermissionId {
+-                                source: tce.source_id,
+-                                grant: crate::types::game_state::PermissionGrant::Transient {
+-                                    effect_id: tce.id,
+-                                    modification: modification_index as u32,
+-                                },
++                    let filter = definition.affected.as_ref()?.clone();
++                    // CR 601.2a: the per-source frequency slots are keyed on
++                    // the card that created this player-wide grant.
++                    graveyard_permission_source_from_definition(
++                        tce.source_id,
++                        crate::types::game_state::GraveyardPermissionId {
++                            source: tce.source_id,
++                            grant: crate::types::game_state::PermissionGrant::Transient {
++                                effect_id: tce.id,
++                                modification: modification_index as u32,
+                             },
+-                            definition,
+-                            filter,
+-                            frequency,
+-                            graveyard_destination_replacement,
+-                            extra_cost,
+-                            enters_with_counter,
+-                            required_cast_keyword,
+-                            pool,
+-                            cast_limit,
+-                            mana_spend_permission,
+-                            enters_modifications,
+-                        })
++                        },
++                        Cow::Borrowed(definition),
++                        filter,
++                        play_mode_filter,
++                    )
+                 },
+             )
+         })
+ }
+ 
++/// CR 611.2c + CR 400.7: an object-scoped resolution grant changes the
++/// recipient's characteristics, so its set is the specific object bound at
++/// resolution. The incarnation pin is checked before the mode can authorize a
++/// cast, preventing a later object at the same id from inheriting it.
++fn object_transient_graveyard_permission_sources(
++    state: &GameState,
++    play_mode_filter: Option<CardPlayMode>,
++) -> Vec<GraveyardPermissionSource<'_>> {
++    let mut sources = Vec::new();
++    for tce in &state.transient_continuous_effects {
++        let TargetFilter::SpecificObject { id } = &tce.affected else {
++            continue;
++        };
++        if tce.affected_recipient.is_none() || !super::layers::transient_effect_is_live(state, tce)
++        {
++            continue;
++        }
++        for (modification_index, modification) in tce.modifications.iter().enumerate() {
++            let ContinuousModification::AddStaticMode { mode } = modification else {
++                continue;
++            };
++            if !matches!(mode, StaticMode::GraveyardCastPermission { .. }) {
++                continue;
++            }
++            let filter = TargetFilter::SpecificObject { id: *id };
++            let definition = StaticDefinition::new(mode.clone())
++                .affected(filter.clone())
++                .active_zones(vec![Zone::Graveyard]);
++            if let Some(source) = graveyard_permission_source_from_definition(
++                tce.source_id,
++                crate::types::game_state::GraveyardPermissionId {
++                    source: tce.source_id,
++                    grant: crate::types::game_state::PermissionGrant::Transient {
++                        effect_id: tce.id,
++                        modification: modification_index as u32,
++                    },
++                },
++                Cow::Owned(definition),
++                filter,
++                play_mode_filter,
++            ) {
++                sources.push(source);
++            }
++        }
++    }
++    sources
++}
++
+ /// CR 113.1b + CR 109.5: true when every leaf of a player-granted permission's
+ /// condition evaluates against the ability's HOLDER once
+ /// `ConditionContext::ability_holder` is bound. Today that's the whose-turn
+@@ -6687,7 +6730,7 @@ fn graveyard_permission_candidates(
+     sources
+         .iter()
+         .filter(|source| !shares_bounded_slot(source))
+-        .filter(|source| grant_digest(source.definition).is_some())
++        .filter(|source| grant_digest(source.definition.as_ref()).is_some())
+         .filter(|source| {
+             // CR 604.2 + CR 110.4: Skip if this source's slot has already been used.
+             if !frequency_slot_available(state, source.source_id, object_id, source.frequency) {
+@@ -6695,7 +6738,7 @@ fn graveyard_permission_candidates(
+             }
+             source.admits_card(state, player, object_id)
+         })
+-        .copied()
++        .cloned()
+         .collect()
+ }
+ 
+@@ -38427,7 +38470,7 @@ mod dandan_read_sweep_tests {
+                 .expect("Lurrus authorizes the card");
+             let announcement = AnnouncedGraveyardPermission {
+                 permission: candidate.permission,
+-                grant_digest: grant_digest(candidate.definition).expect("digest"),
++                grant_digest: grant_digest(candidate.definition.as_ref()).expect("digest"),
+                 slot_type: None,
+             };
+ 
+diff --git a/crates/engine/src/game/effects/effect.rs b/crates/engine/src/game/effects/effect.rs
+index 7ad31131d..c247b8b28 100644
+--- a/crates/engine/src/game/effects/effect.rs
++++ b/crates/engine/src/game/effects/effect.rs
+@@ -305,6 +305,27 @@ fn install_transient(
+                 .map(|occurrence| occurrence.caster),
+         );
+     }
++    // CR 611.2c + CR 400.7: an object-scoped graveyard-cast permission is
++    // fixed to this recipient's incarnation. Other object grants keep their
++    // existing zone-change behavior, including CR 400.7a stack-to-battlefield
++    // carryover for characteristic-changing effects.
++    let affected_recipient = if modifications.iter().any(|modification| {
++        matches!(
++            modification,
++            ContinuousModification::AddStaticMode {
++                mode: crate::types::statics::StaticMode::GraveyardCastPermission { .. },
++            }
++        )
++    }) {
++        match &affected {
++            TargetFilter::SpecificObject { id } => state.objects.get(id).map(|object| {
++                crate::types::identifiers::ObjectIncarnationRef::of(*id, object.incarnation)
++            }),
++            _ => None,
++        }
++    } else {
++        None
++    };
+     state.add_transient_continuous_effect_inner(
+         ability.source_id,
+         ability.controller,
+@@ -315,6 +336,7 @@ fn install_transient(
+         end_permission.cloned(),
+         // CR 201.5a: a granted ability's effect names the object that granted it.
+         TransientContinuousEffectBindings {
++            affected_recipient,
+             granting_object: ability.context.granting_object,
+             ..TransientContinuousEffectBindings::default()
+         },
+@@ -960,12 +982,14 @@ fn bind_transient_effect(
+             // Broadcast filter: find matching objects at resolution time and bind each.
+             // CR 107.3a + CR 601.2b: ability-context filter evaluation.
+             let ctx = filter::FilterContext::from_ability(ability);
+-            let matching: Vec<ObjectId> = state
+-                .battlefield
+-                .iter()
+-                .filter(|obj_id| filter::matches_target_filter(state, **obj_id, &filter, &ctx))
+-                .copied()
+-                .collect();
++            let matching: Vec<ObjectId> = crate::game::layers::generic_effect_candidate_ids(
++                state,
++                &filter,
++                ability.source_id,
++            )
++            .into_iter()
++            .filter(|obj_id| filter::matches_target_filter(state, *obj_id, &filter, &ctx))
++            .collect();
+             for obj_id in matching {
+                 install_transient(
+                     state,
+diff --git a/crates/engine/src/game/layers.rs b/crates/engine/src/game/layers.rs
+index 9645cab64..079992820 100644
+--- a/crates/engine/src/game/layers.rs
++++ b/crates/engine/src/game/layers.rs
+@@ -253,6 +253,21 @@ fn effect_candidate_ids(
+     candidates
+ }
+ 
++/// CR 400.1 + CR 611.2c: resolving GenericEffects freeze their matching
++/// recipients at resolution, using the same zone-aware candidate set as layers.
++pub(crate) fn generic_effect_candidate_ids(
++    state: &GameState,
++    filter: &TargetFilter,
++    source_id: ObjectId,
++) -> Vec<ObjectId> {
++    effect_candidate_ids(
++        state,
++        filter,
++        source_id,
++        &mut LayerZoneObjectCache::default(),
++    )
++}
++
+ struct PreparedIncrementalFlush {
+     recipient_ids: BTreeSet<ObjectId>,
+     active_effects: Vec<ActiveContinuousEffect>,
+@@ -12581,6 +12596,16 @@ fn apply_continuous_effect_filtered(
+                 let resolved_mode = resolve_static_mode_chosen_color(mode, chosen_color);
+                 let mut def =
+                     StaticDefinition::new(resolved_mode.clone()).affected(TargetFilter::SelfRef);
++                // CR 113.6b: a granted cast permission functions from the zone it names.
++                match &resolved_mode {
++                    StaticMode::GraveyardCastPermission { .. } => {
++                        def = def.active_zones(vec![crate::types::zones::Zone::Graveyard]);
++                    }
++                    StaticMode::ExileCastPermission { .. } => {
++                        def = def.active_zones(vec![crate::types::zones::Zone::Exile]);
++                    }
++                    _ => {}
++                }
+                 // CR 611.2c + CR 109.5: A player reference carried by the granted
+                 // mode — a controller-relative blocker filter ("your opponents")
+                 // or `MustAttackAwayFromSource`'s avoided player (CR 701.15b) —
+diff --git a/crates/engine/tests/integration/swallow_optional_you_may.rs b/crates/engine/tests/integration/swallow_optional_you_may.rs
+index 5070ad5a5..d1828eb74 100644
+--- a/crates/engine/tests/integration/swallow_optional_you_may.rs
++++ b/crates/engine/tests/integration/swallow_optional_you_may.rs
+@@ -383,15 +383,10 @@ fn hades_graveyard_play_permission_is_limited_to_your_turns() {
+     assert_cast_rejected(&mut runner, second);
+ }
+ 
+-/// CR 207.2d + CR 604.2 + CR 305.1: the quoted grants on Kethis and Case of the
+-/// Uneaten Feast are carried as `ContinuousModification::AddStaticMode`, which
+-/// `static_carries_optional_modification` does not yet recognize — so their
+-/// Optional_YouMay warnings must survive and keep the cards demoted.
+-/// Conservative-red by design: the fix's scope deliberately excludes the
+-/// `AddStaticMode` recognition arm, and dropping these warnings without that arm
+-/// would be a false green.
++/// CR 601.3 + CR 611.2a: Kethis and Case of the Uneaten Feast carry their
++/// graveyard-cast permission as `ContinuousModification::AddStaticMode`.
+ #[test]
+-fn kethis_and_case_of_the_uneaten_feast_stay_red_honest() {
++fn kethis_and_case_of_the_uneaten_feast_recognize_optional_cast_permissions() {
+     for (oracle, name, types) in [
+         (KETHIS_ORACLE, "Kethis, the Hidden Hand", &["Creature"][..]),
+         (
+@@ -415,11 +410,118 @@ fn kethis_and_case_of_the_uneaten_feast_stay_red_honest() {
+             "{name}: the AddStaticMode {{ GraveyardCastPermission }} carrier must be present"
+         );
+         assert!(
+-            has_swallowed_detector(&parsed, "Optional_YouMay"),
+-            "{name}'s AddStaticMode-carried grant is not recognized as an optionality \
+-             carrier yet and must stay red: {:?}",
++            !tree_has_unimplemented(&parsed),
++            "{name}: the quoted permission must remain executable: {:?}",
+             parsed.parse_warnings
+         );
++        assert!(
++            !has_swallowed_detector(&parsed, "Optional_YouMay"),
++            "{name}'s AddStaticMode-carried graveyard permission accounts for its 'you may': {:?}",
++            parsed.parse_warnings
++        );
++    }
++}
++
++/// CR 611.2c + CR 514.2: Case grants permission only to creature cards that
++/// are in the graveyard when its solved ability resolves, and only until cleanup.
++#[test]
++fn case_of_the_uneaten_feast_grants_only_to_resolution_time_graveyard_creatures() {
++    let parsed = parse_oracle_text(
++        CASE_OF_THE_UNEATEN_FEAST_ORACLE,
++        "Case of the Uneaten Feast",
++        &keyword_input(),
++        &["Enchantment".to_string()],
++        &[],
++    );
++    assert!(carries_add_static_mode_graveyard_permission(&parsed));
++    assert!(
++        !tree_has_unimplemented(&parsed),
++        "{:?}",
++        parsed.parse_warnings
++    );
++
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let case = scenario
++        .add_creature(P0, "Case of the Uneaten Feast", 0, 0)
++        .as_enchantment()
++        .with_subtypes(vec!["Case"])
++        .from_oracle_text(CASE_OF_THE_UNEATEN_FEAST_ORACLE)
++        .id();
++    let castable = scenario
++        .add_creature_to_graveyard(P0, "Castable Creature", 2, 2)
++        .with_mana_cost(ManaCost::zero())
++        .id();
++    let expires_a = scenario
++        .add_creature_to_graveyard(P0, "First Expiring Creature", 2, 2)
++        .with_mana_cost(ManaCost::zero())
++        .id();
++    let expires_b = scenario
++        .add_creature_to_graveyard(P0, "Second Expiring Creature", 2, 2)
++        .with_mana_cost(ManaCost::zero())
++        .id();
++    let noncreature = scenario
++        .add_spell_to_graveyard(P0, "Graveyard Instant", true)
++        .from_oracle_text("You gain 1 life.")
++        .with_mana_cost(ManaCost::zero())
++        .id();
++    let late = scenario.add_creature(P0, "Late Creature", 2, 2).id();
++    let murder_a = scenario
++        .add_spell_to_hand_from_oracle(P0, "Murder", true, "Destroy target creature.")
++        .with_mana_cost(ManaCost::zero())
++        .id();
++    let murder_b = scenario
++        .add_spell_to_hand_from_oracle(P0, "Murder", true, "Destroy target creature.")
++        .with_mana_cost(ManaCost::zero())
++        .id();
++    let mut runner = scenario.build();
++    // Solved is the activated ability's prerequisite; Case solving has
++    // independent CR 719.3a runtime coverage.
++    runner
++        .state_mut()
++        .objects
++        .get_mut(&case)
++        .expect("Case on the battlefield")
++        .case_state
++        .as_mut()
++        .expect("Case state")
++        .is_solved = true;
++
++    assert!(!offered_to(&runner, P0, castable));
++    runner.activate(case, 0).resolve();
++    assert!(runner.state().stack.is_empty());
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::Priority { player: P0 }
++    ));
++    for card in [castable, expires_a, expires_b] {
++        assert!(
++            offered_to(&runner, P0, card),
++            "{card:?} should be permitted"
++        );
++    }
++    assert!(!offered_to(&runner, P0, noncreature));
++    assert_cast_rejected(&mut runner, noncreature);
++
++    runner.cast(castable).resolve();
++    assert_eq!(runner.state().objects[&castable].zone, Zone::Battlefield);
++    assert!(runner.state().stack.is_empty());
++    runner.cast(murder_a).target_object(castable).resolve();
++    assert_eq!(runner.state().objects[&castable].zone, Zone::Graveyard);
++    assert!(!offered_to(&runner, P0, castable));
++    assert_cast_rejected(&mut runner, castable);
++
++    runner.cast(murder_b).target_object(late).resolve();
++    assert_eq!(runner.state().objects[&late].zone, Zone::Graveyard);
++    assert!(!offered_to(&runner, P0, late));
++    assert_cast_rejected(&mut runner, late);
++    assert!(offered_to(&runner, P0, expires_a));
++    assert!(offered_to(&runner, P0, expires_b));
++
++    runner.advance_to_phase(Phase::End);
++    runner.advance_to_phase(Phase::Upkeep);
++    for card in [expires_a, expires_b] {
++        assert!(!offered_to(&runner, P0, card), "{card:?} should expire");
+     }
+ }
+ 
+diff --git a/crates/phase-parser/src/parser/swallow_check.rs b/crates/phase-parser/src/parser/swallow_check.rs
+index fa884bb4d..0475b8e9c 100644
+--- a/crates/phase-parser/src/parser/swallow_check.rs
++++ b/crates/phase-parser/src/parser/swallow_check.rs
+@@ -1326,6 +1326,11 @@ fn def_tree_has_target_replacement(def: &AbilityDefinition) -> bool {
+ fn static_carries_optional_modification(s: &StaticDefinition) -> bool {
+     s.modifications.iter().any(|m| match m {
+         ContinuousModification::AssignDamageAsThoughUnblocked => true,
++        // CR 601.3 + CR 611.2a: casting a card under a granted graveyard
++        // permission is an opt-in choice, even when carried by a temporary effect.
++        ContinuousModification::AddStaticMode {
++            mode: StaticMode::GraveyardCastPermission { .. },
++        } => true,
+         ContinuousModification::GrantTrigger { trigger } => trigger_tree_has_optional(trigger),
+         ContinuousModification::GrantAbility { definition } => def_tree_has_optional(definition),
+         // CR 113.3d + CR 613.1f: GrantStaticAbility conveys a static as if printed on the
+-- 
+2.56.0
+

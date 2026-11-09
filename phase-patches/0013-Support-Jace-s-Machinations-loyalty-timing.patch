@@ -1,0 +1,475 @@
+From 24d8853299066453f8922177e980658aef65ed2a Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sun, 8 Nov 2026 23:58:59 +0000
+Subject: [PATCH 13/14] Support Jace's Machinations loyalty timing
+
+Intercept the subject-predicate route before it emits unbound_subject and lower the duration-bound permission through the existing ActivateAsInstant static mode. Preserve the live Jace/controller filter for this rules-modifying effect under CR 611.2c, and keep Empower Jace as the sub-ability.\n\nGate B: reuse parse_static_line and the existing ActivateAsInstant parser; the live transient permission follows the MayLookAtFaceDown and Chandra cast-permission patterns.\n\nTests: jace_machinations_full_card_permission_and_empower_parse; jace_loyalty_is_not_activatable_on_an_opponents_turn_without_permission; jace_machinations_does_not_grant_opponents_jace_timing; jace_machinations_allows_new_jace_on_opponents_turn_and_preserves_once_per_turn.
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/effects/effect.rs      |  28 ++-
+ .../tests/integration/jace_machinations.rs    | 213 ++++++++++++++++++
+ crates/engine/tests/integration/main.rs       |   1 +
+ .../src/parser/oracle_effect/imperative.rs    |  34 ++-
+ .../src/parser/oracle_effect/mod.rs           |  11 +
+ .../src/parser/oracle_effect/tests.rs         |  56 +++++
+ .../src/parser/oracle_static/tests.rs         |  26 +++
+ 7 files changed, 353 insertions(+), 16 deletions(-)
+ create mode 100644 crates/engine/tests/integration/jace_machinations.rs
+
+diff --git a/crates/engine/src/game/effects/effect.rs b/crates/engine/src/game/effects/effect.rs
+index c247b8b28..86fdb3249 100644
+--- a/crates/engine/src/game/effects/effect.rs
++++ b/crates/engine/src/game/effects/effect.rs
+@@ -376,26 +376,24 @@ fn bind_transient_effect(
+     end_permission: Option<&EndEffectPermission>,
+     modifications: Vec<ContinuousModification>,
+ ) {
+-    // CR 708.5: A duration-bound "you may look at face-down [permanents] you don't
+-    // control any time" permission (Lumbering Laundry) is a *player-scoped* look
+-    // permission, not an object grant. Unlike a pump or keyword grant, the set of
+-    // face-down permanents the looker may see is re-evaluated continuously at look
+-    // time (a permanent turned face down after this resolves but before end of
+-    // turn is still visible to the looker), so the affected face-down filter must
+-    // ride on the TCE intact rather than be expanded to a fixed `SpecificObject`
+-    // set by the broadcast branch below. Register ONE TCE whose `controller` is
+-    // the looker and whose `affected` keeps the face-down/controller filter; the
+-    // visibility check (`viewer_may_look_at_face_down`) reads it exactly like the
+-    // printed `MayLookAtFaceDown` static, evaluating the filter against each
+-    // face-down permanent from the looker's perspective.
+-    if modifications.iter().any(|m| {
++    // CR 611.2c: rules-modifying permissions keep their affected filters live.
++    // `ActivateAsInstant` (Jace's Machinations) is controlled by its creator and
++    // re-evaluates the Jace/controller filter as loyalty abilities are activated;
++    // `MayLookAtFaceDown` has the same player-scoped shape. Preserve one TCE
++    // instead of expanding either filter to a fixed object set.
++    let is_dynamic_permission = matches!(
++        &static_def.mode,
++        crate::types::statics::StaticMode::ActivateAsInstant { .. }
++    ) || modifications.iter().any(|m| {
+         matches!(
+             m,
+             ContinuousModification::AddStaticMode {
+-                mode: crate::types::statics::StaticMode::MayLookAtFaceDown,
++                mode: crate::types::statics::StaticMode::MayLookAtFaceDown
++                    | crate::types::statics::StaticMode::ActivateAsInstant { .. },
+             }
+         )
+-    }) {
++    });
++    if is_dynamic_permission {
+         if let Some(affected) = static_def.affected.clone() {
+             install_transient(
+                 state,
+diff --git a/crates/engine/tests/integration/jace_machinations.rs b/crates/engine/tests/integration/jace_machinations.rs
+new file mode 100644
+index 000000000..21d41d710
+--- /dev/null
++++ b/crates/engine/tests/integration/jace_machinations.rs
+@@ -0,0 +1,213 @@
++use engine::ai_support::candidate_actions_broad;
++use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
++use engine::types::actions::GameAction;
++use engine::types::card_type::CoreType;
++use engine::types::game_state::WaitingFor;
++use engine::types::identifiers::ObjectId;
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const JACE_MACHINATIONS: &str = "Until end of turn, you may activate loyalty abilities of Jace planeswalkers you control on any player's turn any time you could cast an instant.\n\
++Empower Jace 8. (Put eight loyalty counters on a Jace token you control. If you don't control one, first create a blue Jace planeswalker token with \"[−1]: Surveil 1\" and \"[−3]: Draw a card.\")";
++
++const JACE_BELEREN: &str = "[+2]: Each player draws a card.\n\
++[−1]: Target player draws a card.\n\
++[−10]: Target player mills twenty cards.";
++
++const TEFERI_TIME_RAVALER: &str =
++    "Each opponent can cast spells only any time they could cast a sorcery.\n\
++[+1]: Until your next turn, you may cast sorcery spells as though they had flash.\n\
++[−3]: Return up to one target artifact, creature, or enchantment to its owner's hand. Draw a card.";
++
++fn setup_opponent_turn() -> (GameRunner, ObjectId, ObjectId, ObjectId, ObjectId) {
++    let mut scenario = GameScenario::new_n_player(2, 42);
++    scenario.at_phase(Phase::PreCombatMain);
++    let jace = scenario
++        .add_planeswalker_from_oracle(P0, "Jace Beleren", "Jace", 3, JACE_BELEREN)
++        .id();
++    let teferi = scenario
++        .add_planeswalker_from_oracle(P0, "Teferi, Time Raveler", "Teferi", 4, TEFERI_TIME_RAVALER)
++        .id();
++    let machinations = scenario
++        .add_spell_to_hand_from_oracle(P0, "Jace's Machinations", true, JACE_MACHINATIONS)
++        .id();
++    let second_machinations = scenario
++        .add_spell_to_hand_from_oracle(P0, "Jace's Machinations", true, JACE_MACHINATIONS)
++        .id();
++    scenario.add_card_to_library_top(P0, "P0 library card");
++    scenario.add_card_to_library_top(P1, "P1 library card");
++    let mut runner = scenario.build();
++    let state = runner.state_mut();
++    state.active_player = P1;
++    state.priority_player = P0;
++    state.waiting_for = WaitingFor::Priority { player: P0 };
++    (runner, jace, teferi, machinations, second_machinations)
++}
++
++fn has_loyalty_action(runner: &GameRunner, source_id: ObjectId, ability_index: usize) -> bool {
++    candidate_actions_broad(runner.state())
++        .iter()
++        .any(|candidate| {
++            matches!(
++                candidate.action,
++                GameAction::ActivateAbility {
++                    source_id: candidate_source,
++                    ability_index: candidate_index,
++                    ..
++                } if candidate_source == source_id && candidate_index == ability_index
++            )
++        })
++}
++
++fn empowered_jace_token(runner: &GameRunner) -> ObjectId {
++    *runner
++        .state()
++        .objects
++        .iter()
++        .find_map(|(id, object)| {
++            (object.name == "Jace"
++                && object.zone == Zone::Battlefield
++                && object.controller == P0
++                && object
++                    .card_types
++                    .core_types
++                    .contains(&CoreType::Planeswalker)
++                && object
++                    .card_types
++                    .subtypes
++                    .iter()
++                    .any(|subtype| subtype == "Jace"))
++            .then_some(id)
++        })
++        .expect("Empower Jace creates a Jace planeswalker token")
++}
++
++fn pass_to_p0(runner: &mut GameRunner) {
++    if matches!(
++        runner.state().waiting_for,
++        WaitingFor::Priority { player: P1 }
++    ) {
++        runner
++            .act(GameAction::PassPriority)
++            .expect("P1 can pass priority to P0");
++    }
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::Priority { player: P0 }
++    ));
++}
++
++#[test]
++fn jace_loyalty_is_not_activatable_on_an_opponents_turn_without_permission() {
++    let mut scenario = GameScenario::new_n_player(2, 43);
++    scenario.at_phase(Phase::PreCombatMain);
++    let jace = scenario
++        .add_planeswalker_from_oracle(P0, "Jace Beleren", "Jace", 3, JACE_BELEREN)
++        .id();
++    let machinations = scenario
++        .add_spell_to_hand_from_oracle(P0, "Jace's Machinations", true, JACE_MACHINATIONS)
++        .id();
++    let mut runner = scenario.build();
++    assert!(
++        has_loyalty_action(&runner, jace, 0),
++        "CR 606.3: Jace's +2 is available during P0's main phase with the stack empty"
++    );
++    let state = runner.state_mut();
++    state.active_player = P1;
++    state.priority_player = P0;
++    state.waiting_for = WaitingFor::Priority { player: P0 };
++
++    assert!(
++        !has_loyalty_action(&runner, jace, 0),
++        "CR 606.3: without a timing permission, P0 cannot activate Jace's loyalty ability during P1's turn"
++    );
++
++    runner.cast(machinations).commit();
++    pass_to_p0(&mut runner);
++    assert_eq!(runner.state().stack.len(), 1);
++    assert!(
++        !has_loyalty_action(&runner, jace, 0),
++        "CR 304.5: without a timing permission, P0 cannot activate Jace's loyalty ability with a spell on the stack"
++    );
++}
++
++#[test]
++fn jace_machinations_does_not_grant_opponents_jace_timing() {
++    let mut scenario = GameScenario::new_n_player(2, 44);
++    scenario.at_phase(Phase::PreCombatMain);
++    let opponent_jace = scenario
++        .add_planeswalker_from_oracle(P1, "Jace Beleren", "Jace", 3, JACE_BELEREN)
++        .id();
++    let machinations = scenario
++        .add_spell_to_hand_from_oracle(P0, "Jace's Machinations", true, JACE_MACHINATIONS)
++        .id();
++    let mut runner = scenario.build();
++
++    let state = runner.state_mut();
++    state.active_player = P1;
++    state.priority_player = P1;
++    state.waiting_for = WaitingFor::Priority { player: P1 };
++    assert!(
++        has_loyalty_action(&runner, opponent_jace, 0),
++        "the opponent's Jace ability is available on their own turn"
++    );
++
++    let state = runner.state_mut();
++    state.active_player = P0;
++    state.priority_player = P0;
++    state.waiting_for = WaitingFor::Priority { player: P0 };
++    runner.cast(machinations).resolve();
++    runner
++        .act(GameAction::PassPriority)
++        .expect("P0 can pass priority to P1");
++    assert_eq!(runner.state().active_player, P0);
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::Priority { player: P1 }
++    ));
++    assert!(
++        !has_loyalty_action(&runner, opponent_jace, 0),
++        "CR 606.3: the permission does not apply to an opponent-controlled Jace"
++    );
++}
++
++#[test]
++fn jace_machinations_allows_new_jace_on_opponents_turn_and_preserves_once_per_turn() {
++    let (mut runner, jace, teferi, machinations, second_machinations) = setup_opponent_turn();
++
++    runner.cast(machinations).resolve();
++    let token = empowered_jace_token(&runner);
++    pass_to_p0(&mut runner);
++
++    assert!(has_loyalty_action(&runner, jace, 0));
++    assert!(
++        has_loyalty_action(&runner, token, 0),
++        "CR 611.2c: a Jace token created after the permission begins is still affected"
++    );
++    assert!(has_loyalty_action(&runner, token, 1));
++    assert!(
++        !has_loyalty_action(&runner, teferi, 0),
++        "Jace's subtype-qualified permission does not apply to Teferi"
++    );
++
++    runner.cast(second_machinations).commit();
++    pass_to_p0(&mut runner);
++    assert!(
++        !runner.state().stack.is_empty(),
++        "the second Jace's Machinations must remain on the stack while P0 activates Jace"
++    );
++    assert!(has_loyalty_action(&runner, jace, 0));
++    assert!(!has_loyalty_action(&runner, teferi, 0));
++
++    runner.activate(jace, 0).resolve();
++    pass_to_p0(&mut runner);
++    assert_eq!(runner.state().objects[&jace].loyalty, Some(5));
++    assert!(
++        !has_loyalty_action(&runner, jace, 1),
++        "CR 606.3: instant-speed permission does not bypass the once-per-turn limit for this Jace"
++    );
++    assert!(
++        has_loyalty_action(&runner, token, 0),
++        "CR 606.3: a different Jace permanent may still activate its loyalty ability this turn"
++    );
++}
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index d33869f44..0b5cd0b2e 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -164,6 +164,7 @@ mod issue_836_hero_of_bladehold_battle_cry;
+ mod issue_8485_maze_of_ith_defender;
+ mod issue_879_obsessive_pursuit;
+ mod issue_941_champions_full_party;
++mod jace_machinations;
+ mod karazikar_attack_scope_7189;
+ mod kashi_tribe_damage_tap_freeze;
+ mod kibo_uktabi_prince_defending_player_sacrifice;
+diff --git a/crates/phase-parser/src/parser/oracle_effect/imperative.rs b/crates/phase-parser/src/parser/oracle_effect/imperative.rs
+index 25e95780d..04b5427bd 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/imperative.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/imperative.rs
+@@ -48,7 +48,7 @@ use crate::parser::oracle_nom::target::{controller_phrase_among, ControllerPhras
+ use crate::parser::oracle_static::{parse_activated_ability_cost_head, ActivatedAbilityCostHead};
+ use crate::parser::oracle_static::{
+     parse_continuous_modifications, parse_may_look_at_face_down_filter,
+-    parse_quoted_ability_modifications,
++    parse_quoted_ability_modifications, parse_static_line,
+ };
+ use crate::types::ability::{
+     is_oneshot_target_source_prevent_shape, AbilityCondition, AbilityCost, AbilityDefinition,
+@@ -196,6 +196,38 @@ pub(crate) fn try_parse_activated_ability_cost_reduction_effect(
+     })
+ }
+ 
++/// CR 606.3 + CR 304.5 + CR 611.2a + CR 611.2c: a turn-scoped loyalty timing
++/// permission reuses the parsed static mode as a continuous modification
++/// carried by a transient effect, so its rules-modifying affected filter
++/// remains live.
++pub(crate) fn try_parse_loyalty_timing_permission_effect(tp: TextPair) -> Option<Effect> {
++    let text = match super::lower::strip_leading_duration(tp.original) {
++        Some((Duration::UntilEndOfTurn, body)) => body,
++        Some(_) => return None,
++        None => tp.original,
++    };
++    let mut static_def = parse_static_line(text)?;
++    if !matches!(
++        &static_def.mode,
++        crate::types::statics::StaticMode::ActivateAsInstant {
++            cost_category: crate::types::ability::CostCategory::PaysLoyalty,
++            keyword: None,
++        }
++    ) {
++        return None;
++    }
++    let mode = static_def.mode.clone();
++    static_def.modifications =
++        vec![crate::types::ability::ContinuousModification::AddStaticMode { mode }];
++
++    Some(Effect::GenericEffect {
++        static_abilities: vec![static_def],
++        duration: Some(Duration::UntilEndOfTurn),
++        target: None,
++        end_cost: None,
++    })
++}
++
+ /// CR 702.26: Phasing direction used by the "phase in"/"phase out" dispatch.
+ #[derive(Copy, Clone)]
+ enum PhaseDir {
+diff --git a/crates/phase-parser/src/parser/oracle_effect/mod.rs b/crates/phase-parser/src/parser/oracle_effect/mod.rs
+index 5d2ca5a17..b5c0abb18 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/mod.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/mod.rs
+@@ -30244,6 +30244,17 @@ fn lower_subject_predicate_ast_body(
+         damage_context
+     };
+ 
++    // CR 606.3 + CR 304.5: this rules permission is a subject-predicate
++    // imperative, but its affected filter belongs to the permission itself,
++    // not to a subject parsed from "you may activate".
++    let lower = original_clause.to_lowercase();
++    if let Some(effect) = imperative::try_parse_loyalty_timing_permission_effect(TextPair::new(
++        original_clause,
++        &lower,
++    )) {
++        return parsed_clause(effect);
++    }
++
+     match predicate {
+         PredicateAst::Continuous {
+             effect,
+diff --git a/crates/phase-parser/src/parser/oracle_effect/tests.rs b/crates/phase-parser/src/parser/oracle_effect/tests.rs
+index 195ddb94e..54ae2e572 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/tests.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/tests.rs
+@@ -9974,6 +9974,62 @@ fn parse_card(
+     parse_oracle_text(text, name, &owned(keywords), &owned(types), &[])
+ }
+ 
++#[test]
++fn jace_machinations_full_card_permission_and_empower_parse() {
++    use crate::types::ability::{ContinuousModification, Duration, QuantityExpr};
++    use crate::types::statics::StaticMode;
++
++    let parsed = parse_card(
++        "Until end of turn, you may activate loyalty abilities of Jace planeswalkers you control on any player's turn any time you could cast an instant.\n\
++         Empower Jace 8. (Put eight loyalty counters on a Jace token you control. If you don't control one, first create a blue Jace planeswalker token with \"[−1]: Surveil 1\" and \"[−3]: Draw a card.\")",
++        "Jace's Machinations",
++        &[],
++        &["Instant"],
++    );
++    assert_eq!(parsed.abilities.len(), 1, "{:#?}", parsed.abilities);
++    let ability = &parsed.abilities[0];
++    let Effect::GenericEffect {
++        static_abilities,
++        duration: Some(Duration::UntilEndOfTurn),
++        ..
++    } = &*ability.effect
++    else {
++        panic!("first clause must be a temporary GenericEffect: {ability:#?}");
++    };
++    assert!(static_abilities.iter().any(|static_def| {
++        matches!(
++            &static_def.mode,
++            StaticMode::ActivateAsInstant {
++                cost_category: crate::types::ability::CostCategory::PaysLoyalty,
++                keyword: None,
++            }
++        ) && static_def
++            .modifications
++            .contains(&ContinuousModification::AddStaticMode {
++                mode: StaticMode::ActivateAsInstant {
++                    cost_category: crate::types::ability::CostCategory::PaysLoyalty,
++                    keyword: None,
++                },
++            })
++    }));
++    let empower = ability
++        .sub_ability
++        .as_deref()
++        .expect("Empower Jace is the next clause");
++    assert!(matches!(
++        &*empower.effect,
++        Effect::EmpowerJace {
++            count: QuantityExpr::Fixed { value: 8 }
++        }
++    ));
++    assert!(
++        chain_defs(ability)
++            .iter()
++            .all(|def| !matches!(&*def.effect, Effect::Unimplemented { .. })),
++        "no Unimplemented effect may remain: {ability:#?}"
++    );
++}
++
+ const CYCLONE_ORACLE: &str = "At the beginning of your upkeep, put a wind counter on this \
+      enchantment, then sacrifice this enchantment unless you pay {G} for each wind counter on \
+      it. If you pay, this enchantment deals damage equal to the number of wind counters on it \
+diff --git a/crates/phase-parser/src/parser/oracle_static/tests.rs b/crates/phase-parser/src/parser/oracle_static/tests.rs
+index c98267135..6c997705a 100644
+--- a/crates/phase-parser/src/parser/oracle_static/tests.rs
++++ b/crates/phase-parser/src/parser/oracle_static/tests.rs
+@@ -13064,6 +13064,32 @@ fn static_loyalty_timing_permission_subject_axis_composes() {
+     assert_eq!(def.condition, None);
+ }
+ 
++/// CR 606.3 + CR 304.5: Jace's Machinations scopes its temporary timing
++/// permission to the named planeswalker subtype, not every planeswalker.
++#[test]
++fn static_loyalty_timing_permission_scopes_to_named_planeswalker_subtype() {
++    let def = parse_static_line(
++        "You may activate loyalty abilities of Jace planeswalkers you control on any player's turn any time you could cast an instant.",
++    )
++    .expect("Jace's typed loyalty timing permission must parse");
++    assert_eq!(
++        def.mode,
++        StaticMode::ActivateAsInstant {
++            cost_category: CostCategory::PaysLoyalty,
++            keyword: None,
++        }
++    );
++    let Some(TargetFilter::Typed(affected)) = def.affected else {
++        panic!("the permission must retain its typed affected set");
++    };
++    assert_eq!(affected.controller, Some(ControllerRef::You));
++    assert_eq!(affected.type_filters.len(), 2);
++    assert!(affected.type_filters.contains(&TypeFilter::Planeswalker));
++    assert!(affected
++        .type_filters
++        .contains(&TypeFilter::Subtype("Jace".to_string())));
++}
++
+ /// CR 304.5: the "on any player's turn" infix is optional — instant timing
+ /// already spans any player's turn, so the bare tail parses to the same
+ /// permission rather than failing closed. Combinator pin: no printed card
+-- 
+2.56.0
+

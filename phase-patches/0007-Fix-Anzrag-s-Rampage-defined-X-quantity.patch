@@ -1,7 +1,7 @@
 From a7db66350015a7d77f11b88d5064a93aec3a08d7 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Sun, 8 Nov 2026 20:09:59 +0000
-Subject: [PATCH 07/10] Fix Anzrag's Rampage defined-X quantity
+Subject: [PATCH 07/14] Fix Anzrag's Rampage defined-X quantity
 
 Parse typed battlefield-to-graveyard counts through ZoneChangeCountThisTurn. This also supports the same quantity wording on Structural Assault.
 

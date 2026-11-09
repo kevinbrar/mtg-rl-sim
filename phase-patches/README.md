@@ -9,17 +9,18 @@ planned.
 
 | Card | Status | Runtime test | Coverage / semantic audit | Self-review |
 | --- | --- | --- | --- | --- |
-| Restless Prairie | Fixed in phase commit `0621bcebc88f0ab367d567d4bfe475fe4b443c76`: the coverage subtype lexicon includes canonical parser vocabulary as well as printed type-line subtypes. The Oracle text's Llama subtype is valid under CR 205.3m but does not appear on a printed type line. | `restless_prairie_becomes_a_3_3_llama_and_remains_a_land` passed; `GameRunner::activate` resolves the printed ability to a 3/3 Llama that remains a land. | `supported: true`, `gap_count: 0`; semantic audit has 0 Restless Prairie findings. Final aggregate: 32,317/36,280 supported. | Pass: general vocabulary union; existing `text_grammar::parse_subtype` and `oracle_util::parse_creature_subtype` are analogous canonical-list consumers. Existing unknown-subtype test still covers the filler-word rejection path. |
-| Rottenmouth Viper | Fixed in phase commit `478d48ccb5dff67c6b2cb21a78091d3f2956e645`: `starts_prefix_clause` keeps a sequence-connected `Then for each` prefix with its comma-delimited effect body, allowing the existing counter-count parser to attach `repeat_for` to the scoped unless effect. | `viper_attack_repeats_the_unless_clause_for_each_blight_counter` passed with the printed Oracle text: one seeded blight counter plus the attack trigger's counter produces two separate P1 prompts and two 4-life losses; P0 remains at 20 and the trigger completes. Parser regressions `then_for_each_prefix_keeps_its_effect_body_together` and `trigger_for_each_blight_counter_repeats_scoped_unless` passed. | `supported: true`, `gap_count: 0`; semantic audit has 0 Rottenmouth Viper findings. Final aggregate: 32,317/36,280 supported. | Pass: self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
-| Lost in the Maze | Fixed in phase commit `93dfa0c8ee33ea6122b20bc3b0995fab0c0b327d`: anaphoric tracked-set parsing preserves controller-qualified typed filters such as “each of those creatures you don't control.” | `lost_in_the_maze_stuns_only_targeted_creatures_not_controlled_by_its_controller` passed through the scenario runner; casts the printed Oracle text for X=3 and verifies all targets tap, only an opponent-controlled target gets a stun counter, a stolen opponent-owned target does not, and an untargeted creature is unaffected. Baseline failed at the opponent's missing stun counter. Parser regression `each_of_those_creatures_filters_the_tracked_set_by_controller` passed. | `supported: true`, `gap_count: 0`; semantic audit has 0 Lost in the Maze findings. Final aggregate: 32,317/36,280 supported. | Pass: self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
-| Seasoned Cryomancer | Fixed in phase commit `f54786c9ff4d45108cee5f1aa39f384fc5eb0ca9`: filtered discard reflexive target counts use the matching discarded-card set, and the reflexive body preserves its own announced target set. | `seasoned_cryomancer_targets_up_to_the_number_of_nonland_cards_discarded` passed through `GameRunner`; two nonland discards offer two target slots, one nonland plus one land offers one, and land-only discards create no target prompt. | `supported: true`, `gap_count: 0`; semantic audit has 0 Seasoned Cryomancer findings. Final aggregate: 32,317/36,280 supported. | Pass: self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
-| Essence Burn | Fixed in phase commit `81ddaa94d5ed2efdbcb4d3657c63df496925e011`: die-exile rider parsing accepts the generic “that permanent” referent, and the target parser scopes a color disjunction over each branch of a type disjunction. | `essence_burn_exiles_lethally_damaged_creature_and_planeswalker` and `essence_burn_does_not_target_a_black_noncreature_artifact` passed through `GameRunner`; the latter also rejects a colorless creature and includes a legal-target positive control. Parser regression `essence_burn_parses_its_target_permanent_die_exile_rider` and target-shape regression `color_disjunction_distributes_over_type_disjunction` passed. `color_or_type_union`, `colorless_adjective_does_not_distribute_across_or`, the Carbonize/Disintegrate die-exile parser tests, and Torch the Tower's lethal-damage runtime test also passed. | `supported: true`, `gap_count: 0`; semantic audit has 0 Essence Burn findings. Final aggregate: 32,317/36,280 supported. | Pass: self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
-| Anzrag's Rampage | Fixed in phase commit `a7db66350015a7d77f11b88d5064a93aec3a08d7`: binds typed battlefield-to-graveyard counts through `ZoneChangeCountThisTurn`; the same wording on Structural Assault is covered. | `anzrags_rampage_exiles_one_card_per_destroyed_artifact` passed through `GameRunner::cast` using the printed Oracle text; two opposing artifacts go to graveyards, exactly two library cards are exiled, and the third remains. | `supported: true`, `gap_count: 0`; semantic audit has 0 Anzrag's Rampage findings. Final aggregate: 32,317/36,280 supported. | Pass with corpus note: the shared typed-quantity pattern has two known printed consumers, Anzrag's Rampage and Structural Assault. Self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
+| Restless Prairie | Fixed in phase commit `0621bcebc88f0ab367d567d4bfe475fe4b443c76`: the coverage subtype lexicon includes canonical parser vocabulary as well as printed type-line subtypes. The Oracle text's Llama subtype is valid under CR 205.3m but does not appear on a printed type line. | `restless_prairie_becomes_a_3_3_llama_and_remains_a_land` passed; `GameRunner::activate` resolves the printed ability to a 3/3 Llama that remains a land. | `supported: true`, `gap_count: 0`; semantic audit has 0 Restless Prairie findings. Final aggregate: 32,321/36,280 supported. | Pass: general vocabulary union; existing `text_grammar::parse_subtype` and `oracle_util::parse_creature_subtype` are analogous canonical-list consumers. Existing unknown-subtype test still covers the filler-word rejection path. |
+| Rottenmouth Viper | Fixed in phase commit `478d48ccb5dff67c6b2cb21a78091d3f2956e645`: `starts_prefix_clause` keeps a sequence-connected `Then for each` prefix with its comma-delimited effect body, allowing the existing counter-count parser to attach `repeat_for` to the scoped unless effect. | `viper_attack_repeats_the_unless_clause_for_each_blight_counter` passed with the printed Oracle text: one seeded blight counter plus the attack trigger's counter produces two separate P1 prompts and two 4-life losses; P0 remains at 20 and the trigger completes. Parser regressions `then_for_each_prefix_keeps_its_effect_body_together` and `trigger_for_each_blight_counter_repeats_scoped_unless` passed. | `supported: true`, `gap_count: 0`; semantic audit has 0 Rottenmouth Viper findings. Final aggregate: 32,321/36,280 supported. | Pass: self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
+| Lost in the Maze | Fixed in phase commit `93dfa0c8ee33ea6122b20bc3b0995fab0c0b327d`: anaphoric tracked-set parsing preserves controller-qualified typed filters such as “each of those creatures you don't control.” | `lost_in_the_maze_stuns_only_targeted_creatures_not_controlled_by_its_controller` passed through the scenario runner; casts the printed Oracle text for X=3 and verifies all targets tap, only an opponent-controlled target gets a stun counter, a stolen opponent-owned target does not, and an untargeted creature is unaffected. Baseline failed at the opponent's missing stun counter. Parser regression `each_of_those_creatures_filters_the_tracked_set_by_controller` passed. | `supported: true`, `gap_count: 0`; semantic audit has 0 Lost in the Maze findings. Final aggregate: 32,321/36,280 supported. | Pass: self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
+| Seasoned Cryomancer | Fixed in phase commit `f54786c9ff4d45108cee5f1aa39f384fc5eb0ca9`: filtered discard reflexive target counts use the matching discarded-card set, and the reflexive body preserves its own announced target set. | `seasoned_cryomancer_targets_up_to_the_number_of_nonland_cards_discarded` passed through `GameRunner`; two nonland discards offer two target slots, one nonland plus one land offers one, and land-only discards create no target prompt. | `supported: true`, `gap_count: 0`; semantic audit has 0 Seasoned Cryomancer findings. Final aggregate: 32,321/36,280 supported. | Pass: self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
+| Essence Burn | Fixed in phase commit `81ddaa94d5ed2efdbcb4d3657c63df496925e011`: die-exile rider parsing accepts the generic “that permanent” referent, and the target parser scopes a color disjunction over each branch of a type disjunction. | `essence_burn_exiles_lethally_damaged_creature_and_planeswalker` and `essence_burn_does_not_target_a_black_noncreature_artifact` passed through `GameRunner`; the latter also rejects a colorless creature and includes a legal-target positive control. Parser regression `essence_burn_parses_its_target_permanent_die_exile_rider` and target-shape regression `color_disjunction_distributes_over_type_disjunction` passed. `color_or_type_union`, `colorless_adjective_does_not_distribute_across_or`, the Carbonize/Disintegrate die-exile parser tests, and Torch the Tower's lethal-damage runtime test also passed. | `supported: true`, `gap_count: 0`; semantic audit has 0 Essence Burn findings. Final aggregate: 32,321/36,280 supported. | Pass: self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
+| Anzrag's Rampage | Fixed in phase commit `a7db66350015a7d77f11b88d5064a93aec3a08d7`: binds typed battlefield-to-graveyard counts through `ZoneChangeCountThisTurn`; the same wording on Structural Assault is covered. | `anzrags_rampage_exiles_one_card_per_destroyed_artifact` passed through `GameRunner::cast` using the printed Oracle text; two opposing artifacts go to graveyards, exactly two library cards are exiled, and the third remains. | `supported: true`, `gap_count: 0`; semantic audit has 0 Anzrag's Rampage findings. Final aggregate: 32,321/36,280 supported. | Pass with corpus note: the shared typed-quantity pattern has two known printed consumers, Anzrag's Rampage and Structural Assault. Self-review only; see AI-CONTRIBUTOR §5(a–i) below. |
 | Urgent Necropsy | Parked; unapplied diagnosis in `wip/urgent-necropsy.diff`. `CollectEvidence.amount` is fixed-width and target-dependent X must flow through shared casting-cost resolution; a correct fix must defer payability until targets exist and resolve the amount before evidence payment. | — | Not fixed; no coverage or semantic-audit claim. | WIP diagnosis only; no implementation review. |
-| Vren, the Relentless | Fixed in phase commit `7cd439def8d3c7159c0824d43023d59d45f12234`: parses typed objects exiled from the battlefield under a controller's control this turn into `ZoneChangeCountThisTurn`, filtered by last-known controller. | `vren_counts_creatures_exiled_under_opponents_control_this_turn` passed through `GameRunner`; Vren's replacement exile and a direct exile of opponent-controlled creatures count, while a P1-owned creature controlled by P0 does not. | `supported: true`, `gap_count: 0`; semantic audit has 0 Vren findings. Final aggregate: 32,317/36,280 supported. | Pass: self-review only; see Vren self-review below. |
-| Theorist's Sanctum | Parked; unapplied diagnosis in `wip/theorists-sanctum.diff`. Supporting this as-enters replacement requires an interactive Behold payment/resume path that preserves the pre-entry event and the tap-on-decline branch. | — | Not fixed; no coverage or semantic-audit claim. | WIP diagnosis only; no implementation review. |
+| Vren, the Relentless | Fixed in phase commit `7cd439def8d3c7159c0824d43023d59d45f12234`: parses typed objects exiled from the battlefield under a controller's control this turn into `ZoneChangeCountThisTurn`, filtered by last-known controller. | `vren_counts_creatures_exiled_under_opponents_control_this_turn` passed through `GameRunner`; Vren's replacement exile and a direct exile of opponent-controlled creatures count, while a P1-owned creature controlled by P0 does not. | `supported: true`, `gap_count: 0`; semantic audit has 0 Vren findings. Final aggregate: 32,321/36,280 supported. | Pass: self-review only; see Vren self-review below. |
+| Theorist's Sanctum | Fixed in phase commit `37f86de726ffefa5f5031747cc96728e6a75d193`: as-enters `MayCost` replacements now support interactive Behold payment/resume and automatically decline when the cost is unpayable. | `theorists_sanctum_beholding_a_jace_enters_untapped`, `theorists_sanctum_interactive_behold_resumes_entry_untapped`, `theorists_sanctum_declining_behold_enters_tapped`, and `theorists_sanctum_without_a_jace_enters_tapped_without_prompt` passed. | `supported: true`, `gap_count: 0`; semantic audit has 0 Theorist's Sanctum findings. | Pass: self-review only; see §5(a–i) below. |
 | Kíli the Resourceful | Parked; unapplied diagnosis in `wip/kili-the-resourceful.diff`. Correct support needs a shared activation-cost choice that can substitute {0} for an equip cost once per turn; current numeric reductions and spell alternative costs do not model it. | — | Not fixed; no coverage or semantic-audit claim. | WIP diagnosis only; no implementation review. |
-| Case of the Uneaten Feast | Parked; unapplied WIP and casting-permission seam analysis in `wip/case-of-the-uneaten-feast.diff`. A correct fix needs the casting-permission collector to honor an object-scoped grant with a fixed recipient set under CR 611.2c; the saved runtime test still fails. | Runtime test remains failing; no fix claimed. | Not fixed; no coverage or semantic-audit claim. | WIP diagnosis only; no implementation review. |
+| Case of the Uneaten Feast | Fixed in phase commit `9ef67fee1269aa26f3e614ebe89620f7d4cae76a`: snapshot GenericEffect recipients at resolution, pin each recipient incarnation, and route object-scoped `GraveyardCastPermission` through the graveyard-casting collector. | `case_of_the_uneaten_feast_grants_only_to_resolution_time_graveyard_creatures` passed: a resolution-time graveyard creature is castable, a later graveyard entrant is not, and the permission expires at cleanup. | `supported: true`, `gap_count: 0`; semantic audit has 0 Case findings. | Pass: self-review only; see §5(a–i) below. |
+| Jace's Machinations | Fixed in phase commit `24d8853299066453f8922177e980658aef65ed2a`: intercept the subject-predicate route and lower the duration-bound loyalty timing permission through the existing `ActivateAsInstant` mode. | `jace_loyalty_is_not_activatable_on_an_opponents_turn_without_permission`, `jace_machinations_does_not_grant_opponents_jace_timing`, and `jace_machinations_allows_new_jace_on_opponents_turn_and_preserves_once_per_turn` passed; the full-card parser regression passed. | `supported: true`, `gap_count: 0`; semantic audit has 0 Jace's Machinations findings. | Pass: self-review only; see §5(a–i) below. |
 
 ### Rottenmouth Viper self-review (AI-CONTRIBUTOR §5 a–i)
 
@@ -105,87 +106,115 @@ This was a self-review only; no independent reviewer was used. Final per-card co
 
 This was a self-review only; no independent reviewer was used. Final per-card coverage and audit results are recorded in the table above.
 
+### Case of the Uneaten Feast self-review (AI-CONTRIBUTOR §5 a–i)
+
+- **(a) Correct seam — pass.** GenericEffect recipient enumeration now includes the zones named by its filter; the resolution-created object grant is collected by the graveyard-cast permission path.
+- **(b) Idiomatic change — pass.** Reuses the existing zone-aware candidate enumeration, transient continuous effects, and static permission collector rather than adding a Case-specific cast path.
+- **(c) Parser compliance — pass.** The existing typed `AddStaticMode::GraveyardCastPermission` is retained; no card-name dispatch was added.
+- **(d) CR citations — pass.** CR 611.2c fixes the affected object set at resolution, CR 400.7 pins the object's incarnation, and CR 514.2 ends the duration at cleanup.
+- **(e) Pattern coverage — pass.** Supports object-scoped, resolution-created graveyard-cast grants generally; player-scoped transient grants remain on their existing path.
+- **(f) Logic placement — pass.** Zone enumeration and permission collection live in the engine; no transport or frontend logic changed.
+- **(g) Building-block reuse — pass.** Reuses GenericEffect candidate enumeration, `AddStaticMode`, and `transient_graveyard_permission_sources`; commit anchors are recorded in the phase commit message.
+- **(h) Bool-flag avoidance — pass.** Uses the existing typed filter and `ObjectIncarnationRef`; no new bool or enum was added.
+- **(i) Test discrimination — pass.** The scenario-runner test proves a card already in the graveyard is castable, a later entrant is not, and the grant ends at cleanup.
+
+This was a self-review only; no independent reviewer was used.
+
+### Theorist's Sanctum self-review (AI-CONTRIBUTOR §5 a–i)
+
+- **(a) Correct seam — pass.** The as-enters replacement pauses before battlefield entry, then resumes the same replacement after the Behold choice.
+- **(b) Idiomatic change — pass.** Extends the existing `MayCost` replacement, Behold choice, and replacement-resume paths; the commit names reveal-land/shock-land parsing and Mox Diamond/Mimeoplasm payment paths as anchors.
+- **(c) Parser compliance — pass.** The replacement parser composes existing nom parsers; no card-name string dispatch was added.
+- **(d) CR citations — pass.** CR 118.3 and 614.12a cover the cost and pre-entry choice; CR 701.4a governs the reveal of a Jace card from hand.
+- **(e) Pattern coverage — pass.** Handles interactive Behold costs on as-enters replacements, including multiple legal cards, decline, and an unpayable cost.
+- **(f) Logic placement — pass.** Cost payment, replacement state, and resumption are handled in engine code.
+- **(g) Building-block reuse — pass.** Reuses the existing replacement cost and Behold choice/resume machinery; no parallel card-specific continuation was introduced.
+- **(h) Bool-flag avoidance — pass.** No new bool or enum variant was added for Sanctum.
+- **(i) Test discrimination — pass.** Four scenario-runner cases cover one Jace, multiple Jaces and selected-card revelation, explicit decline, and no-Jace auto-decline.
+
+This was a self-review only; no independent reviewer was used.
+
+### Jace's Machinations self-review (AI-CONTRIBUTOR §5 a–i)
+
+- **(a) Correct seam — pass.** The full Oracle sentence reaches subject-predicate lowering before imperative/YouMay dispatch; one early interceptor handles it before `unbound_subject`.
+- **(b) Idiomatic change — pass.** Reuses `parse_static_line`, `StaticMode::ActivateAsInstant`, and the existing transient continuous-effect path.
+- **(c) Parser compliance — pass.** No card-name or verbatim-text dispatch was added; the parsed static definition supplies the mode and filter.
+- **(d) CR citations — pass.** CR 304.5 and 606.3 govern timing and once-per-turn loyalty use; CR 611.2a/c governs duration and the live filter for this rules-modifying permission.
+- **(e) Pattern coverage — pass.** Handles subtype-qualified loyalty timing permissions rather than naming Jace's Machinations in the engine.
+- **(f) Logic placement — pass.** Parsing constructs the effect; the engine's timing permission and loyalty-use tracking remain authoritative.
+- **(g) Building-block reuse — pass.** Uses the existing `ActivateAsInstant` static mode and transient-permission machinery; the commit records `MayLookAtFaceDown` and Chandra cast-permission analogues.
+- **(h) Bool-flag avoidance — pass.** No new enum variant or flag was added.
+- **(i) Test discrimination — pass.** Runtime tests cover opponent-turn and stack timing, absent permission, opponent-controlled Jace exclusion, a Jace created after resolution, and CR 606.3's per-permanent limit; the full-card parser test checks Empower Jace remains present.
+
+This was a self-review only; no independent reviewer was used.
+
 ## Final gates
 
-All gates below are for `local-fixes` head
-`75a091949084ddd19609739a9d36076742bb0c48`, based on pinned upstream
-`988bc3412f5d4e475c1837fbc88062b14d1f5489`. The submodule pointer in the
-superproject remains pinned; no phase-rs upstream branch or PR was created.
+Results are for `local-fixes` head `55b63c91a446a419f7f725cb95797d4f9cbb39d5`,
+based on pinned upstream `988bc3412f5d4e475c1837fbc88062b14d1f5489`. The
+superproject submodule pointer remains pinned; no upstream push or PR was made.
 
-- Cryomancer commit `f54786c9ff4d45108cee5f1aa39f384fc5eb0ca9` was checked;
-  its message has normal blank lines and no literal `\n\n`.
-- Gate A passed against the pinned base. The working tree was clean, so the
-  scanned working-tree diff is the committed `988bc34..local-fixes` content.
-  Exact output:
+- Cryomancer's commit message contains literal `\n\n` separators. The Jace
+  commit has the same formatting issue. Both were left unchanged rather than
+  rewriting accepted local history.
+- Gate A passed against the pinned base on the committed head. Exact output:
 
   ```text
   Gate G PASS (router/grant architecture: strict router vs permissive grant boundary intact)
   residue-ratchet: tighten crates/phase-parser/src/parser/oracle_cost.rs 3 -> 2
   residue-ratchet: tighten crates/phase-parser/src/parser/oracle_static/static_helpers.rs 1 -> 0 (entry can be deleted)
   Gate H PASS (residue: 121 legacy obligations, ceiling 123; files scanned 91; snapshot worktree)
-  Gate A: scanned 5 file(s) under crates/engine/src/parser crates/engine/src/types/text_grammar.rs crates/phase-ast/src/types/text_grammar.rs crates/phase-parser/src/parser (working tree vs 988bc3412f5d4e475c1837fbc88062b14d1f5489).
-  Gate A PASS head=75a091949084ddd19609739a9d36076742bb0c48 base=988bc3412f5d4e475c1837fbc88062b14d1f5489
+  Gate A: scanned 8 file(s) under crates/engine/src/parser crates/engine/src/types/text_grammar.rs crates/phase-ast/src/types/text_grammar.rs crates/phase-parser/src/parser (working tree vs 988bc3412f5d4e475c1837fbc88062b14d1f5489).
+  Gate A PASS head=55b63c91a446a419f7f725cb95797d4f9cbb39d5 base=988bc3412f5d4e475c1837fbc88062b14d1f5489
   ```
-- `cargo fmt --all` passed. One full `cargo test -p phase-engine` passed:
-  13,790 unit tests and 15,595 tests across the other test targets passed;
-  4 unit, 12 other-target, and 2 doc tests were ignored; zero failures.
-- Clean pinned baseline card data was generated at
-  `/home/ubuntu/repos/eng/pdata/baseline-988bc34-card-data.json`:
-  SHA-256 `45bb5ca39612a82b255c121f0fba69d2a688b832242aad0b1a38e36f575ed8c1`.
-  This matches the existing `pdata/baseline-card-data.json`; supplied
-  `pdata/v/card-data.json` has SHA-256
-  `5b455542437560f27543ca1db746c75d2909a8ddff6fe015f77761c303a28fa0` and
-  does not match the pinned generation.
-- Final patched data was copied to
-  `/home/ubuntu/repos/eng/pdata/patched/card-data.json`; SHA-256
-  `738917fb87f2e4cbf08dac8d7816a7d5826f4779989b7647d33870a2c734bdf7`.
-  The generated coverage report is 32,317/36,280 supported (89.1%), versus
-  32,303/36,280 in the clean baseline. All seven fixed targets are
-  `supported: true`, `gap_count: 0`, with zero semantic-audit findings each.
-  The audit reports 191 findings globally among 32,834 supported cards.
-- Per-card supported-status comparison found zero supported-to-unsupported
-  flips and zero partial regressions. For the 1,236 card entries whose Oracle
-  text matches “this way,” “would die this turn,” “put into a graveyard from
-  the battlefield this turn,” or “exiled under” (including Essence Burn's
-  “exile it instead” rider), the parsed fields `keywords`, `abilities`,
-  `triggers`, `static_abilities`, `replacements`, and `additional_cost` had
-  eight changed records:
-  - Anzrag's Rampage and Essence Burn are target-card improvements: their
-    defined-X zone-change count and target-bound die-exile replacement are
-    represented instead of unimplemented effects.
-  - Rottenmouth Viper, Seasoned Cryomancer, and Vren, the Relentless are
-    target-card improvements: their trigger JSON now contains the repeated
-    scoped unless effect, the filtered discard reflexive effects, and the
-    typed zone-change quantity, respectively.
-  - Narset of the Ancient Way is a non-target improvement: its discarded-card
-    reflexive damage now retains the announced creature/planeswalker target
-    and mana-value amount; the runtime test passed.
-  - Thorin, Mountain-king is a non-target improvement: the “become attached
-    this way” reflexive trigger now retains its own target creature instead of
-    inheriting the entering ability's `ParentTarget`; support remains true and
-    the existing parser test passes.
-  - Vivien's Invocation is a non-target improvement: its reflexive damage now
-    retains the opponent-creature target and entering-creature power amount;
-    the runtime test passed.
-  No neutral or regressive non-target ability changes were found.
-- Ten patches were exported from `988bc34..local-fixes` (0001–0010).
-  `scripts/apply-phase-patches.sh` applied them from the clean pinned submodule.
-  Reapplied tree `e4cd4d366609429566c36e7686a0e325f0b98455` exactly matched the
-  `local-fixes` tree; the submodule was returned to `local-fixes`.
-- The shared reflexive-target handling is covered by commits
-  `6999757f8330c036daba63a8a1298a6e533e9114` (Narset runtime regression),
-  `3063c3e9ea3549a157b8ebf097c91f4eabc06719` (typed-target reflexive binding),
-  and `75a091949084ddd19609739a9d36076742bb0c48` (restrict the binding skip to
-  `WhenYouDo`, preserving ordinary conditional riders such as Cragganwick's).
-- `cargo build --release -p phase-env` passed in 7m58s. It emitted the existing
-  workspace-resolver warning and `phase-env/src/main.rs:38` dead-code warning
-  for `Out`. A seeded random game through `driver/phase_env.py`, using
-  `/home/ubuntu/repos/eng/pdata/patched/` and both 58-card decks containing
-  two copies of every fixed card, reached `game_over` (winner P0, 1,303 trace
-  events) with `unresolved: []`.
-- The generator reported 558 parser warnings across three
-  categories. It also dirtied `known-tokens.toml` and `mtgjson-vintage`; both
-  were reverted after generation and are not part of the patch series.
+- `cargo fmt --all` passed. The final full `cargo test -p phase-engine` passed:
+  13,790 engine unit tests, 15,603 tests across the other targets, and zero
+  failures; 4 engine unit, 12 other-target, and 2 doc tests were ignored.
+  The first full run exposed two old Karoo tests expecting a choice when
+  `MayCost` was unpayable. The follow-up test commit `55b63c91a` keeps the
+  voluntary-decline case payable and asserts the unpayable auto-decline path;
+  both focused tests and the final full suite pass.
+- Baseline card data at
+  `/home/ubuntu/repos/eng/pdata/baseline-988bc34-card-data.json` has SHA-256
+  `45bb5ca39612a82b255c121f0fba69d2a688b832242aad0b1a38e36f575ed8c1`.
+  Final patched data is at
+  `/home/ubuntu/repos/eng/pdata/patched/card-data.json`, SHA-256
+  `a6172384ac49eff2105c12f6b2ca991be9a4dd871352cd01b6c6064152ec3e45`.
+  The baseline metadata is MTGJSON `5.3.0+20261107`; the regenerated patched
+  data is `5.3.0+20261108`. Coverage increased from 32,303/36,280 to
+  32,321/36,280 (89.1%). All ten fixed targets are supported with `gap_count: 0`.
+- The supported-status diff against the requested `45bb...` baseline found
+  zero supported-to-unsupported flips. Semantic audit covered 32,835 supported
+  cards, with 191 global findings; Case, Theorist's Sanctum, and Jace's
+  Machinations each had zero findings.
+- Parsed-ability review:
+  - The “this way” / Essence Burn “exile it instead” slice had eight changed
+    records. The target-card changes are improvements for Anzrag's Rampage,
+    Essence Burn, Rottenmouth Viper, Seasoned Cryomancer, and Vren.
+    Non-target improvements: Narset of the Ancient Way now retains its
+    reflexive target and mana-value amount; Thorin, Mountain-king retains its
+    own target instead of inheriting `ParentTarget`; Vivien's Invocation
+    retains its opponent-creature target and power amount. No regression was
+    found in this slice.
+  - `GraveyardCastPermission` markers were present on 76 cards in both data
+    sets, with no changed records. `MayCost` markers rose from 36 to 37, only
+    Theorist's Sanctum; `ActivateAsInstant` markers rose from 5 to 6, only
+    Jace's Machinations. There were no non-target changes in these three
+    permission/replacement classes.
+  - Snaremaster Sprite's trigger now preserves the opponent-controller filter
+    on its tap effect (improvement; it remains supported). Wurmquake's
+    `Then for each opponent` clause remains explicitly unimplemented and the
+    card remains unsupported (neutral, no support regression).
+- Re-exported 14 patches (`0001`–`0014`). The apply-script check from the
+  clean pinned submodule reproduced tree
+  `1a6c8ea136cc1ecabcdde3fa60a8e965011cf1a4`, matching `local-fixes`; the
+  submodule was returned to `local-fixes`.
+- `cargo build --release -p phase-env` passed (existing resolver and
+  `Out`-is-never-constructed warnings). The smoke game with two copies of each
+  fixed card in both decks reached `game_over` (winner P0, 922 trace events)
+  using the patched data root, with `unresolved: []`.
+- Card-data generation reported 554 parser warnings across three categories.
+  The generator-dirtied `known-tokens.toml` and `mtgjson-vintage` were reverted.
 
-The engine implementation reviews in this file were self-reviews; no
+The engine implementation reviews recorded here were self-reviews only; no
 independent review was performed.

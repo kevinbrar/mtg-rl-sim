@@ -1,0 +1,490 @@
+From 37f86de726ffefa5f5031747cc96728e6a75d193 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sun, 8 Nov 2026 23:23:36 +0000
+Subject: [PATCH 12/14] Add interactive Behold as-enters replacements
+
+Support single-object Behold costs on as-enters replacements, including the choice/resume path and automatic decline when unpayable. Anchors: reveal-land and shock-land replacement parsers, plus the Mox Diamond and Mimeoplasm MayCost payment/resume paths. CR 614.12a, 118.3, 701.4a. Tests: theorists_sanctum* and mox_diamond_unpayable_cost_declines_without_prompt.
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/costs.rs               |  41 +++-
+ .../src/game/engine_resolution_choices.rs     |  11 ++
+ crates/engine/src/game/replacement.rs         |  17 ++
+ crates/engine/tests/integration/main.rs       |   1 +
+ .../mox_diamond_discard_cost_2853.rs          |  15 +-
+ .../tests/integration/theorists_sanctum.rs    | 186 ++++++++++++++++++
+ crates/phase-ast/src/types/ability.rs         |  10 +-
+ .../src/parser/oracle_replacement.rs          |  73 +++++++
+ 8 files changed, 340 insertions(+), 14 deletions(-)
+ create mode 100644 crates/engine/tests/integration/theorists_sanctum.rs
+
+diff --git a/crates/engine/src/game/costs.rs b/crates/engine/src/game/costs.rs
+index f1ae267d6..f05687207 100644
+--- a/crates/engine/src/game/costs.rs
++++ b/crates/engine/src/game/costs.rs
+@@ -2783,8 +2783,31 @@ fn pay_ability_cost_inner(
+         // interactive `WaitingFor::PayCost { kind: UnattachFrom }` detour before
+         // this resume runs, so this arm is an idempotent no-op (mirrors the
+         // non-self Exile/Sacrifice interactive-cost arms).
+-        | AbilityCost::UnattachFrom { .. }
+-        | AbilityCost::Behold { .. } => {}
++        | AbilityCost::UnattachFrom { .. } => {}
++        // CR 614.12a + CR 118.3 + CR 701.4a: resolution-time single-object
++        // Behold costs either auto-pay their sole candidate or pause for a
++        // selection; the replacement resume continues after that choice.
++        AbilityCost::Behold {
++            count: 1,
++            filter,
++            action: crate::types::ability::BeholdCostAction::ChooseOrReveal,
++            type_choice: None,
++        } if matches!(scope, PaymentScope::Resolution { .. }) => {
++            let choices =
++                super::casting_costs::eligible_behold_choices(state, player, source_id, filter);
++            if choices.is_empty() {
++                return Ok(payment_failed("no eligible object to behold"));
++            }
++            if choices.len() == 1 {
++                super::effects::behold::reveal_if_from_hand(state, player, choices[0], events);
++                return Ok(PaymentOutcome::Paid);
++            }
++            state.waiting_for = WaitingFor::BeholdChoice { player, choices };
++            return Ok(PaymentOutcome::Paused {
++                remaining_cost: None,
++            });
++        }
++        AbilityCost::Behold { .. } => {}
+         AbilityCost::Discard { .. } | AbilityCost::NinjutsuFamily { .. } => {
+             // At Activation these shapes are intercepted by the interactive
+             // WaitingFor detours before payment is invoked, so passing through
+@@ -3550,6 +3573,20 @@ fn can_pay_resolution(
+             );
+             eligible.len() >= count
+         }
++        // CR 614.12a + CR 118.3 + CR 701.4a: a single-object Behold
++        // replacement cost is payable only when a matching object exists.
++        AbilityCost::Behold {
++            count: 1,
++            filter,
++            action: crate::types::ability::BeholdCostAction::ChooseOrReveal,
++            type_choice: None,
++        } => !super::casting_costs::eligible_behold_choices(
++            state,
++            payer,
++            ability.source_id,
++            filter,
++        )
++        .is_empty(),
+         // CR 118.12 + CR 701.26a: Resolution-time optional tap-creatures costs
+         // are payable when enough currently untapped matching creatures can be
+         // selected. The concrete selection is surfaced through WaitingFor::PayCost.
+diff --git a/crates/engine/src/game/engine_resolution_choices.rs b/crates/engine/src/game/engine_resolution_choices.rs
+index cab4674be..61d5696f7 100644
+--- a/crates/engine/src/game/engine_resolution_choices.rs
++++ b/crates/engine/src/game/engine_resolution_choices.rs
+@@ -4260,6 +4260,17 @@ pub(super) fn handle_resolution_choice(
+             // controlled battlefield permanent is already public). The non-chosen
+             // candidates are never revealed — they stay hidden.
+             effects::behold::reveal_if_from_hand(state, player, chosen_id, events);
++            // CR 614.12a: a Behold choice can pay a parked as-enters MayCost;
++            // resume that replacement instead of the ordinary effect continuation.
++            if state
++                .pending_replacement
++                .as_ref()
++                .is_some_and(|pending| pending.may_cost_paid)
++            {
++                let waiting_for =
++                    super::engine_replacement::handle_replacement_choice(state, 0, events)?;
++                return Ok(ResolutionChoiceOutcome::WaitingFor(waiting_for));
++            }
+             // CR 608.2c: the behold was performed → the "if you do, [rider]" gate
+             // fires. On the optional Sarkhan path this re-affirms the accept-time
+             // clobber (`resolve_optional_effect_decision`); for a mandatory
+diff --git a/crates/engine/src/game/replacement.rs b/crates/engine/src/game/replacement.rs
+index 380159852..dd2db6cde 100644
+--- a/crates/engine/src/game/replacement.rs
++++ b/crates/engine/src/game/replacement.rs
+@@ -13030,6 +13030,23 @@ fn replay_pending_replacement(
+     } else {
+         None
+     };
++    // CR 118.3 + CR 614.12a: when a MayCost replacement is unpayable, only
++    // declining remains legal, so apply its decline branch without prompting.
++    let index = index.or_else(|| {
++        let pending = state.pending_replacement.as_ref()?;
++        if !pending.is_optional {
++            return None;
++        }
++        let rid = *pending.candidates.first()?;
++        let replacement = replacement_definition_for_id(state, rid)?;
++        let ReplacementMode::MayCost { cost, .. } = &replacement.mode else {
++            return None;
++        };
++        let payer = pending
++            .choice_player
++            .or_else(|| replacement_choice_player(state, &pending.proposed, rid))?;
++        (!cost.is_payable_for_replacement(state, payer, rid.source)).then_some(1)
++    });
+     let Some(index) = index else {
+         // A nested optional prompt never inherits acceptance from an order.
+         if had_tail {
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index 8c1d3cb13..d33869f44 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -249,6 +249,7 @@ mod target_instance_identity_9280;
+ mod terra_herald_optional_prompt;
+ mod tezzeret_cruel_captain_emblem;
+ mod thada_adel_search_damaged_player;
++mod theorists_sanctum;
+ mod thoughtweft_trample_regression;
+ mod total_war_attacking_player_scope;
+ mod types_ability;
+diff --git a/crates/engine/tests/integration/mox_diamond_discard_cost_2853.rs b/crates/engine/tests/integration/mox_diamond_discard_cost_2853.rs
+index 26487829d..0d43e565f 100644
+--- a/crates/engine/tests/integration/mox_diamond_discard_cost_2853.rs
++++ b/crates/engine/tests/integration/mox_diamond_discard_cost_2853.rs
+@@ -155,7 +155,7 @@ fn mox_diamond_decline_routes_to_graveyard_without_discard() {
+ /// CR 614.12a: accepting with no land to discard is an unpayable cost — it falls
+ /// through to the decline branch (Mox to graveyard), never entering for free.
+ #[test]
+-fn mox_diamond_accept_unpayable_routes_to_graveyard() {
++fn mox_diamond_unpayable_cost_declines_without_prompt() {
+     let mut scenario = GameScenario::new();
+     let mox = scenario
+         .add_creature_to_hand(P0, "Mox Diamond", 0, 0)
+@@ -167,18 +167,11 @@ fn mox_diamond_accept_unpayable_routes_to_graveyard() {
+     enter_via_change_zone(runner.state_mut(), mox);
+ 
+     assert!(
+-        matches!(
+-            runner.state().waiting_for,
+-            WaitingFor::ReplacementChoice { .. }
+-        ),
+-        "expected Mox Diamond MayCost ReplacementChoice, got {:?}",
++        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
++        "an unpayable MayCost should auto-decline without a prompt, got {:?}",
+         runner.state().waiting_for
+     );
+-
+-    runner
+-        .act(GameAction::ChooseReplacement { index: 0 })
+-        .expect("accepting an unpayable cost should resolve");
+-
++    assert!(runner.state().stack.is_empty());
+     assert_eq!(
+         runner.state().objects[&mox].zone,
+         Zone::Graveyard,
+diff --git a/crates/engine/tests/integration/theorists_sanctum.rs b/crates/engine/tests/integration/theorists_sanctum.rs
+new file mode 100644
+index 000000000..3895ba859
+--- /dev/null
++++ b/crates/engine/tests/integration/theorists_sanctum.rs
+@@ -0,0 +1,186 @@
++use engine::game::scenario::{GameRunner, GameScenario, P0};
++use engine::types::actions::GameAction;
++use engine::types::events::GameEvent;
++use engine::types::game_state::WaitingFor;
++use engine::types::identifiers::ObjectId;
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const THEORISTS_SANCTUM: &str = "({T}: Add {U}.)\n\
++As this land enters, you may behold a Jace. If you don't, this land enters tapped. \
++(To behold a Jace, choose a Jace you control or reveal a Jace card from your hand.)\n\
++{2}{U}, {T}: Empower Jace 2.";
++
++fn setup(jace_count: usize) -> (GameRunner, ObjectId, Vec<ObjectId>) {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let land = scenario
++        .add_land_to_hand(P0, "Theorist's Sanctum")
++        .from_oracle_text(THEORISTS_SANCTUM)
++        .id();
++    let jaces = (0..jace_count)
++        .map(|index| {
++            scenario
++                .add_creature_to_hand(P0, &format!("Jace fixture {index}"), 0, 0)
++                .as_planeswalker_with_loyalty("Jace", 3)
++                .id()
++        })
++        .collect();
++    (scenario.build(), land, jaces)
++}
++
++#[test]
++fn theorists_sanctum_beholding_a_jace_enters_untapped() {
++    let (mut runner, land, jaces) = setup(1);
++    let card_id = runner.state().objects[&land].card_id;
++
++    runner
++        .act(GameAction::PlayLand {
++            object_id: land,
++            card_id,
++        })
++        .expect("playing Theorist's Sanctum must be accepted");
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::ReplacementChoice { .. }
++    ));
++
++    let result = runner
++        .act(GameAction::ChooseReplacement { index: 0 })
++        .expect("beholding the only Jace must be accepted");
++    assert!(
++        result.events.iter().any(|event| matches!(
++            event,
++            GameEvent::CardsRevealed { card_ids, .. } if card_ids.contains(&jaces[0])
++        )),
++        "CR 701.4a: the sole Jace card in hand must be revealed"
++    );
++    assert_eq!(runner.state().objects[&land].zone, Zone::Battlefield);
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::Priority { .. }
++    ));
++    assert!(runner.state().stack.is_empty());
++    assert!(
++        !runner.state().objects[&land].tapped,
++        "CR 614.12a: paying the Behold cost means the land enters untapped"
++    );
++}
++
++#[test]
++fn theorists_sanctum_interactive_behold_resumes_entry_untapped() {
++    let (mut runner, land, jaces) = setup(2);
++    let card_id = runner.state().objects[&land].card_id;
++
++    runner
++        .act(GameAction::PlayLand {
++            object_id: land,
++            card_id,
++        })
++        .expect("playing Theorist's Sanctum must be accepted");
++    assert!(
++        matches!(
++            runner.state().waiting_for,
++            WaitingFor::ReplacementChoice { .. }
++        ),
++        "expected the optional Behold replacement choice, got {:?}",
++        runner.state().waiting_for
++    );
++
++    runner
++        .act(GameAction::ChooseReplacement { index: 0 })
++        .expect("accepting the Behold cost must be accepted");
++    let WaitingFor::BeholdChoice { choices, .. } = &runner.state().waiting_for else {
++        panic!(
++            "two Jaces in hand should require a Behold choice, got {:?}",
++            runner.state().waiting_for
++        );
++    };
++    assert_eq!(choices.len(), 2, "both Jaces should be legal choices");
++
++    let result = runner
++        .act(GameAction::SelectCards {
++            cards: vec![jaces[0]],
++        })
++        .expect("choosing a Jace must resume the entry replacement");
++    assert!(
++        result.events.iter().any(|event| matches!(
++            event,
++            GameEvent::CardsRevealed { card_ids, .. } if card_ids.contains(&jaces[0])
++        )),
++        "CR 701.4a: selecting a Jace card from hand must reveal it"
++    );
++    assert!(
++        result.events.iter().all(|event| !matches!(
++            event,
++            GameEvent::CardsRevealed { card_ids, .. } if card_ids.contains(&jaces[1])
++        )),
++        "CR 701.4a: non-selected Jace cards remain unrevealed"
++    );
++    assert_eq!(runner.state().objects[&land].zone, Zone::Battlefield);
++    assert!(
++        !runner.state().objects[&land].tapped,
++        "CR 614.12a: paying the Behold cost means the land enters untapped"
++    );
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::Priority { .. }
++    ));
++    assert!(runner.state().stack.is_empty());
++}
++
++#[test]
++fn theorists_sanctum_declining_behold_enters_tapped() {
++    let (mut runner, land, _) = setup(1);
++    let card_id = runner.state().objects[&land].card_id;
++
++    runner
++        .act(GameAction::PlayLand {
++            object_id: land,
++            card_id,
++        })
++        .expect("playing Theorist's Sanctum must be accepted");
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::ReplacementChoice { .. }
++    ));
++
++    runner
++        .act(GameAction::ChooseReplacement { index: 1 })
++        .expect("declining the Behold cost must be accepted");
++    assert_eq!(runner.state().objects[&land].zone, Zone::Battlefield);
++    assert!(
++        runner.state().objects[&land].tapped,
++        "CR 614.12a: declining the Behold cost taps the entering land"
++    );
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::Priority { .. }
++    ));
++    assert!(runner.state().stack.is_empty());
++}
++
++#[test]
++fn theorists_sanctum_without_a_jace_enters_tapped_without_prompt() {
++    let (mut runner, land, _) = setup(0);
++    let card_id = runner.state().objects[&land].card_id;
++
++    runner
++        .act(GameAction::PlayLand {
++            object_id: land,
++            card_id,
++        })
++        .expect("playing Theorist's Sanctum must be accepted");
++
++    assert!(
++        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
++        "an unpayable Behold cost must auto-decline without a prompt, got {:?}",
++        runner.state().waiting_for
++    );
++    assert!(runner.state().stack.is_empty());
++    assert_eq!(runner.state().objects[&land].zone, Zone::Battlefield);
++    assert!(
++        runner.state().objects[&land].tapped,
++        "CR 118.3 + CR 614.12a: without a legal Jace the cost cannot be paid"
++    );
++}
+diff --git a/crates/phase-ast/src/types/ability.rs b/crates/phase-ast/src/types/ability.rs
+index 342e03d8d..f689abcb4 100644
+--- a/crates/phase-ast/src/types/ability.rs
++++ b/crates/phase-ast/src/types/ability.rs
+@@ -19185,7 +19185,7 @@ pub fn is_direct_resolution_optional_payment_branch(cost: &AbilityCost) -> bool
+ /// absent: the optional-branch selector intercepts it before this executor and
+ /// rewrites the completed frame to an empty prepaid composite.
+ pub fn supported_at_resolution(cost: &AbilityCost) -> bool {
+-    use crate::types::ability::{CardSelectionMode, DiscardSelfScope};
++    use crate::types::ability::{BeholdCostAction, CardSelectionMode, DiscardSelfScope};
+     match cost {
+         AbilityCost::Mana { .. }
+         | AbilityCost::ManaDynamic { .. }
+@@ -19214,6 +19214,14 @@ pub fn supported_at_resolution(cost: &AbilityCost) -> bool {
+         // CR 118.3: The shared effect-cost predicate admits only deterministic
+         // payment effects that the authority resolves directly.
+         AbilityCost::EffectCost { .. } if cost.supports_effect_cost_payment() => true,
++        // CR 614.12a + CR 118.3 + CR 701.4a: a single-object "behold a [quality]"
++        // replacement cost has an interactive resolution path.
++        AbilityCost::Behold {
++            count: 1,
++            action: BeholdCostAction::ChooseOrReveal,
++            type_choice: None,
++            ..
++        } => true,
+         AbilityCost::Discard { .. }
+         | AbilityCost::Sacrifice(_)
+         | AbilityCost::Tap
+diff --git a/crates/phase-parser/src/parser/oracle_replacement.rs b/crates/phase-parser/src/parser/oracle_replacement.rs
+index 661cbd685..0a45a8f89 100644
+--- a/crates/phase-parser/src/parser/oracle_replacement.rs
++++ b/crates/phase-parser/src/parser/oracle_replacement.rs
+@@ -230,6 +230,11 @@ fn parse_replacement_line_inner(text: &str, card_name: &str) -> Option<Replaceme
+         return Some(def);
+     }
+ 
++    // --- "As ~ enters, you may behold a [quality]. If you don't, it enters tapped." ---
++    if let Some(def) = parse_as_enters_behold_tapped(&norm_lower, &normalized, &text) {
++        return Some(def);
++    }
++
+     // --- Shock lands: "As ~ enters, you may pay N life. If you don't, it enters tapped." ---
+     // Must be checked BEFORE the generic "enters tapped" pattern.
+     if let Some(def) = parse_shock_land(&norm_lower, &text) {
+@@ -2163,6 +2168,74 @@ fn parse_shock_land(norm_lower: &str, original_text: &str) -> Option<Replacement
+     )
+ }
+ 
++/// CR 614.1c + CR 614.12a + CR 701.4a: parse a single-object Behold cost on an
++/// as-enters replacement. Paying the cost leaves the permanent untapped;
++/// declining applies the enters-tapped modifier.
++fn parse_as_enters_behold_tapped(
++    norm_lower: &str,
++    normalized: &str,
++    original_text: &str,
++) -> Option<ReplacementDefinition> {
++    let ((), after_prefix) = nom_on_lower(normalized, norm_lower, |i| {
++        value(
++            (),
++            preceded(
++                tag("as "),
++                alt((
++                    tag("~ enters, you may "),
++                    tag("~ enters the battlefield, you may "),
++                )),
++            ),
++        )
++        .parse(i)
++    })?;
++
++    let after_prefix_lower = after_prefix.to_lowercase();
++    let (cost_text, decline_text) =
++        split_once_on_lower(after_prefix, &after_prefix_lower, ". if you don't, ")?;
++    let cost = crate::parser::oracle_cost::parse_single_cost(cost_text.trim());
++    if !matches!(
++        cost,
++        AbilityCost::Behold {
++            count: 1,
++            action: crate::types::ability::BeholdCostAction::ChooseOrReveal,
++            type_choice: None,
++            ..
++        }
++    ) {
++        return None;
++    }
++
++    let decline_lower = decline_text.to_lowercase();
++    let ((), decline_rest) = nom_on_lower(decline_text, &decline_lower, |i| {
++        value(
++            (),
++            terminated(
++                alt((
++                    tag("~ enters tapped"),
++                    tag("~ enters the battlefield tapped"),
++                )),
++                opt(char('.')),
++            ),
++        )
++        .parse(i)
++    })?;
++    if !decline_rest.trim().is_empty() {
++        return None;
++    }
++
++    Some(
++        ReplacementDefinition::new(ReplacementEvent::Moved)
++            .mode(ReplacementMode::MayCost {
++                cost,
++                decline: Some(Box::new(unconditional_tap_self_ability())),
++            })
++            .valid_card(TargetFilter::SelfRef)
++            .destination_zone(Zone::Battlefield)
++            .description(original_text.to_string()),
++    )
++}
++
+ /// CR 608.2d + CR 608.2c + CR 701.20e: For a leading "look at an opponent's hand"
+ /// inside an as-enters replacement, front an explicit `Choose(Opponent)` step and
+ /// rebind the look to the chosen opponent. Returns
+-- 
+2.56.0
+
