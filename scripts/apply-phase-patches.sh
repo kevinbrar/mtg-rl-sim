@@ -25,6 +25,9 @@ fi
 
 git -C "$PHASE" cat-file -e "$PINNED^{commit}"
 git -C "$PHASE" checkout --detach "$PINNED"
-git -C "$PHASE" am "${patches[@]}"
+git -C "$PHASE" \
+    -c user.name="Phase Patch Applicator" \
+    -c user.email="phase-patches@local.invalid" \
+    am "${patches[@]}"
 
 printf 'Applied phase patches at %s\n' "$(git -C "$PHASE" rev-parse HEAD)"
