@@ -14,5 +14,5 @@ A Standard-only MTG agent trained by self-play RL that plays beyond human level,
 
 ## Autonomy envelope
 - Devin decides technical approach, libraries, repo structure and makes engine changes without asking.
-- Devin asks for: genuine forks in what is being built, things only Kevin can do (logins, secrets), and public actions under Kevin's name that are new in kind.
-- Every correctness-critical change needs one check Devin did not write (XMage differential, XMage's own tests, or an independent reviewer). When Kevin names a verification, it is a gate.
+- Devin merges PRs itself when required checks are green; no human approver. Kevin can be in the loop but is not needed in it: escalation triggers and packet format are in `AGENTS.md`.
+- Named oracle: XMage (mage-bench). Every correctness-critical change needs one check Devin did not write; the XMage differential is mandatory for engine/card changes (see `AGENTS.md`).

@@ -10,7 +10,7 @@ _Updated 2026-11-09._
 
 ## In progress
 - Extend the differential harness to real Standard meta decks containing the 18 fixed cards (targets, blocks, activated abilities, modal choices, mulligans).
-- Governance research (child session) → recommendations.
+- Governance: `AGENTS.md` + `docs/review-patterns.md` landed; CI checks (`fmt`, `clippy`, `test-full`, `xmage-diff`, `mutants`, `packet-lint`), branch protection, PR template, `oracle/known-diffs.toml`, first postmortem (18 cards / no XMage) still to implement.
 - CI: apply patches + quick phase-vs-XMage game.
 
 ## Next
