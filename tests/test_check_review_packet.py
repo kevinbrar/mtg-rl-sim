@@ -115,6 +115,9 @@ def test_results_require_an_artifact_path_or_link(
     "artifact",
     (
         "artifacts/engine-tests.log",
+        "artifacts/run@v1.log",
+        "/home/ubuntu/x.log",
+        "phase-patches/0017-foo.patch",
         "tests/test_check_review_packet.py",
         ".github/workflows/ci.yml",
         "[test log](https://example.test/engine.log)",
@@ -123,6 +126,15 @@ def test_results_require_an_artifact_path_or_link(
 def test_results_accept_artifact_paths_and_links(artifact: str) -> None:
     row = f"Parser behavior | focused test | passed | {artifact} | N"
     assert validate_review_packet(packet(evidence_rows=(row,)), ["README.md"]) == []
+
+
+def test_version_like_text_is_not_an_artifact_path() -> None:
+    row = "Parser behavior | focused test | passed | v1.0 pending | N"
+    errors = validate_review_packet(packet(evidence_rows=(row,)), ["README.md"])
+    assert (
+        "Evidence table row 1 has a result but Artifact must contain a link or path"
+        in errors
+    )
 
 
 @pytest.mark.parametrize(

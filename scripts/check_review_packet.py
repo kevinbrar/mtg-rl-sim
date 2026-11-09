@@ -90,7 +90,7 @@ def _has_artifact_reference(artifact: str) -> bool:
     return bool(
         re.search(r"https?://\S+|\[[^\]]+\]\([^)]+\)", artifact, re.IGNORECASE)
         or re.search(
-            r"(?:^|[\s`])(?:/|\.{1,2}/)?(?:[\w.+-]+/)*[\w.+-]+\.[\w+-]+\b",
+            r"(?:^|[\s`])(?:/|\.{1,2}/)?(?:[\w.@+-]+/)*[\w.@+-]+\.[A-Za-z][\w+-]*\b",
             artifact,
             re.IGNORECASE,
         )
