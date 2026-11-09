@@ -1,0 +1,28 @@
+From 7c0fde96333e96226dfb6f986fd43bf9287720ba Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Mon, 9 Nov 2026 05:15:50 +0000
+Subject: [PATCH 29/29] Clarify Firebender parser regression assertions
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/phase-parser/src/parser/oracle_trigger.rs | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/crates/phase-parser/src/parser/oracle_trigger.rs b/crates/phase-parser/src/parser/oracle_trigger.rs
+index 9d42f1c69..4ef735f9a 100644
+--- a/crates/phase-parser/src/parser/oracle_trigger.rs
++++ b/crates/phase-parser/src/parser/oracle_trigger.rs
+@@ -26388,9 +26388,13 @@ mod ability_triggered_attack_trigger_tests {
+         );
+         let execute = trigger.execute.expect("trigger body must be parsed");
+         let body = format!("{execute:?}");
++        // allow-noncombinator: AST debug-shape assertion, not parser dispatch.
+         assert!(!body.contains("Unimplemented"), "{body}");
++        // allow-noncombinator: AST debug-shape assertion, not parser dispatch.
+         assert!(body.contains("CopySpell"), "{body}");
++        // allow-noncombinator: AST debug-shape assertion, not parser dispatch.
+         assert!(body.contains("ParentTarget"), "{body}");
++        // allow-noncombinator: AST debug-shape assertion, not parser dispatch.
+         assert!(body.contains("MayChooseNewTargets"), "{body}");
+     }
+ }

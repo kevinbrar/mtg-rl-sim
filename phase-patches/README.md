@@ -284,12 +284,41 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
   passed with 121 residue obligations under the 123 ceiling.
 - Re-exported 27 phase patches. The apply-script check reproduced tree
   `a2861af3485b72ed9d1ba8115537f728269c4d16`, matching `local-fixes`.
-- Firebender Ascension remains an unresolved design fork: the AST has
-  `AbilityTriggered`, but the engine has no corresponding event and leaves the
-  matcher unimplemented. Prior art includes Aboleth Spawn, and triggered stack
-  entries are already copyable. A generic event with stable identity for the
-  triggering ability is recommended; event emission and stack-order timing
-  still need a design decision before implementation.
-- Card-data regeneration, coverage and semantic audits, parsed-ability review,
-  full engine suite, and smoke game remain deferred to the final sub-batch C
-  gates.
+- Firebender Ascension now uses a same-pass `AbilityTriggered` event carrying
+  the triggering stack-entry identity; the matcher checks the attacking
+  creature and attack-declaration cause, and the copy effect resolves that
+  exact entry through the existing triggered-ability copy path. If the original
+  entry has left the stack, the existing `CopySourceLookup::Gone` behavior
+  resolves the copy effect as a no-op, without falling back to another entry.
+  Focused runtime tests cover Firebending, the fourth-counter choice, accepting
+  and declining the copy, a combat-damage trigger, and an opponent's attacker.
+- Final Firebender phase commits are `09534e898e7bd56c5292befcf3e511c30e24d347`
+  and `7c0fde963`; exported as patches 0028 and 0029.
+
+## Final 18-card gates
+
+- Card data: `/home/ubuntu/repos/eng/pdata/patched/card-data.json`,
+  SHA-256 `e9a3303f9e09c5c5474c0607a434ceebcc3f431d6c4d16c85e3cad162b1fda1a`
+  (MTGJSON 2026-11-08); coverage is
+  32,330/36,280 (89.1%). All 18 target cards are supported with
+  `gap_count: 0`, including Extrapolate and Firebender.
+- Semantic audit: 32,843 supported cards audited; 191 cards have findings;
+  none of the 18 targets were flagged.
+- Supported-to-unsupported comparison against the requested 45bb5ca3 baseline found one
+  flip: Gaea's Liege. Its nine focused integration failures also reproduce at
+  the pre-Firebender `5d9db2489` parent.
+- Parsed-ability diff against the 988bc34 data artifact reported no card-parse
+  changes. The diff artifacts are in `/home/ubuntu/repos/eng/pdata/patched/`.
+- Gate A passed against `988bc3412f5d4e475c1837fbc88062b14d1f5489`; Gate G/H
+  passed with 121 residue obligations under the 123 ceiling.
+- Full `cargo test -p phase-engine` did not pass: 2,887 passed, 10 failed,
+  3 ignored. Nine failures are Gaea's Liege tests reproduced at the
+  pre-Firebender parent. The remaining failure,
+  `issue_6877_departed_triggering_spell::older_trigger_copies_its_own_cast_not_a_later_recast`,
+  passed when rerun alone on the current tree; no cause was confirmed.
+- `phase-env` release build passed. A raw JSON sideboard game containing all
+  18 targets plus Opt and Shock in each sideboard reached `game_over` after
+  24 turns and 390 decisions, with no unresolved cards.
+- Patch reproduction passed: all 29 patches reproduce the `local-fixes` tree.
+  Generator outputs were isolated in the patch-reproduction worktree; the
+  active phase worktree was not changed by card-data generation.

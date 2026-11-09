@@ -1,0 +1,1038 @@
+From 09534e898e7bd56c5292befcf3e511c30e24d347 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Mon, 9 Nov 2026 05:06:14 +0000
+Subject: [PATCH 28/29] Add Firebender Ascension trigger copying
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ client/src/adapter/types.ts                   |   3 +-
+ crates/engine/src/game/effects/copy_spell.rs  |  22 ++
+ crates/engine/src/game/log.rs                 |   6 +-
+ crates/engine/src/game/public_state.rs        |   1 +
+ crates/engine/src/game/targeting.rs           |   2 +
+ crates/engine/src/game/trigger_index.rs       |   4 +-
+ crates/engine/src/game/trigger_matchers.rs    |  22 +-
+ crates/engine/src/game/triggers.rs            | 165 ++++++++-
+ crates/engine/src/types/events.rs             |  10 +
+ crates/engine/src/types/game_state.rs         |   1 +
+ .../tests/integration/firebender_ascension.rs | 322 ++++++++++++++++++
+ crates/engine/tests/integration/main.rs       |   1 +
+ .../phase-parser/src/parser/oracle_trigger.rs |  51 +++
+ .../dc0ea3d6-ff25-4d04-8c4d-1b2c6e6978ce.json |   7 +
+ 14 files changed, 596 insertions(+), 21 deletions(-)
+ create mode 100644 crates/engine/tests/integration/firebender_ascension.rs
+ create mode 100644 protocol/changes/dc0ea3d6-ff25-4d04-8c4d-1b2c6e6978ce.json
+
+diff --git a/client/src/adapter/types.ts b/client/src/adapter/types.ts
+index 482b8af47..5b038b122 100644
+--- a/client/src/adapter/types.ts
++++ b/client/src/adapter/types.ts
+@@ -2407,7 +2407,7 @@ export type KeywordAction =
+ export type StackEntryKind =
+   | { type: "Spell"; data: { card_id: CardId; ability?: ResolvedAbility; actual_mana_spent?: number } }
+   | { type: "ActivatedAbility"; data: { source_id: ObjectId; ability: ResolvedAbility } }
+-  | { type: "TriggeredAbility"; data: { source_id: ObjectId; ability: ResolvedAbility; description?: string; source_name?: string; provenance?: SyntheticTriggerProvenance } }
++  | { type: "TriggeredAbility"; data: { source_id: ObjectId; ability: ResolvedAbility; trigger_event?: GameEvent; description?: string; source_name?: string; provenance?: SyntheticTriggerProvenance } }
+   | { type: "KeywordAction"; data: { action: KeywordAction } }
+   // Pre-M10 combat damage on the stack: one object per combat damage step,
+   // holding that step's frozen assignments. Neither a spell nor an ability, so
+@@ -3890,6 +3890,7 @@ export type GameEvent =
+   // `trigger_state`, `stack_entry` and `activation_cost` are engine-internal
+   // trigger authority the UI never renders.
+   | { type: "AbilityActivated"; data: { player_id: PlayerId; source_id: ObjectId; kind?: ActivatedAbilityKind } }
++  | { type: "AbilityTriggered"; data: { trigger_instance: ObjectId; source: ObjectId; controller: PlayerId; cause: GameEvent } }
+   | { type: "ExhaustAbilityActivated"; data: { player_id: PlayerId; source_id: ObjectId; is_mana_ability: boolean } }
+   // `from` is null for an object that enters from no zone (a created token).
+   | { type: "ZoneChanged"; data: { object_id: ObjectId; from: Zone | null; to: Zone } }
+diff --git a/crates/engine/src/game/effects/copy_spell.rs b/crates/engine/src/game/effects/copy_spell.rs
+index e5aa2def2..0953c19e9 100644
+--- a/crates/engine/src/game/effects/copy_spell.rs
++++ b/crates/engine/src/game/effects/copy_spell.rs
+@@ -636,6 +636,28 @@ fn copy_source_from_triggering_activation(source: TriggeringActivation<'_>) -> C
+ }
+ 
+ fn copy_source_entry(state: &GameState, ability: &ResolvedAbility) -> CopySourceLookup {
++    if let (
++        Effect::CopySpell {
++            target: TargetFilter::ParentTarget,
++            ..
++        },
++        Some(GameEvent::AbilityTriggered {
++            trigger_instance, ..
++        }),
++    ) = (&ability.effect, state.current_trigger_event.as_ref())
++    {
++        return state
++            .stack
++            .iter()
++            .find(|entry| {
++                entry.id == *trigger_instance
++                    && matches!(entry.kind, StackEntryKind::TriggeredAbility { .. })
++            })
++            .cloned()
++            .map(|entry| Box::new(CopySource::on_stack(entry)))
++            .map_or(CopySourceLookup::Gone, CopySourceLookup::Source);
++    }
++
+     if let Effect::CopySpell {
+         target, retarget, ..
+     } = &ability.effect
+diff --git a/crates/engine/src/game/log.rs b/crates/engine/src/game/log.rs
+index 776d399c4..82c3fc4b8 100644
+--- a/crates/engine/src/game/log.rs
++++ b/crates/engine/src/game/log.rs
+@@ -514,7 +514,8 @@ fn importance(event: &GameEvent) -> LogImportance {
+         | GameEvent::PhysicalContestStarted { .. }
+         | GameEvent::PhysicalContestResolved { .. }
+         | GameEvent::VoteCast { .. }
+-        | GameEvent::VoteResolved { .. } => LogImportance::Detail,
++        | GameEvent::VoteResolved { .. }
++        | GameEvent::AbilityTriggered { .. } => LogImportance::Detail,
+     }
+ }
+ 
+@@ -573,6 +574,7 @@ fn tone(event: &GameEvent) -> LogTone {
+         | GameEvent::PhysicalContestResolved { .. }
+         | GameEvent::VoteCast { .. }
+         | GameEvent::VoteResolved { .. } => LogTone::Informational,
++        GameEvent::AbilityTriggered { .. } => LogTone::Neutral,
+         // CR 701.17a + CR 701.17c: never narrated, because the paired `ZoneChanged`
+         // already names the milled card and this event exists for mill triggers.
+         GameEvent::Milled { .. }
+@@ -921,6 +923,7 @@ fn categorize(event: &GameEvent) -> LogCategory {
+         GameEvent::SpellCast { .. }
+         | GameEvent::SpellCopied { .. }
+         | GameEvent::AbilityActivated { .. }
++        | GameEvent::AbilityTriggered { .. }
+         | GameEvent::NinjutsuActivated { .. }
+         | GameEvent::KeywordAbilityActivated { .. }
+         | GameEvent::StackPushed { .. }
+@@ -1084,6 +1087,7 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
+     match event {
+         GameEvent::GameStarted => vec![text("Game started")],
+         GameEvent::HiddenSearchViewed { .. } => vec![],
++        GameEvent::AbilityTriggered { .. } => vec![],
+         GameEvent::ExtraTurnCreated { .. } => vec![],
+         // CR 701.17a + CR 701.17c: never narrated, because the paired `ZoneChanged`
+         // already names the milled card and this event exists for mill triggers.
+diff --git a/crates/engine/src/game/public_state.rs b/crates/engine/src/game/public_state.rs
+index 484933302..ba008374c 100644
+--- a/crates/engine/src/game/public_state.rs
++++ b/crates/engine/src/game/public_state.rs
+@@ -599,6 +599,7 @@ pub fn mark_public_state_from_events(state: &mut GameState, events: &[GameEvent]
+             | GameEvent::DebugActionUsed { .. }
+             | GameEvent::DebugPermissionGranted { .. }
+             | GameEvent::DebugPermissionRevoked { .. }
++            | GameEvent::AbilityTriggered { .. }
+             | GameEvent::StickerPlaced { .. } => {}
+         }
+     }
+diff --git a/crates/engine/src/game/targeting.rs b/crates/engine/src/game/targeting.rs
+index 813995a2c..9c218e863 100644
+--- a/crates/engine/src/game/targeting.rs
++++ b/crates/engine/src/game/targeting.rs
+@@ -3101,6 +3101,7 @@ pub(crate) fn extract_source_from_event(
+         GameEvent::SpellCast { object_id, .. } => Some(*object_id),
+         GameEvent::DamageDealt { source_id, .. } => Some(*source_id),
+         GameEvent::AbilityActivated { source_id, .. } => Some(*source_id),
++        GameEvent::AbilityTriggered { source, .. } => Some(*source),
+         GameEvent::ZoneChanged { object_id, .. } => Some(*object_id),
+         GameEvent::PermanentTapped { object_id, .. } => Some(*object_id),
+         GameEvent::PermanentUntapped { object_id } => Some(*object_id),
+@@ -3245,6 +3246,7 @@ pub(crate) fn extract_target_object_from_event(
+         | GameEvent::SpellCopied { .. }
+         | GameEvent::XValueChosen { .. }
+         | GameEvent::AbilityActivated { .. }
++        | GameEvent::AbilityTriggered { .. }
+         | GameEvent::ZoneChanged { .. }
+         | GameEvent::LifeChanged { .. }
+         | GameEvent::ManaAdded { .. }
+diff --git a/crates/engine/src/game/trigger_index.rs b/crates/engine/src/game/trigger_index.rs
+index 88af095f9..fe1839849 100644
+--- a/crates/engine/src/game/trigger_index.rs
++++ b/crates/engine/src/game/trigger_index.rs
+@@ -546,7 +546,9 @@ pub(crate) fn keys_from_event(event: &GameEvent, state: &GameState) -> Keys {
+             }
+         }
+         GameEvent::XValueChosen { .. } => {}
+-        GameEvent::AbilityActivated { .. } => push(TriggerEventKey::AbilityOrCopyActivated),
++        GameEvent::AbilityActivated { .. } | GameEvent::AbilityTriggered { .. } => {
++            push(TriggerEventKey::AbilityOrCopyActivated)
++        }
+         GameEvent::ZoneChanged {
+             from,
+             to,
+diff --git a/crates/engine/src/game/trigger_matchers.rs b/crates/engine/src/game/trigger_matchers.rs
+index 4c8aa6e71..78433b6df 100644
+--- a/crates/engine/src/game/trigger_matchers.rs
++++ b/crates/engine/src/game/trigger_matchers.rs
+@@ -99,6 +99,7 @@ fn trigger_route(mode: &TriggerMode) -> Option<TriggerRoute> {
+         TriggerMode::SpellCast | TriggerMode::SpellCastOrCopy | TriggerMode::SpellCopy => {
+             silent(match_spell_cast)
+         }
++        TriggerMode::AbilityTriggered => silent(match_ability_triggered),
+         TriggerMode::Attacks => silent(match_attacks),
+         // CR 701.43d: linked "when you do" trigger fires when the source creature
+         // is exerted as it attacks.
+@@ -263,7 +264,6 @@ fn trigger_route(mode: &TriggerMode) -> Option<TriggerRoute> {
+         // rewrites its arm, and with it its class.
+         TriggerMode::AbilityCast
+         | TriggerMode::AbilityResolves
+-        | TriggerMode::AbilityTriggered
+         | TriggerMode::SpellAbilityCast
+         | TriggerMode::SpellAbilityCopy
+         | TriggerMode::CounterTypeAddedAll
+@@ -341,6 +341,7 @@ pub fn build_trigger_registry() -> HashMap<TriggerMode, TriggerMatcher> {
+     );
+     r.insert(TriggerMode::SpellCast, match_spell_cast);
+     r.insert(TriggerMode::SpellCastOrCopy, match_spell_cast);
++    r.insert(TriggerMode::AbilityTriggered, match_ability_triggered);
+     r.insert(TriggerMode::Attacks, match_attacks);
+     r.insert(TriggerMode::Exerted, match_exerted);
+     r.insert(TriggerMode::AttackersDeclared, match_attackers_declared);
+@@ -585,7 +586,6 @@ pub fn build_trigger_registry() -> HashMap<TriggerMode, TriggerMatcher> {
+         TriggerMode::DamagePreventedOnce,
+         TriggerMode::AbilityCast,
+         TriggerMode::AbilityResolves,
+-        TriggerMode::AbilityTriggered,
+         TriggerMode::SpellAbilityCast,
+         TriggerMode::SpellAbilityCopy,
+         // TriggerMode::CounterPlayerAddedAll — moved to real matcher above
+@@ -1104,6 +1104,7 @@ fn count_matching_trigger_event_subjects(
+     let count_one = |id| u32::from(matches(id));
+     match event {
+         GameEvent::AttackersDeclared { attacker_ids, .. } => count_slice(attacker_ids),
++        GameEvent::AbilityTriggered { source, .. } => count_one(*source),
+         GameEvent::CreatureExerted { object_id, .. } => count_one(*object_id),
+         GameEvent::CreatureEnlisted { attacker, .. } => count_one(*attacker),
+         GameEvent::ArmyAmassed { object_id, .. } => count_one(*object_id),
+@@ -2076,6 +2077,23 @@ pub(super) fn match_attacks(
+     !matching_attack_events(event, trigger, source_context, state).is_empty()
+ }
+ 
++/// CR 603.2 + CR 508.1m + CR 508.3a: matches an ability instance caused by
++/// an attack declaration when that ability's source is the attacking creature.
++pub(super) fn match_ability_triggered(
++    event: &GameEvent,
++    trigger: &TriggerDefinition,
++    source_context: &TriggerSourceContext,
++    state: &GameState,
++) -> bool {
++    let GameEvent::AbilityTriggered { source, cause, .. } = event else {
++        return false;
++    };
++    let GameEvent::AttackersDeclared { attacker_ids, .. } = cause.as_ref() else {
++        return false;
++    };
++    attacker_ids.contains(source) && valid_card_matches(trigger, state, *source, source_context)
++}
++
+ /// CR 701.43a + CR 701.43d: Matches a permanent being exerted. The linked
+ /// "when you do" trigger (CR 701.43d, CR 607.2h) is self-referential - its
+ /// `valid_card` is `SelfRef`, so only its own source being exerted matches. A
+diff --git a/crates/engine/src/game/triggers.rs b/crates/engine/src/game/triggers.rs
+index f280f70c3..21c00dfd8 100644
+--- a/crates/engine/src/game/triggers.rs
++++ b/crates/engine/src/game/triggers.rs
+@@ -432,6 +432,12 @@ pub struct PendingTriggerContext {
+     /// remain source-compatible.
+     #[serde(default, skip_serializing_if = "trigger_firing_is_unknown")]
+     pub(crate) firing: TriggerFiring,
++    /// CR 603.2: identity reserved during collection for the stack entry this
++    /// triggered ability instance will create.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub(crate) trigger_instance: Option<ObjectId>,
++    #[serde(skip)]
++    collection_event_index: Option<usize>,
+ }
+ 
+ fn trigger_firing_is_unknown(firing: &TriggerFiring) -> bool {
+@@ -458,6 +464,8 @@ impl PendingTriggerContext {
+             dispatch_origin: PendingTriggerDispatchOrigin::Normal,
+             batch_origin: DeferredTriggerBatchOrigin::Ordinary,
+             firing,
++            trigger_instance: None,
++            collection_event_index: None,
+         }
+     }
+ 
+@@ -476,6 +484,8 @@ impl PendingTriggerContext {
+             dispatch_origin: PendingTriggerDispatchOrigin::Normal,
+             batch_origin: DeferredTriggerBatchOrigin::Ordinary,
+             firing,
++            trigger_instance: None,
++            collection_event_index: None,
+         }
+     }
+ 
+@@ -488,6 +498,8 @@ impl PendingTriggerContext {
+             dispatch_origin: PendingTriggerDispatchOrigin::Delayed,
+             batch_origin: DeferredTriggerBatchOrigin::Ordinary,
+             firing: identity.firing(),
++            trigger_instance: None,
++            collection_event_index: None,
+         }
+     }
+ 
+@@ -5487,11 +5499,9 @@ fn collect_pending_triggers_with_collection(
+                     batched_this_pass.insert((obj_id, matched.trig_idx));
+                 }
+                 registered_this_event.insert((obj_id, matched.trig_idx));
+-                let trigger_context =
++                let mut trigger_context =
+                     PendingTriggerContext::batched(matched.pending, matched.trigger_events);
+-                if drop_auto_inert_noop_trigger(state, &trigger_context) {
+-                    continue;
+-                }
++                trigger_context.collection_event_index = Some(event_idx);
+                 pending.push(trigger_context);
+             }
+ 
+@@ -5610,7 +5620,7 @@ fn collect_pending_triggers_with_collection(
+                             ResolvedAbility::new(fb_effect, Vec::new(), obj_id, controller);
+                         let fb_trig_def = TriggerDefinition::new(TriggerMode::Firebend)
+                             .description("Firebending".to_string());
+-                        pending.push(PendingTriggerContext::single(PendingTrigger {
++                        let mut trigger_context = PendingTriggerContext::single(PendingTrigger {
+                             source_id: obj_id,
+                             controller,
+                             condition: fb_trig_def.condition,
+@@ -5628,7 +5638,9 @@ fn collect_pending_triggers_with_collection(
+                             subject_match_count: None,
+                             die_result: None,
+                             provenance: None,
+-                        }));
++                        });
++                        trigger_context.collection_event_index = Some(event_idx);
++                        pending.push(trigger_context);
+                     }
+                 }
+             }
+@@ -5658,7 +5670,7 @@ fn collect_pending_triggers_with_collection(
+                         ResolvedAbility::new(decayed_effect, Vec::new(), obj_id, controller);
+                     let decayed_trigger = TriggerDefinition::new(TriggerMode::Attacks)
+                         .description("Decayed".to_string());
+-                    pending.push(PendingTriggerContext::single(PendingTrigger {
++                    let mut trigger_context = PendingTriggerContext::single(PendingTrigger {
+                         source_id: obj_id,
+                         controller,
+                         condition: decayed_trigger.condition,
+@@ -5674,7 +5686,9 @@ fn collect_pending_triggers_with_collection(
+                         subject_match_count: None,
+                         die_result: None,
+                         provenance: None,
+-                    }));
++                    });
++                    trigger_context.collection_event_index = Some(event_idx);
++                    pending.push(trigger_context);
+                 }
+             }
+ 
+@@ -7386,6 +7400,88 @@ fn collect_pending_triggers_with_collection(
+     // Scan battlefield for objects with StaticMode::Panharmonicon statics,
+     // then clone matching pending triggers.
+     apply_trigger_doubling(state, &mut pending);
++
++    // CR 603.2 + CR 508.1m + CR 508.3a: Each attack-caused trigger whose
++    // source is the declared attacker gets an identity before observers are
++    // collected. Reserve the same ObjectId that stack placement will use.
++    for trigger_context in &mut pending {
++        let trigger_instance = ObjectId(state.next_object_id);
++        state.next_object_id += 1;
++        trigger_context.trigger_instance = Some(trigger_instance);
++    }
++
++    let mut ability_triggered_pending = Vec::new();
++    for trigger_context in &pending {
++        let Some(cause @ GameEvent::AttackersDeclared { attacker_ids, .. }) =
++            trigger_context.pending.trigger_event.as_ref()
++        else {
++            continue;
++        };
++        if !attacker_ids.contains(&trigger_context.pending.source_id) {
++            continue;
++        }
++        let cause_index = trigger_context
++            .collection_event_index
++            .or_else(|| events.iter().position(|event| event == cause));
++        let Some(cause_index) = cause_index else {
++            continue;
++        };
++        let ability_event = GameEvent::AbilityTriggered {
++            trigger_instance: trigger_context
++                .trigger_instance
++                .expect("collected trigger instance must have a reserved identity"),
++            source: trigger_context.pending.source_id,
++            controller: trigger_context.pending.controller,
++            cause: Box::new(cause.clone()),
++        };
++        let candidates = super::trigger_index::candidates_for_event(state, &ability_event);
++        let mut registered_this_event = HashSet::new();
++        for source_id in candidates {
++            if !live_battlefield_source_was_present_at_event(
++                cause_index,
++                source_id,
++                &battlefield_entry_index,
++            ) {
++                continue;
++            }
++            let Some(source_obj) = state.objects.get(&source_id) else {
++                continue;
++            };
++            let matched_triggers = collect_matching_triggers(
++                state,
++                &ability_event,
++                std::slice::from_ref(&ability_event),
++                source_obj,
++                source_obj.entered_battlefield_turn.unwrap_or(0),
++                Some(Zone::Battlefield),
++                &mut batched_this_pass,
++                &mut registered_this_event,
++                &active_suppress_triggers,
++                collection,
++                TriggerSourceVisit::Observer,
++            );
++            for matched in matched_triggers {
++                if !session.record_match(state, &matched, &ability_event) {
++                    continue;
++                }
++                if matched.batched {
++                    batched_this_pass.insert((source_id, matched.trig_idx));
++                }
++                registered_this_event.insert((source_id, matched.trig_idx));
++                let mut context =
++                    PendingTriggerContext::batched(matched.pending, matched.trigger_events);
++                context.collection_event_index = Some(cause_index);
++                ability_triggered_pending.push(context);
++            }
++        }
++    }
++    apply_trigger_doubling(state, &mut ability_triggered_pending);
++    for trigger_context in &mut ability_triggered_pending {
++        let trigger_instance = ObjectId(state.next_object_id);
++        state.next_object_id += 1;
++        trigger_context.trigger_instance = Some(trigger_instance);
++    }
++    pending.extend(ability_triggered_pending);
+     pending = filter_auto_inert_noop_triggers(state, pending);
+ 
+     // CR 800.4d: a departing permanent's own leaves-the-battlefield abilities
+@@ -10134,12 +10230,32 @@ fn push_pending_trigger_to_stack_with_firing(
+ }
+ 
+ fn push_pending_trigger_to_stack_with_firing_and_duration_events(
++    state: &mut GameState,
++    trigger: PendingTrigger,
++    trigger_events: Vec<GameEvent>,
++    duration_events: Vec<DurationEvent>,
++    events: &mut Vec<GameEvent>,
++    firing: TriggerFiring,
++) -> ObjectId {
++    push_pending_trigger_to_stack_with_firing_and_duration_events_and_id(
++        state,
++        trigger,
++        trigger_events,
++        duration_events,
++        events,
++        firing,
++        None,
++    )
++}
++
++fn push_pending_trigger_to_stack_with_firing_and_duration_events_and_id(
+     state: &mut GameState,
+     mut trigger: PendingTrigger,
+     trigger_events: Vec<GameEvent>,
+     duration_events: Vec<DurationEvent>,
+     events: &mut Vec<GameEvent>,
+     firing: TriggerFiring,
++    reserved_entry_id: Option<ObjectId>,
+ ) -> ObjectId {
+     for duration_event in duration_events {
+         trigger
+@@ -10180,8 +10296,11 @@ fn push_pending_trigger_to_stack_with_firing_and_duration_events(
+     );
+     seed_damage_event_recipient_pin(state, &mut ability, trigger_event.as_ref(), 0);
+ 
+-    let entry_id = ObjectId(state.next_object_id);
+-    state.next_object_id += 1;
++    let entry_id = reserved_entry_id.unwrap_or_else(|| {
++        let entry_id = ObjectId(state.next_object_id);
++        state.next_object_id += 1;
++        entry_id
++    });
+     if trigger_events.len() > 1 {
+         state
+             .stack_trigger_event_batches
+@@ -10720,15 +10839,17 @@ fn dispatch_pending_trigger_context_with_origin(
+     let context_pending = trigger_context.pending.clone();
+     let context_events = trigger_context.trigger_events.clone();
+     let context_duration_events = trigger_context.duration_events.clone();
++    let trigger_instance = trigger_context.trigger_instance;
+     match dispatch_pending_trigger_context(state, trigger_context, events_out) {
+         TriggerDispatchDisposition::DroppedTargetUnresolved if firing.is_delayed() => {
+-            push_pending_trigger_to_stack_with_firing_and_duration_events(
++            push_pending_trigger_to_stack_with_firing_and_duration_events_and_id(
+                 state,
+                 context_pending,
+                 context_events,
+                 context_duration_events,
+                 events_out,
+                 firing,
++                trigger_instance,
+             );
+             TriggerDispatchDisposition::Pushed
+         }
+@@ -10957,6 +11078,7 @@ fn dispatch_pending_trigger_context_core(
+         trigger_events,
+         duration_events,
+         firing,
++        trigger_instance,
+         ..
+     } = trigger_context;
+ 
+@@ -11040,13 +11162,14 @@ fn dispatch_pending_trigger_context_core(
+             let controller = trigger.controller;
+             let source_id = trigger.source_id;
+             let pending_for_state = trigger.clone();
+-            let entry_id = push_pending_trigger_to_stack_with_firing_and_duration_events(
++            let entry_id = push_pending_trigger_to_stack_with_firing_and_duration_events_and_id(
+                 state,
+                 trigger,
+                 trigger_events.clone(),
+                 duration_events.clone(),
+                 events_out,
+                 firing,
++                trigger_instance,
+             );
+             state.pending_trigger_event_batch = trigger_events;
+             state.pending_trigger = Some(Box::new(pending_for_state));
+@@ -11175,13 +11298,14 @@ fn dispatch_pending_trigger_context_core(
+                 }
+                 return TriggerDispatchDisposition::ResolvedInline;
+             }
+-            push_pending_trigger_to_stack_with_firing_and_duration_events(
++            push_pending_trigger_to_stack_with_firing_and_duration_events_and_id(
+                 state,
+                 trigger,
+                 trigger_events,
+                 duration_events,
+                 events_out,
+                 firing,
++                trigger_instance,
+             );
+             restore_trigger_event_context(state, context_snapshot);
+             TriggerDispatchDisposition::Pushed
+@@ -11220,13 +11344,14 @@ fn dispatch_pending_trigger_context_core(
+                             let player = prepared_trigger.controller;
+                             let pending_for_state = prepared_trigger.clone();
+                             let entry_id =
+-                                push_pending_trigger_to_stack_with_firing_and_duration_events(
++                                push_pending_trigger_to_stack_with_firing_and_duration_events_and_id(
+                                     state,
+                                     prepared_trigger,
+                                     trigger_events.clone(),
+                                     duration_events.clone(),
+                                     events_out,
+                                     firing,
++                                    trigger_instance,
+                                 );
+                             state.pending_trigger_event_batch = trigger_events;
+                             state.pending_trigger = Some(Box::new(pending_for_state));
+@@ -11246,13 +11371,14 @@ fn dispatch_pending_trigger_context_core(
+                     }
+                 }
+             }
+-            push_pending_trigger_to_stack_with_firing_and_duration_events(
++            push_pending_trigger_to_stack_with_firing_and_duration_events_and_id(
+                 state,
+                 prepared_trigger,
+                 trigger_events,
+                 duration_events,
+                 events_out,
+                 firing,
++                trigger_instance,
+             );
+             restore_trigger_event_context(state, context_snapshot);
+             TriggerDispatchDisposition::Pushed
+@@ -11264,13 +11390,14 @@ fn dispatch_pending_trigger_context_core(
+             // mutates the on-stack entry's `ability.targets` when each target
+             // is chosen.
+             let pending_for_state = trigger.clone();
+-            let entry_id = push_pending_trigger_to_stack_with_firing_and_duration_events(
++            let entry_id = push_pending_trigger_to_stack_with_firing_and_duration_events_and_id(
+                 state,
+                 trigger,
+                 trigger_events.clone(),
+                 duration_events.clone(),
+                 events_out,
+                 firing,
++                trigger_instance,
+             );
+             state.pending_trigger_event_batch = trigger_events;
+             state.pending_trigger = Some(Box::new(pending_for_state));
+@@ -16042,6 +16169,12 @@ fn collect_pending_and_delayed_triggers_reporting_terminalized(
+     } = collect_matching_delayed_triggers(state, delayed_events, delayed_scope);
+     let mut contexts = normal_pending;
+     contexts.extend(delayed_pending);
++    for context in &mut contexts {
++        if context.trigger_instance.is_none() {
++            context.trigger_instance = Some(ObjectId(state.next_object_id));
++            state.next_object_id += 1;
++        }
++    }
+     contexts.sort_by_key(|ctx| {
+         (
+             trigger_apnap_rank(state, ctx.pending.controller),
+diff --git a/crates/engine/src/types/events.rs b/crates/engine/src/types/events.rs
+index 4ae5bc686..f8505d012 100644
+--- a/crates/engine/src/types/events.rs
++++ b/crates/engine/src/types/events.rs
+@@ -1079,6 +1079,16 @@ pub enum GameEvent {
+         object_id: ObjectId,
+         value: u32,
+     },
++    /// CR 603.2 + CR 508.1m + CR 508.3a: one triggered-ability instance was
++    /// caused by the named event. `trigger_instance` is the reserved stack
++    /// entry identity, carried through collection so observers can refer to
++    /// this exact ability rather than another ability with the same source.
++    AbilityTriggered {
++        trigger_instance: ObjectId,
++        source: ObjectId,
++        controller: PlayerId,
++        cause: Box<GameEvent>,
++    },
+     /// CR 602.2b + CR 601.2i + CR 605.3: An activated ability has become
+     /// activated (all costs paid). Emitted for every activation, including
+     /// mana abilities (CR 605.3: activating a mana ability follows CR 602.2;
+diff --git a/crates/engine/src/types/game_state.rs b/crates/engine/src/types/game_state.rs
+index 8a5e61dac..ce95d8949 100644
+--- a/crates/engine/src/types/game_state.rs
++++ b/crates/engine/src/types/game_state.rs
+@@ -35939,6 +35939,7 @@ impl GameState {
+                     incarnation: Some(incarnation),
+                     ..
+                 } => Some((*object_id, incarnation)),
++                GameEvent::AbilityTriggered { cause, .. } => named_incarnation(cause),
+                 // Exhaustive on purpose: a new event that names an incarnation must
+                 // decide here whether loop normalization renumbers it.
+                 GameEvent::PermanentTapped {
+diff --git a/crates/engine/tests/integration/firebender_ascension.rs b/crates/engine/tests/integration/firebender_ascension.rs
+new file mode 100644
+index 000000000..2afa95e69
+--- /dev/null
++++ b/crates/engine/tests/integration/firebender_ascension.rs
+@@ -0,0 +1,322 @@
++use engine::game::combat::AttackTarget;
++use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
++use engine::types::actions::GameAction;
++use engine::types::counter::CounterType;
++use engine::types::events::GameEvent;
++use engine::types::game_state::{GameState, StackEntryKind, WaitingFor};
++use engine::types::identifiers::ObjectId;
++use engine::types::mana::ManaType;
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const FIREBENDER_ORACLE: &str = "When this enchantment enters, create a 2/2 red Soldier creature token with firebending 1.\n\
++Whenever a creature you control attacking causes a triggered ability of that creature to trigger, put a quest counter on this enchantment. Then if it has four or more quest counters on it, you may copy that ability. You may choose new targets for the copy.";
++
++const DAXOS_ORACLE: &str = "Daxos can't be blocked by creatures with power 3 or greater.\n\
++Whenever Daxos deals combat damage to a player, exile the top card of that player's library. You gain life equal to that card's mana value. Until end of turn, you may cast that card and you may spend mana as though it were mana of any color to cast that spell.";
++
++const OPPONENT_ATTACK_ORACLE: &str = "Whenever a creature attacks, you gain 1 life.";
++
++fn firebending_board(
++    starting_quest: u32,
++    attacker_controller: engine::types::player::PlayerId,
++) -> (GameRunner, ObjectId, ObjectId) {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let firebender = scenario
++        .add_enchantment_from_oracle(P0, "Firebender Ascension", FIREBENDER_ORACLE)
++        .id();
++    scenario.with_counter(
++        firebender,
++        CounterType::Generic("quest".to_string()),
++        starting_quest,
++    );
++    let attacker = scenario
++        .add_creature(attacker_controller, "Firebending Soldier", 2, 2)
++        .from_oracle_text_with_keywords(&["firebending"], "Firebending 1")
++        .id();
++    let mut runner = scenario.build();
++    if attacker_controller != P0 {
++        runner.state_mut().active_player = attacker_controller;
++        runner.state_mut().priority_player = attacker_controller;
++        runner.state_mut().waiting_for = WaitingFor::Priority {
++            player: attacker_controller,
++        };
++    }
++    runner.advance_to_combat();
++    (runner, firebender, attacker)
++}
++
++fn quest_count(state: &GameState, permanent: ObjectId) -> u32 {
++    state.objects[&permanent]
++        .counters
++        .get(&CounterType::Generic("quest".to_string()))
++        .copied()
++        .unwrap_or(0)
++}
++
++fn red_count(state: &GameState, player: usize) -> usize {
++    state.players[player]
++        .mana_pool
++        .units()
++        .filter(|unit| unit.color == ManaType::Red)
++        .count()
++}
++
++fn advance_to_declare_blockers(runner: &mut GameRunner) {
++    for _ in 0..32 {
++        match runner.state().waiting_for {
++            WaitingFor::DeclareBlockers { .. } => return,
++            WaitingFor::Priority { .. } => {
++                runner
++                    .act(GameAction::PassPriority)
++                    .expect("passing priority before blockers must succeed");
++            }
++            ref other => panic!("expected blockers or priority, got {other:?}"),
++        }
++    }
++    panic!("never reached the declare-blockers prompt");
++}
++
++fn declare_and_order_firebending(
++    runner: &mut GameRunner,
++    firebender: ObjectId,
++    attacker: ObjectId,
++    defender: engine::types::player::PlayerId,
++    firebender_resolves_first: bool,
++) {
++    runner
++        .declare_attackers(&[(attacker, AttackTarget::Player(defender))])
++        .expect("attacker declaration succeeds");
++
++    let WaitingFor::OrderTriggers { player, triggers } = runner.state().waiting_for.clone() else {
++        panic!(
++            "Firebending and Firebender Ascension triggers must be ordered together; got {:?}",
++            runner.state().waiting_for
++        );
++    };
++    assert_eq!(player, runner.state().active_player);
++    assert_eq!(triggers.len(), 2);
++    let firebending_index = triggers
++        .iter()
++        .position(|trigger| trigger.source_id == attacker)
++        .expect("the Soldier's Firebending trigger is present");
++    let firebender_index = triggers
++        .iter()
++        .position(|trigger| trigger.source_id == firebender)
++        .expect("Firebender Ascension's trigger is present");
++
++    let order = if firebender_resolves_first {
++        vec![firebending_index, firebender_index]
++    } else {
++        vec![firebender_index, firebending_index]
++    };
++    runner
++        .act(GameAction::OrderTriggers { order })
++        .expect("Firebender Ascension is placed above the Firebending trigger");
++
++    let original = runner
++        .state()
++        .stack
++        .iter()
++        .find(|entry| {
++            entry.source_id == attacker
++                && matches!(entry.kind, StackEntryKind::TriggeredAbility { .. })
++        })
++        .expect("the Soldier's Firebending ability is on the stack");
++    let observer = runner
++        .state()
++        .stack
++        .iter()
++        .find(|entry| {
++            entry.source_id == firebender
++                && matches!(entry.kind, StackEntryKind::TriggeredAbility { .. })
++        })
++        .expect("Firebender Ascension's ability is on the stack");
++    let Some(GameEvent::AbilityTriggered {
++        trigger_instance,
++        source,
++        ..
++    }) = (match &observer.kind {
++        StackEntryKind::TriggeredAbility { trigger_event, .. } => trigger_event.as_ref(),
++        _ => None,
++    })
++    else {
++        panic!("Firebender Ascension must retain its AbilityTriggered event");
++    };
++    assert_eq!(*source, attacker);
++    assert_eq!(*trigger_instance, original.id);
++}
++
++fn pass_until_optional_effect(runner: &mut GameRunner) {
++    for _ in 0..8 {
++        match runner.state().waiting_for.clone() {
++            WaitingFor::OptionalEffectChoice { player, .. } => {
++                assert_eq!(player, P0);
++                return;
++            }
++            WaitingFor::Priority { .. } => {
++                runner
++                    .act(GameAction::PassPriority)
++                    .expect("passing priority advances the stack");
++            }
++            other => panic!("expected an optional copy choice, got {other:?}"),
++        }
++    }
++    panic!(
++        "Firebender Ascension did not offer its copy choice: {:?}",
++        runner.state().waiting_for
++    );
++}
++
++#[test]
++fn firebending_attack_increments_quest_and_does_not_copy_before_four() {
++    let (mut runner, firebender, soldier) = firebending_board(0, P0);
++    declare_and_order_firebending(&mut runner, firebender, soldier, P1, true);
++    runner.advance_until_stack_empty();
++
++    assert_eq!(quest_count(runner.state(), firebender), 1);
++    assert_eq!(red_count(runner.state(), P0.0 as usize), 1);
++    assert!(runner.state().stack.is_empty());
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::Priority { .. }
++    ));
++}
++
++#[test]
++fn fourth_quest_counter_can_copy_the_attack_trigger() {
++    let (mut runner, firebender, soldier) = firebending_board(3, P0);
++    declare_and_order_firebending(&mut runner, firebender, soldier, P1, true);
++    pass_until_optional_effect(&mut runner);
++
++    runner
++        .act(GameAction::DecideOptionalEffect { accept: true })
++        .expect("accepting the copy succeeds");
++    runner.advance_until_stack_empty();
++
++    assert_eq!(quest_count(runner.state(), firebender), 4);
++    assert_eq!(red_count(runner.state(), P0.0 as usize), 2);
++}
++
++#[test]
++fn declining_the_fourth_quest_counter_copy_keeps_only_original_effect() {
++    let (mut runner, firebender, soldier) = firebending_board(3, P0);
++    declare_and_order_firebending(&mut runner, firebender, soldier, P1, true);
++    pass_until_optional_effect(&mut runner);
++
++    runner
++        .act(GameAction::DecideOptionalEffect { accept: false })
++        .expect("declining the copy succeeds");
++    runner.advance_until_stack_empty();
++
++    assert_eq!(quest_count(runner.state(), firebender), 4);
++    assert_eq!(red_count(runner.state(), P0.0 as usize), 1);
++}
++
++#[test]
++fn copy_of_an_attack_trigger_that_left_the_stack_is_a_noop() {
++    let (mut runner, firebender, soldier) = firebending_board(3, P0);
++    declare_and_order_firebending(&mut runner, firebender, soldier, P1, false);
++
++    runner.resolve_top();
++    assert_eq!(runner.state().stack.len(), 1);
++    assert_eq!(red_count(runner.state(), P0.0 as usize), 1);
++    pass_until_optional_effect(&mut runner);
++    runner
++        .act(GameAction::DecideOptionalEffect { accept: true })
++        .expect("accepting a copy of the departed trigger is allowed");
++    runner.advance_until_stack_empty();
++
++    assert_eq!(quest_count(runner.state(), firebender), 4);
++    assert_eq!(red_count(runner.state(), P0.0 as usize), 1);
++}
++
++#[test]
++fn combat_damage_trigger_of_attacking_creature_does_not_count() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let firebender = scenario
++        .add_enchantment_from_oracle(P0, "Firebender Ascension", FIREBENDER_ORACLE)
++        .id();
++    let daxos = scenario
++        .add_creature_from_oracle(P0, "Daxos of Meletis", 2, 2, DAXOS_ORACLE)
++        .id();
++    let _blocker = scenario.add_creature(P1, "Grizzly Bears", 2, 2);
++    let top_card = scenario.add_card_to_library_top(P1, "Daxos Exile Fixture");
++    let mut runner = scenario.build();
++    runner.advance_to_combat();
++
++    runner
++        .declare_attackers(&[(daxos, AttackTarget::Player(P1))])
++        .expect("Daxos attacks");
++    advance_to_declare_blockers(&mut runner);
++    runner
++        .declare_blockers(&[])
++        .expect("no blockers are declared");
++    runner.combat_damage();
++
++    assert_eq!(runner.state().objects[&top_card].zone, Zone::Exile);
++    assert_eq!(quest_count(runner.state(), firebender), 0);
++}
++
++#[test]
++fn opponent_firebending_attacker_does_not_count() {
++    let (mut runner, firebender, soldier) = firebending_board(0, P1);
++    runner
++        .declare_attackers(&[(soldier, AttackTarget::Player(P0))])
++        .expect("opponent attacker declaration succeeds");
++    assert!(
++        !matches!(runner.state().waiting_for, WaitingFor::OrderTriggers { .. }),
++        "Firebender Ascension must not trigger for an opponent's creature"
++    );
++    runner.advance_until_stack_empty();
++
++    assert_eq!(quest_count(runner.state(), firebender), 0);
++    assert_eq!(red_count(runner.state(), P1.0 as usize), 1);
++}
++
++#[test]
++fn attack_triggers_are_placed_in_apnap_order() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let firebender = scenario
++        .add_enchantment_from_oracle(P0, "Firebender Ascension", FIREBENDER_ORACLE)
++        .id();
++    let opponent_trigger = scenario
++        .add_enchantment_from_oracle(P1, "Opponent Attack Trigger", OPPONENT_ATTACK_ORACLE)
++        .id();
++    let soldier = scenario
++        .add_creature(P0, "Firebending Soldier", 2, 2)
++        .from_oracle_text_with_keywords(&["firebending"], "Firebending 1")
++        .id();
++    let mut runner = scenario.build();
++    runner.advance_to_combat();
++    runner
++        .declare_attackers(&[(soldier, AttackTarget::Player(P1))])
++        .expect("attacker declaration succeeds");
++
++    let WaitingFor::OrderTriggers { player, triggers } = runner.state().waiting_for.clone() else {
++        panic!("active player's simultaneous triggers must be ordered");
++    };
++    assert_eq!(player, P0);
++    let firebending_index = triggers
++        .iter()
++        .position(|trigger| trigger.source_id == soldier)
++        .expect("Firebending trigger is present");
++    let firebender_index = triggers
++        .iter()
++        .position(|trigger| trigger.source_id == firebender)
++        .expect("Firebender Ascension trigger is present");
++    runner
++        .act(GameAction::OrderTriggers {
++            order: vec![firebending_index, firebender_index],
++        })
++        .expect("active player's trigger order succeeds");
++
++    assert_eq!(
++        runner.state().stack.last().map(|entry| entry.source_id),
++        Some(opponent_trigger),
++        "nonactive player's trigger is placed above active player's triggers"
++    );
++}
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index ff8e1dfcf..3e17b0e08 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -89,6 +89,7 @@ mod exuberant_wolfbear_base_pt_target;
+ mod fantastic_four_bounded_loop;
+ mod fin_sidequest_turn_history_conditions;
+ mod finneas_token_or_rabbit_counters;
++mod firebender_ascension;
+ mod first_combat_phase_static;
+ mod fixed_damage_amount_thresholds;
+ mod flamerush_rider_tapped_attacking_copy;
+diff --git a/crates/phase-parser/src/parser/oracle_trigger.rs b/crates/phase-parser/src/parser/oracle_trigger.rs
+index 8169ea85b..9d42f1c69 100644
+--- a/crates/phase-parser/src/parser/oracle_trigger.rs
++++ b/crates/phase-parser/src/parser/oracle_trigger.rs
+@@ -13737,6 +13737,28 @@ pub fn parse_trigger_condition(
+ 
+     let lower = condition.to_lowercase();
+ 
++    let ability_triggered_head =
++        "a creature you control attacking causes a triggered ability of that creature to trigger";
++    if all_consuming(alt((
++        preceded(
++            tag::<_, _, OracleError<'_>>("whenever "),
++            tag(ability_triggered_head),
++        ),
++        preceded(tag("when "), tag(ability_triggered_head)),
++        tag(ability_triggered_head),
++    )))
++    .parse(lower.as_str())
++    .is_ok()
++    {
++        let mode = TriggerMode::AbilityTriggered;
++        let mut def = make_base();
++        def.mode = mode.clone();
++        def.valid_card = Some(TargetFilter::Typed(
++            TypedFilter::creature().controller(ControllerRef::You),
++        ));
++        return (mode, def);
++    }
++
+     if let Some(result) = try_parse_named_trigger_mode(&lower) {
+         return result;
+     }
+@@ -26343,3 +26365,32 @@ mod attached_set_trigger_tests {
+         ));
+     }
+ }
++
++#[cfg(test)]
++mod ability_triggered_attack_trigger_tests {
++    use super::parse_trigger_line;
++    use crate::types::ability::{ControllerRef, TargetFilter, TypedFilter};
++    use crate::types::triggers::TriggerMode;
++
++    #[test]
++    fn firebender_ascension_parses_ability_triggered_attack_condition() {
++        let trigger = parse_trigger_line(
++            "Whenever a creature you control attacking causes a triggered ability of that creature to trigger, put a quest counter on this enchantment. Then if it has four or more quest counters on it, you may copy that ability. You may choose new targets for the copy.",
++            "Firebender Ascension",
++        );
++
++        assert_eq!(trigger.mode, TriggerMode::AbilityTriggered);
++        assert_eq!(
++            trigger.valid_card,
++            Some(TargetFilter::Typed(
++                TypedFilter::creature().controller(ControllerRef::You)
++            ))
++        );
++        let execute = trigger.execute.expect("trigger body must be parsed");
++        let body = format!("{execute:?}");
++        assert!(!body.contains("Unimplemented"), "{body}");
++        assert!(body.contains("CopySpell"), "{body}");
++        assert!(body.contains("ParentTarget"), "{body}");
++        assert!(body.contains("MayChooseNewTargets"), "{body}");
++    }
++}
+diff --git a/protocol/changes/dc0ea3d6-ff25-4d04-8c4d-1b2c6e6978ce.json b/protocol/changes/dc0ea3d6-ff25-4d04-8c4d-1b2c6e6978ce.json
+new file mode 100644
+index 000000000..0d367fb16
+--- /dev/null
++++ b/protocol/changes/dc0ea3d6-ff25-4d04-8c4d-1b2c6e6978ce.json
+@@ -0,0 +1,7 @@
++{
++  "surfaces": [
++    "full",
++    "wire"
++  ],
++  "reason": "GameState can carry AbilityTriggered events on the stack"
++}
