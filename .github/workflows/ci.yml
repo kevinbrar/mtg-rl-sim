@@ -16,7 +16,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
+      - name: Check whether engine patches changed
+        id: patch-changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            git fetch origin "$BASE_REF"
+            git diff --name-only "origin/$BASE_REF...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+          elif [[ "$EVENT_NAME" == "push" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            git diff --name-only "$BEFORE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+          else
+            git fetch origin main
+            git diff --name-only origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
+          fi
+          if grep -q '^phase-patches/' "$RUNNER_TEMP/changed-files.txt"; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Apply local engine patches for formatting
+        if: steps.patch-changes.outputs.changed == 'true'
+        run: ./scripts/apply-phase-patches.sh
       - uses: dtolnay/rust-toolchain@nightly-2026-04-19
         with:
           components: rustfmt
@@ -25,6 +51,10 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install ruff==0.14.10
       - run: cargo fmt --check
+      - name: Check patched engine formatting
+        if: steps.patch-changes.outputs.changed == 'true'
+        working-directory: phase
+        run: cargo fmt --all --check
       - run: ruff format --check driver scripts tests --exclude driver/diff_game.py
 
   clippy:
@@ -34,7 +64,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
+      - name: Check whether engine patches changed
+        id: patch-changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            git fetch origin "$BASE_REF"
+            git diff --name-only "origin/$BASE_REF...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+          elif [[ "$EVENT_NAME" == "push" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            git diff --name-only "$BEFORE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+          else
+            git fetch origin main
+            git diff --name-only origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
+          fi
+          if grep -q '^phase-patches/' "$RUNNER_TEMP/changed-files.txt"; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Apply local engine patches
         run: ./scripts/apply-phase-patches.sh
       - uses: dtolnay/rust-toolchain@nightly-2026-04-19
@@ -48,6 +101,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install ruff==0.14.10
+      - name: Clippy patched phase engine
+        if: steps.patch-changes.outputs.changed == 'true'
+        working-directory: phase
+        run: cargo clippy -p phase-engine --all-targets -- -D warnings
       - run: cargo clippy --workspace -- -D warnings
       - run: ruff check driver scripts tests
       - run: cargo build --release -p phase-env
