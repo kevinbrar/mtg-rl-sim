@@ -35,6 +35,27 @@ from that patched parser is copied to
 the local fixes. Do not stage or commit generator side effects from
 `gen-card-data.sh`.
 
+## Quality gates
+
+GitHub Actions checks enforce the repository contract in `AGENTS.md`:
+
+- `fmt` checks Rust and Ruff formatting; Ruff formatting excludes
+  `driver/diff_game.py` until the XMage harness v1 change can satisfy the
+  fail-closed oracle gate.
+- `clippy` denies Rust warnings, runs Ruff lint, and builds the release
+  `phase-env` binary.
+- `test-full` applies the local phase patches, runs the full engine suite and
+  Python tests, and enforces the floor in `ci/test-floor.txt`.
+- `xmage-diff` fails closed on engine/card changes until the differential
+  harness v1 is ready.
+- `mutants` tests changed engine lines on pull requests; its allowed survivor
+  count is in `ci/mutants-threshold.txt`, and results are uploaded as an
+  artifact.
+- `packet-lint` validates the PR template sections and evidence table.
+
+CI warns when the generated patched card-data export is absent; export-wide
+census tests that need it can otherwise return early.
+
 ## Build & run
 
 ```bash

@@ -1,4 +1,5 @@
 """Python client for the phase-env JSONL driver."""
+
 from __future__ import annotations
 
 import json
@@ -6,7 +7,9 @@ import random
 import subprocess
 from pathlib import Path
 
-PHASE_ENV_BIN = Path(__file__).resolve().parent.parent / "target" / "release" / "phase-env"
+PHASE_ENV_BIN = (
+    Path(__file__).resolve().parent.parent / "target" / "release" / "phase-env"
+)
 
 
 class PhaseEnv:
@@ -63,7 +66,9 @@ class PhaseEnv:
         if self.started["type"] != "started":
             raise RuntimeError(f"phase-env failed to start game: {self.started}")
         if self.started["unresolved"]:
-            raise ValueError(f"phase-env could not resolve deck cards: {self.started['unresolved']}")
+            raise ValueError(
+                f"phase-env could not resolve deck cards: {self.started['unresolved']}"
+            )
         return self._read()
 
     def choose(self, index: int):
@@ -72,7 +77,9 @@ class PhaseEnv:
 
     def play(self, player_deck, opponent_deck, seed=0, policy=None, record=False):
         """Play one game. policy(msg) -> candidate index. Returns (result, trace)."""
-        policy = policy or (lambda msg: random.randrange(max(1, len(msg["candidates"]))))
+        policy = policy or (
+            lambda msg: random.randrange(max(1, len(msg["candidates"])))
+        )
         trace = []
         msg = self.new_game(player_deck, opponent_deck, seed)
         while True:
