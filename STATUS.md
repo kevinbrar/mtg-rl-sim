@@ -19,7 +19,7 @@ _Updated 2026-11-09._
 - PR #2 run `42676376772` (head `728e76d`): `fmt` (129358720789), `test-full` (129358720255), `xmage-diff` (129358720679), `mutants` (129358720956), and `packet-lint` (129358720829) passed; `clippy` (129358721184) failed only on the accepted dead-code `Out` warning at `phase-env/src/main.rs:38`. Devin Review passed (no Actions job ID).
 - PR #2 pull-request runs `42672336187` and `42673028298` failed with zero jobs; at inspection the PR was mergeable and `refs/pull/2/merge` existed, so the cause at those runs is unconfirmed.
 - Patched card-data release: `card-data-34ab5f693`, SHA-256 `54ebe1c98e5d15de9d3e844845cb96a7cd87e3229957222616bec782827a8d6a`.
-- Known red: `clippy` reports dead-code for `Out` at `phase-env/src/main.rs:38`; accepted until harness v1. Patched-engine Clippy also reports `expect_fun_call` in `kili_the_resourceful.rs:40` from patch 0018; it will surface on the next engine PR.
+- The dead-code `Out` warning was removed in PR #2. Patched-engine Clippy also reports `expect_fun_call` in `kili_the_resourceful.rs:40` from patch 0018; it will surface on the next engine PR.
 - Representative mutants measurement: 16 candidates; 4 missed, 1 timeout, 11 unknown after about 33 minutes. Log: `/home/ubuntu/ci-governance-worktrees/mutants-0017-tmpfs.log`.
 - Branch protection is not enabled (private repository on GitHub Free); pending K.
 
