@@ -406,7 +406,7 @@ jobs:
         run: |
           failed=0
           for seed in 17 42; do
-            if ! python driver/diff_game.py oracle/decks/mono-green-v0.txt \
+            if ! xvfb-run -a python driver/diff_game.py oracle/decks/mono-green-v0.txt \
               oracle/decks/mono-green-v0.txt --seed "$seed" \
               --data-root phase/client/public; then
               failed=1
