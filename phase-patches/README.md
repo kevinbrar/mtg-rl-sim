@@ -24,6 +24,8 @@ planned.
 | Uldaros Theorix | Fixed in phase commits `9a8a7017b` and `fb406fbc4`: parse the intervening cast condition, carry `DistinctCardTypes` and a 0..=8 target cardinality from the target-phrase parser, and reuse copy/free-cast machinery with a total mana-value limit. | `casts_copies_for_free_and_enforces_the_total_mana_value_budget`, `choosing_no_copies_leaves_the_original_cards_exiled`, and `uldaros_put_onto_the_battlefield_without_being_cast_has_no_effect` passed. Tests cover instant+sorcery+creature, reject two sorceries and a 1+2+4 budget, accept 2+4, verify selected originals are exiled, and observe free resolution/token creation. | `supported: true`, `gap_count: 0`; semantic audit has 0 Uldaros findings. | Pass: self-review only; no independent review was available. |
 | Extrapolate the Impossible | Phase commit `c759b3948` preserves ability-level optionality for exact-count outside-game searches; the runtime implementation in `9a8a7017b` reuses sideboard selection and opponent choice. | `optional_you_may_exact_outside_game_pair_preserves_ability_optionality`, `fewer_than_two_different_names_cannot_reveal_a_partial_pair`, and `caster_reveals_two_distinct_names_then_opponent_puts_only_one_into_hand` passed. | The parser regression now preserves `You may` and avoids the prior swallow warning. End-to-end card-data coverage and semantic audit are deferred to the final sub-batch C gates. | Pass: self-review only; no independent reviewer was available. |
 | Bringer of the Last Gift | Fixed in phase commit `cd078932e`: parses “that weren't put there this way” as a negated tracked-set membership filter on the mass graveyard return, reusing the existing sacrifice publication and zone-move exclusion machinery. | `bringer_of_the_last_gift_tracks_sacrificed_creatures_as_excluded`, `returns_creatures_that_were_already_in_each_graveyard`, and `does_not_return_creatures_put_into_graveyards_by_its_sacrifice` passed. | Card-data coverage and semantic audit are deferred to the final sub-batch C gates. | Pass: self-review only; no independent reviewer was available. |
+| Ms. Marvel, Kamala Khan | Fixed in phase commits `12d071180`, `f292b2560`, and `5d9db2489`: quoted card-name possessives normalize to the granting-object reference, and CDA parsing reuses the shared self-reference grammar so the temporary base-power static applies to its granter. | `ms_marvel_granted_base_power_static_reaches_the_granter`, `ms_marvel_draws_and_sets_power_until_the_end_of_turn`, and `ms_marvel_does_not_trigger_for_a_spell_targeting_an_opponent_creature` passed. | Card-data coverage and semantic audit are deferred to the final sub-batch C gates. | Pass: self-review only; no independent reviewer was available. |
+| Lady Octopus, Inspired Inventor | Fixed in phase commit `8f454ec4b`: the shared `NthDrawThisTurn` constraint now carries a comparator; exact ordinals remain `EQ`, while consecutive first-or-second draw events parse as `LE 2`. | `lady_octopus_triggers_for_first_and_second_draw_only_and_resets_each_turn` and parser regression `trigger_nth_draw_first_or_second_card` passed. | Card-data coverage and semantic audit are deferred to the final sub-batch C gates. | Pass: self-review only; no independent reviewer was available. |
 
 ### Rottenmouth Viper self-review (AI-CONTRIBUTOR §5 a–i)
 
@@ -270,16 +272,24 @@ PR or push was made.
 
 ## Sub-batch C interim gates
 
-The current `local-fixes` head is `cd078932e686b4d85934a16063cc163fa69d9626`,
+The current `local-fixes` head is `5d9db248957a3cab4ad3a6651be87ea72c4d3945`,
 based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
 
 - Extrapolate's focused parser/runtime tests passed. Bringer's target-phrase
   parser test, full-card parser regression, and both runtime tests passed;
-  `cargo fmt --all` passed.
-- Gate A passed against the pinned base at the current head. Gate G/H passed
-  with 121 residue obligations under the 123 ceiling.
-- Re-exported 23 phase patches. The apply-script check reproduced tree
-  `667d4488d9b808125d98801545ab00609461425b`, matching `local-fixes`.
+  `cargo fmt --all` passed. Ms. Marvel's focused integration tests passed
+  (3/3), Lady Octopus's runtime test passed (1/1), and the shared CDA parser
+  regression passed (1/1).
+- Gate A passed against the pinned base: 19 parser files scanned; Gate G/H
+  passed with 121 residue obligations under the 123 ceiling.
+- Re-exported 27 phase patches. The apply-script check reproduced tree
+  `a2861af3485b72ed9d1ba8115537f728269c4d16`, matching `local-fixes`.
+- Firebender Ascension remains an unresolved design fork: the AST has
+  `AbilityTriggered`, but the engine has no corresponding event and leaves the
+  matcher unimplemented. Prior art includes Aboleth Spawn, and triggered stack
+  entries are already copyable. A generic event with stable identity for the
+  triggering ability is recommended; event emission and stack-order timing
+  still need a design decision before implementation.
 - Card-data regeneration, coverage and semantic audits, parsed-ability review,
   full engine suite, and smoke game remain deferred to the final sub-batch C
   gates.

@@ -1,0 +1,330 @@
+From 12d07118092c3b96d605e8e2f11613bbca9bd9de Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Mon, 9 Nov 2026 04:22:00 +0000
+Subject: [PATCH 24/27] Support Ms. Marvel's temporary power grant
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../granted_ability_self_binding.rs           |  11 --
+ crates/engine/tests/integration/main.rs       |   1 +
+ .../integration/ms_marvel_kamala_khan.rs      | 128 ++++++++++++++++++
+ .../src/parser/oracle_static/cda.rs           |  24 +++-
+ crates/phase-parser/src/parser/oracle_util.rs |  44 +++++-
+ 5 files changed, 194 insertions(+), 14 deletions(-)
+ create mode 100644 crates/engine/tests/integration/ms_marvel_kamala_khan.rs
+
+diff --git a/crates/engine/tests/integration/granted_ability_self_binding.rs b/crates/engine/tests/integration/granted_ability_self_binding.rs
+index 1b24447dd..fdbe6e787 100644
+--- a/crates/engine/tests/integration/granted_ability_self_binding.rs
++++ b/crates/engine/tests/integration/granted_ability_self_binding.rs
+@@ -928,13 +928,6 @@ fn self_grant_refused_name_demotes_its_grant() {
+             "Whenever you cast a spell that targets a creature you control, ~ gains \"{T}: ~ \
+              deals damage equal to his power to any other target\" until end of turn.",
+         ),
+-        (
+-            MS_MARVEL,
+-            "Ms. Marvel, Kamala Khan",
+-            "Creature",
+-            "Whenever you cast a spell that targets a creature you control, draw a card. Until \
+-             end of turn, ~ gains \"~'s base power is equal to the number of cards in your hand.\"",
+-        ),
+         (
+             NECROMANCY,
+             "Necromancy",
+@@ -1054,10 +1047,6 @@ and attach this enchantment to it. When this enchantment leaves the battlefield,
+ controller sacrifices it.";
+ const IRON_FIST: &str = "Whenever you cast a spell that targets a creature you control, Iron Fist \
+ gains \"{T}: Iron Fist deals damage equal to his power to any other target\" until end of turn.";
+-const MS_MARVEL: &str = "Reach, vigilance\nYou have no maximum hand size.\nEmbiggen Fist \u{2014} \
+-Whenever you cast a spell that targets a creature you control, draw a card. Until end of turn, Ms. \
+-Marvel gains \"Ms. Marvel's base power is equal to the number of cards in your hand.\"";
+-
+ /// CR 201.5a (last sentence: "This is also true if the second ability is copied
+ /// onto a new object") + CR 707.2 — HOSTILE FIXTURE: granter == host, via
+ /// copy-except.
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index cd688cf0e..f2a0c4278 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -189,6 +189,7 @@ mod mindblade_render_warrior_intervening_if_2867;
+ mod mjolnir_hammer_double_damage;
+ mod morkrut_ashaya_self_sacrifice;
+ mod mr_foxglove_defending_hand_minus_yours_draw;
++mod ms_marvel_kamala_khan;
+ mod ms_marvel_power_exceeds_base;
+ mod msh_wave5a_group2_conditions;
+ mod n_or_more_creatures_attack_any_player;
+diff --git a/crates/engine/tests/integration/ms_marvel_kamala_khan.rs b/crates/engine/tests/integration/ms_marvel_kamala_khan.rs
+new file mode 100644
+index 000000000..9b368380f
+--- /dev/null
++++ b/crates/engine/tests/integration/ms_marvel_kamala_khan.rs
+@@ -0,0 +1,128 @@
++use engine::game::layers::evaluate_layers;
++use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
++use engine::parser::oracle::parse_oracle_text;
++use engine::types::events::GameEvent;
++use engine::types::game_state::WaitingFor;
++use engine::types::identifiers::ObjectId;
++use engine::types::mana::{ManaType, ManaUnit};
++use engine::types::phase::Phase;
++use engine::types::TargetRef;
++
++const MS_MARVEL: &str = "Reach, vigilance\nYou have no maximum hand size.\nEmbiggen Fist — \
++Whenever you cast a spell that targets a creature you control, draw a card. Until end of turn, Ms. \
++Marvel gains \"Ms. Marvel's base power is equal to the number of cards in your hand.\"";
++
++fn advance_to_next_turn(runner: &mut GameRunner) {
++    runner.advance_to_phase(Phase::PostCombatMain);
++    if matches!(
++        runner.state().waiting_for,
++        WaitingFor::DeclareAttackers { .. }
++    ) {
++        runner
++            .declare_attackers(&[])
++            .expect("an empty attack declaration advances the turn");
++        runner.advance_to_phase(Phase::PostCombatMain);
++    }
++    runner.advance_to_phase(Phase::PreCombatMain);
++}
++
++#[test]
++fn ms_marvel_granted_base_power_static_reaches_the_granter() {
++    let parsed = parse_oracle_text(
++        MS_MARVEL,
++        "Ms. Marvel, Kamala Khan",
++        &["Reach".to_string(), "Vigilance".to_string()],
++        &["Creature".to_string()],
++        &[],
++    );
++    let json = serde_json::to_string(&parsed).expect("ParsedAbilities serializes");
++    assert_eq!(parsed.triggers.len(), 1, "{parsed:#?}");
++    assert!(
++        json.contains("\"type\":\"GrantingObject"),
++        "the quoted base-power static must bind its named subject to the granter: {json}"
++    );
++    assert!(
++        !json.contains("granter_reference_unreached")
++            && !json.contains("\"type\":\"Unimplemented\""),
++        "the full Oracle ability must parse without a residual: {json}"
++    );
++}
++
++#[test]
++fn ms_marvel_draws_and_sets_power_until_the_end_of_turn() {
++    const SHOCK: &str = "Shock deals 2 damage to any target.";
++
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let ms_marvel = scenario
++        .add_creature_from_oracle(P0, "Ms. Marvel, Kamala Khan", 1, 4, MS_MARVEL)
++        .id();
++    let shock = scenario
++        .add_spell_to_hand_from_oracle(P0, "Shock", true, SHOCK)
++        .id();
++    scenario.add_card_to_library_top(P0, "Drawn card");
++    scenario.add_card_to_library_top(P1, "Opponent draw");
++    scenario.with_mana_pool(
++        P0,
++        vec![ManaUnit::new(ManaType::Red, ObjectId(0), false, vec![])],
++    );
++    let mut runner = scenario.build();
++
++    let outcome = runner.cast(shock).target_object(ms_marvel).resolve();
++    outcome.assert_hand_drawn(P0, 1);
++    runner.state_mut().layers_dirty.mark_full();
++    evaluate_layers(runner.state_mut());
++    let hand_size = runner.state().players[P0.0 as usize].hand.len() as i32;
++    assert_eq!(
++        runner.state().objects[&ms_marvel].power,
++        Some(hand_size),
++        "the granted base-power static uses the controller's current hand size"
++    );
++
++    advance_to_next_turn(&mut runner);
++    runner.state_mut().layers_dirty.mark_full();
++    evaluate_layers(runner.state_mut());
++    assert_eq!(
++        runner.state().objects[&ms_marvel].power,
++        Some(1),
++        "the temporary base-power change expires during the turn transition"
++    );
++}
++
++#[test]
++fn ms_marvel_does_not_trigger_for_a_spell_targeting_an_opponent_creature() {
++    const SHOCK: &str = "Shock deals 2 damage to any target.";
++
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    scenario.add_creature_from_oracle(P0, "Ms. Marvel, Kamala Khan", 1, 4, MS_MARVEL);
++    let opponent_creature = scenario.add_creature(P1, "Opponent creature", 2, 4).id();
++    let shock = scenario
++        .add_spell_to_hand_from_oracle(P0, "Shock", true, SHOCK)
++        .id();
++    scenario.add_card_to_library_top(P0, "Unchanged draw pile");
++    scenario.with_mana_pool(
++        P0,
++        vec![ManaUnit::new(ManaType::Red, ObjectId(0), false, vec![])],
++    );
++    let mut runner = scenario.build();
++
++    let outcome = runner
++        .cast(shock)
++        .target_object(opponent_creature)
++        .resolve();
++    assert!(
++        outcome.events().iter().any(|event| {
++            matches!(
++                event,
++                GameEvent::BecomesTarget {
++                    target: TargetRef::Object(target),
++                    source_id,
++                    ..
++                } if *target == opponent_creature && *source_id == shock
++            )
++        }),
++        "reach-guard: Shock was cast targeting the opponent's creature"
++    );
++    outcome.assert_hand_drawn(P0, 0);
++}
+diff --git a/crates/phase-parser/src/parser/oracle_static/cda.rs b/crates/phase-parser/src/parser/oracle_static/cda.rs
+index 6cbd08ce7..b726b3691 100644
+--- a/crates/phase-parser/src/parser/oracle_static/cda.rs
++++ b/crates/phase-parser/src/parser/oracle_static/cda.rs
+@@ -4,6 +4,9 @@
+ use super::prelude::*;
+ #[allow(unused_imports)]
+ use super::support::*;
++use crate::parser::oracle_util::GRANTING_SELF_PLACEHOLDER;
++use nom::character::complete::multispace0;
++use nom::sequence::{pair, preceded};
+ 
+ /// Parse self power/toughness equality, using ordinary setters for gated
+ /// abilities and characteristic-defining setters for unconditional abilities:
+@@ -55,6 +58,7 @@ pub(crate) fn parse_cda_pt_equality(lower: &str, text: &str) -> Option<StaticDef
+     let condition = super::evasion::combine_conditions(timing_condition, gate_condition);
+     let body_lower = body.to_lowercase();
+     let lower = body_lower.as_str();
++    let affected = cda_pt_equality_affected(lower);
+ 
+     // Detect framing
+     let both = nom_primitives::scan_contains(lower, "power and toughness are each equal to");
+@@ -80,7 +84,7 @@ pub(crate) fn parse_cda_pt_equality(lower: &str, text: &str) -> Option<StaticDef
+             .collect();
+         let value = digits.parse::<i32>().ok()?;
+         let mut def = StaticDefinition::continuous()
+-            .affected(TargetFilter::SelfRef)
++            .affected(affected.clone())
+             .modifications(vec![
+                 ContinuousModification::SetPower { value },
+                 ContinuousModification::SetToughness { value },
+@@ -164,7 +168,7 @@ pub(crate) fn parse_cda_pt_equality(lower: &str, text: &str) -> Option<StaticDef
+     }
+ 
+     let mut def = StaticDefinition::continuous()
+-        .affected(TargetFilter::SelfRef)
++        .affected(affected)
+         .modifications(modifications)
+         .description(description.to_string());
+     if let Some(cond) = condition {
+@@ -175,6 +179,22 @@ pub(crate) fn parse_cda_pt_equality(lower: &str, text: &str) -> Option<StaticDef
+     Some(def)
+ }
+ 
++fn cda_pt_equality_affected(lower: &str) -> TargetFilter {
++    preceded(
++        multispace0,
++        value(
++            TargetFilter::GrantingObject { bound: None },
++            pair(
++                tag::<_, _, OracleError<'_>>(GRANTING_SELF_PLACEHOLDER),
++                tag::<_, _, OracleError<'_>>("'s "),
++            ),
++        ),
++    )
++    .parse(lower)
++    .map(|(_, affected)| affected)
++    .unwrap_or(TargetFilter::SelfRef)
++}
++
+ /// CR 208.2: Extract the `N` from a trailing "... its toughness is equal to that
+ /// number plus N" toughness override. Shared by the `power_only` and `both`
+ /// framings so a split-P/T offset (Subgoyf's `*/1+*`) is applied identically in
+diff --git a/crates/phase-parser/src/parser/oracle_util.rs b/crates/phase-parser/src/parser/oracle_util.rs
+index 94e3e1fc2..2fee49d1e 100644
+--- a/crates/phase-parser/src/parser/oracle_util.rs
++++ b/crates/phase-parser/src/parser/oracle_util.rs
+@@ -2784,12 +2784,14 @@ fn mask_name_occurrences_in_segment(
+         // this occurrence is recoverable for the verb-object lookbehind.
+         let abs_start = segment.len() - rest.len() + idx;
+         let prefix_lower = segment[..abs_start].to_ascii_lowercase();
++        let is_characteristic_subject = is_possessive_characteristic_subject(&hay_rest[after..]);
+         // CR 201.5a: mask only in an allowlisted position; the text before the
+         // matched entry must end on a non-alphanumeric so `unattach ` never reads
+         // as `attach `.
+         let is_self_ref_object = before_ok
+             && after_ok
+-            && ends_in_position(&prefix_lower, GRANTER_SELF_REF_VERB_PREFIXES);
++            && (ends_in_position(&prefix_lower, GRANTER_SELF_REF_VERB_PREFIXES)
++                || is_characteristic_subject);
+         if is_self_ref_object {
+             out.push_str(&rest[..idx]);
+             out.push_str(GRANTING_SELF_PLACEHOLDER);
+@@ -2804,6 +2806,31 @@ fn mask_name_occurrences_in_segment(
+     (out, refused)
+ }
+ 
++fn is_possessive_characteristic_subject(after_name: &str) -> bool {
++    let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("'s ").parse(after_name) else {
++        return false;
++    };
++    let Ok((rest, ())) = alt((
++        value((), tag::<_, _, OracleError<'_>>("base power and toughness")),
++        value((), tag::<_, _, OracleError<'_>>("power and toughness")),
++        value((), tag::<_, _, OracleError<'_>>("base power")),
++        value((), tag::<_, _, OracleError<'_>>("power")),
++        value((), tag::<_, _, OracleError<'_>>("base toughness")),
++        value((), tag::<_, _, OracleError<'_>>("toughness")),
++    ))
++    .parse(rest) else {
++        return false;
++    };
++    alt((
++        value((), tag::<_, _, OracleError<'_>>(" are each equal to ")),
++        value((), tag::<_, _, OracleError<'_>>(" each equal to ")),
++        value((), tag::<_, _, OracleError<'_>>(" is equal to ")),
++        value((), tag::<_, _, OracleError<'_>>(" becomes ")),
++    ))
++    .parse(rest)
++    .is_ok()
++}
++
+ pub fn normalize_card_name_refs(text: &str, card_name: &str) -> String {
+     normalize_card_name_refs_reporting(text, card_name).0
+ }
+@@ -4015,6 +4042,21 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn normalize_quoted_possessive_characteristic_granter_reference() {
++        let (normalized, refused) = normalize_card_name_refs_reporting(
++            "Until end of turn, Ms. Marvel gains \"Ms. Marvel's base power is equal to the number of cards in your hand.\"",
++            "Ms. Marvel, Kamala Khan",
++        );
++        assert!(refused.is_empty());
++        assert_eq!(
++            normalized,
++            format!(
++                "Until end of turn, ~ gains \"{GRANTING_SELF_PLACEHOLDER}'s base power is equal to the number of cards in your hand.\""
++            )
++        );
++    }
++
+     /// CR 201.5a: an allowlist entry matches only on a word boundary.
+     #[test]
+     fn granter_lookbehind_is_word_bounded() {
+-- 
+2.56.0
+

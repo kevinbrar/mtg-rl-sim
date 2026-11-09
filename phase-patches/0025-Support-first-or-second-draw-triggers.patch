@@ -1,0 +1,500 @@
+From 8f454ec4b3a2cc436ed33fc70c49b87163e53d62 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Mon, 9 Nov 2026 04:23:19 +0000
+Subject: [PATCH 25/27] Support first-or-second draw triggers
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/ability_scan.rs        |   7 +-
+ crates/engine/src/game/coverage.rs            |  14 +-
+ crates/engine/src/game/triggers.rs            |  14 +-
+ .../lady_octopus_first_second_draw.rs         | 139 ++++++++++++++++++
+ crates/engine/tests/integration/main.rs       |   1 +
+ crates/phase-ast/src/types/ability.rs         |  22 ++-
+ .../phase-parser/src/parser/oracle_trigger.rs |  35 ++++-
+ .../src/parser/oracle_trigger_tests.rs        |  54 ++++++-
+ .../phase-parser/src/parser/swallow_check.rs  |   2 +-
+ 9 files changed, 264 insertions(+), 24 deletions(-)
+ create mode 100644 crates/engine/tests/integration/lady_octopus_first_second_draw.rs
+
+diff --git a/crates/engine/src/game/ability_scan.rs b/crates/engine/src/game/ability_scan.rs
+index 6c5c8b74a..c764b5f6f 100644
+--- a/crates/engine/src/game/ability_scan.rs
++++ b/crates/engine/src/game/ability_scan.rs
+@@ -4239,9 +4239,10 @@ fn scan_trigger_constraint(x: &TriggerConstraint, mode: ScanMode) -> Axes {
+         }
+         // Turn/phase windows, a draw ordinal, and class levels: literal thresholds only. No
+         // filter, no board aggregate, no player resource.
+-        TriggerConstraint::NthDrawThisTurn { n: _ } => {
+-            Axes::history_of(HistoryMember::CardsDrawnThisTurn)
+-        }
++        TriggerConstraint::NthDrawThisTurn {
++            n: _,
++            comparator: _,
++        } => Axes::history_of(HistoryMember::CardsDrawnThisTurn),
+         TriggerConstraint::OnlyDuringYourTurn
+         | TriggerConstraint::OnlyDuringOpponentsTurn
+         | TriggerConstraint::OnlyDuringYourMainPhase
+diff --git a/crates/engine/src/game/coverage.rs b/crates/engine/src/game/coverage.rs
+index 96ef1adc2..8a4fd8f2d 100644
+--- a/crates/engine/src/game/coverage.rs
++++ b/crates/engine/src/game/coverage.rs
+@@ -5242,7 +5242,14 @@ fn fmt_trigger_constraint(c: &crate::types::ability::TriggerConstraint) -> Strin
+                 None => format!("{timing} spell this turn"),
+             }
+         }
+-        TC::NthDrawThisTurn { n } => format!("on your {} draw this turn", fmt_ordinal(*n)),
++        TC::NthDrawThisTurn { n, comparator } => match comparator {
++            Comparator::EQ => format!("on your {} draw this turn", fmt_ordinal(*n)),
++            Comparator::LE => format!("on or before your {} draw this turn", fmt_ordinal(*n)),
++            _ => format!(
++                "when your draw ordinal {} {n} this turn",
++                fmt_comparator(comparator)
++            ),
++        },
+         TC::OnlyDuringOpponentsTurn => "only during opponent's turn".into(),
+         TC::OnlyDuringYourMainPhase => "only during your main phase".into(),
+         TC::AtClassLevel { level } => format!("at class level {level}"),
+@@ -17158,7 +17165,10 @@ mod tests {
+             "on your 13th spell this turn"
+         );
+         assert_eq!(
+-            fmt_trigger_constraint(&TriggerConstraint::NthDrawThisTurn { n: 3 }),
++            fmt_trigger_constraint(&TriggerConstraint::NthDrawThisTurn {
++                n: 3,
++                comparator: Comparator::EQ,
++            }),
+             "on your 3rd draw this turn"
+         );
+     }
+diff --git a/crates/engine/src/game/triggers.rs b/crates/engine/src/game/triggers.rs
+index fab04c2ad..f280f70c3 100644
+--- a/crates/engine/src/game/triggers.rs
++++ b/crates/engine/src/game/triggers.rs
+@@ -16822,12 +16822,12 @@ fn check_trigger_constraint_with_ref(
+         }
+         // CR 121.2: Use the ordinal stamped onto the individual draw event
+         // rather than the final per-turn count after a multi-card draw batch.
+-        TriggerConstraint::NthDrawThisTurn { n } => {
++        TriggerConstraint::NthDrawThisTurn { n, comparator } => {
+             let nth_in_turn = match event {
+                 Some(GameEvent::CardDrawn { nth_in_turn, .. }) => *nth_in_turn,
+                 _ => return false,
+             };
+-            nth_in_turn == *n
++            comparator.evaluate(nth_in_turn as i32, *n as i32)
+         }
+         // CR 716.2a: "When this Class becomes level N" — fire only at the specified level.
+         // CR 716.2d: an absent stored level reads as 1 (`GameObject::level`).
+@@ -33032,7 +33032,10 @@ pub mod tests {
+             trigger.valid_target = Some(TargetFilter::Typed(
+                 TypedFilter::default().controller(ControllerRef::You),
+             ));
+-            trigger.constraint = Some(TriggerConstraint::NthDrawThisTurn { n: 3 });
++            trigger.constraint = Some(TriggerConstraint::NthDrawThisTurn {
++                n: 3,
++                comparator: Comparator::EQ,
++            });
+             trigger.execute = Some(Box::new(AbilityDefinition::new(
+                 AbilityKind::Spell,
+                 Effect::ChangeZone {
+@@ -34284,7 +34287,10 @@ pub mod tests {
+         state.players[1].cards_drawn_this_turn = 4;
+ 
+         let mut trig_def = make_trigger(TriggerMode::Drawn);
+-        trig_def.constraint = Some(TriggerConstraint::NthDrawThisTurn { n: 2 });
++        trig_def.constraint = Some(TriggerConstraint::NthDrawThisTurn {
++            n: 2,
++            comparator: Comparator::EQ,
++        });
+ 
+         let controller = PlayerId(0);
+         let event = GameEvent::CardDrawn {
+diff --git a/crates/engine/tests/integration/lady_octopus_first_second_draw.rs b/crates/engine/tests/integration/lady_octopus_first_second_draw.rs
+new file mode 100644
+index 000000000..36e943a86
+--- /dev/null
++++ b/crates/engine/tests/integration/lady_octopus_first_second_draw.rs
+@@ -0,0 +1,139 @@
++//! Lady Octopus, Inspired Inventor — "Whenever you draw your first or second
++//! card each turn, put an ingenuity counter on Lady Octopus."
++//!
++//! The runtime test drives real draw events through the existing trigger
++//! pipeline, then crosses a turn boundary before checking that the draw ordinal
++//! resets.
++
++use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
++use engine::types::counter::CounterType;
++use engine::types::game_state::WaitingFor;
++use engine::types::identifiers::ObjectId;
++use engine::types::mana::{ManaType, ManaUnit};
++use engine::types::phase::Phase;
++
++const LADY_OCTOPUS: &str = "Whenever you draw your first or second card each turn, put an \
++ingenuity counter on Lady Octopus.\n\
++{T}: You may cast an artifact spell from your hand with mana value less than or equal to the \
++number of ingenuity counters on Lady Octopus without paying its mana cost.";
++const OPT: &str = "Scry 1. (Look at the top card of your library. You may put that card on the \
++bottom.)\nDraw a card.";
++
++fn ingenuity_counters(runner: &GameRunner, lady: ObjectId) -> u32 {
++    runner.state().objects[&lady]
++        .counters
++        .get(&CounterType::Generic("ingenuity".to_string()))
++        .copied()
++        .unwrap_or(0)
++}
++
++fn cast_opt(runner: &mut GameRunner, opt: ObjectId) {
++    let outcome = runner.cast(opt).resolve();
++    outcome.assert_hand_drawn(P0, 1);
++    assert!(
++        runner.state().stack.is_empty()
++            && matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
++        "Opt and its draw trigger should finish at priority"
++    );
++}
++
++fn advance_to_next_turn(runner: &mut GameRunner) {
++    runner.advance_to_phase(Phase::PostCombatMain);
++    if matches!(
++        runner.state().waiting_for,
++        WaitingFor::DeclareAttackers { .. }
++    ) {
++        runner
++            .declare_attackers(&[])
++            .expect("an empty attack declaration advances the turn");
++        runner.advance_to_phase(Phase::PostCombatMain);
++    }
++    runner.advance_to_phase(Phase::PreCombatMain);
++}
++
++#[test]
++fn lady_octopus_triggers_for_first_and_second_draw_only_and_resets_each_turn() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let lady = scenario
++        .add_creature_from_oracle(P0, "Lady Octopus, Inspired Inventor", 0, 2, LADY_OCTOPUS)
++        .as_legendary()
++        .with_subtypes(vec!["Human", "Scientist", "Villain"])
++        .id();
++    let first_opt = scenario
++        .add_spell_to_hand_from_oracle(P0, "Opt", true, OPT)
++        .id();
++    let second_opt = scenario
++        .add_spell_to_hand_from_oracle(P0, "Opt", true, OPT)
++        .id();
++    let third_opt = scenario
++        .add_spell_to_hand_from_oracle(P0, "Opt", true, OPT)
++        .id();
++    for index in 0..5 {
++        scenario.add_card_to_library_top(P0, &format!("Draw {index}"));
++    }
++    scenario.add_card_to_library_top(P1, "Opponent draw");
++    scenario.with_mana_pool(
++        P0,
++        vec![
++            ManaUnit::new(ManaType::Blue, ObjectId(0), false, vec![]),
++            ManaUnit::new(ManaType::Blue, ObjectId(0), false, vec![]),
++            ManaUnit::new(ManaType::Blue, ObjectId(0), false, vec![]),
++        ],
++    );
++    let mut runner = scenario.build();
++
++    assert_eq!(ingenuity_counters(&runner, lady), 0);
++    cast_opt(&mut runner, first_opt);
++    assert_eq!(
++        ingenuity_counters(&runner, lady),
++        1,
++        "the first draw of a turn puts an ingenuity counter on Lady Octopus"
++    );
++    cast_opt(&mut runner, second_opt);
++    assert_eq!(
++        ingenuity_counters(&runner, lady),
++        2,
++        "the second draw of a turn also puts an ingenuity counter on Lady Octopus"
++    );
++    cast_opt(&mut runner, third_opt);
++    assert_eq!(
++        ingenuity_counters(&runner, lady),
++        2,
++        "the third draw of a turn does not trigger the ability"
++    );
++
++    let turn_before = runner.state().turn_number;
++    advance_to_next_turn(&mut runner);
++    assert!(
++        runner.state().turn_number > turn_before,
++        "the test crossed a real turn boundary"
++    );
++    assert_eq!(
++        runner.state().players[P1.0 as usize].hand.len(),
++        1,
++        "the opponent's turn-based draw ran during the transition"
++    );
++    assert_eq!(
++        ingenuity_counters(&runner, lady),
++        2,
++        "the opponent's draw does not satisfy Lady Octopus's 'you draw' trigger"
++    );
++    assert!(
++        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
++        "the next turn begins at a completed priority boundary"
++    );
++    let hand_before_next_turn = runner.state().players[P0.0 as usize].hand.len();
++    advance_to_next_turn(&mut runner);
++    assert_eq!(runner.state().active_player, P0);
++    assert_eq!(
++        runner.state().players[P0.0 as usize].hand.len(),
++        hand_before_next_turn + 1,
++        "P0's draw step ran on the next turn"
++    );
++    assert_eq!(
++        ingenuity_counters(&runner, lady),
++        3,
++        "the first draw of the next turn triggers again"
++    );
++}
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index f2a0c4278..ff8e1dfcf 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -172,6 +172,7 @@ mod kashi_tribe_damage_tap_freeze;
+ mod kibo_uktabi_prince_defending_player_sacrifice;
+ mod kili_the_resourceful;
+ mod kilo_live_offer_from_real_dump;
++mod lady_octopus_first_second_draw;
+ mod later_instruction_unless_bindings;
+ mod lathiel_end_step_counters_repro;
+ mod layer_boundary_census;
+diff --git a/crates/phase-ast/src/types/ability.rs b/crates/phase-ast/src/types/ability.rs
+index 098e4387b..c21e2085a 100644
+--- a/crates/phase-ast/src/types/ability.rs
++++ b/crates/phase-ast/src/types/ability.rs
+@@ -39593,6 +39593,14 @@ fn is_default_nth_spell_comparator(comparator: &Comparator) -> bool {
+     *comparator == Comparator::EQ
+ }
+ 
++fn default_nth_draw_comparator() -> Comparator {
++    Comparator::EQ
++}
++
++fn is_default_nth_draw_comparator(comparator: &Comparator) -> bool {
++    *comparator == Comparator::EQ
++}
++
+ /// CR 603.2 + CR 603.2h: what uses up a once-each-turn trigger limit.
+ #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+ pub enum TriggerLimitSpend {
+@@ -39643,9 +39651,17 @@ pub enum TriggerConstraint {
+         #[serde(default, skip_serializing_if = "Option::is_none")]
+         filter: Option<TargetFilter>,
+     },
+-    /// "Whenever you draw your Nth card each turn" — fires exactly when the
+-    /// triggering draw event's per-turn ordinal equals `n`.
+-    NthDrawThisTurn { n: u32 },
++    /// "Whenever you draw your Nth card each turn" — the triggering draw event's
++    /// per-turn ordinal satisfies `comparator` against `n`. `EQ` preserves exact
++    /// ordinals; `LE` covers a contiguous prefix such as "your first or second card."
++    NthDrawThisTurn {
++        n: u32,
++        #[serde(
++            default = "default_nth_draw_comparator",
++            skip_serializing_if = "is_default_nth_draw_comparator"
++        )]
++        comparator: Comparator,
++    },
+     /// "At the beginning of each opponent's [phase]"
+     OnlyDuringOpponentsTurn,
+     /// CR 505.1: Trigger fires only during the controller's main phase
+diff --git a/crates/phase-parser/src/parser/oracle_trigger.rs b/crates/phase-parser/src/parser/oracle_trigger.rs
+index 5cdf87e14..8169ea85b 100644
+--- a/crates/phase-parser/src/parser/oracle_trigger.rs
++++ b/crates/phase-parser/src/parser/oracle_trigger.rs
+@@ -22679,6 +22679,29 @@ fn try_parse_nth_draw_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefini
+     None
+ }
+ 
++fn parse_nth_draw_ordinal(after: &str) -> Option<(u32, Comparator, &str)> {
++    let (first, mut rest) = parse_ordinal(after)?;
++    let mut last = first;
++    let mut has_disjunction = false;
++    loop {
++        let Ok((after_or, ())) = value((), tag::<_, _, OracleError<'_>>("or ")).parse(rest) else {
++            break;
++        };
++        let (next, remainder) = parse_ordinal(after_or)?;
++        if next != last.checked_add(1)? {
++            return None;
++        }
++        last = next;
++        rest = remainder;
++        has_disjunction = true;
++    }
++    if has_disjunction {
++        (first == 1).then_some((last, Comparator::LE, rest))
++    } else {
++        Some((first, Comparator::EQ, rest))
++    }
++}
++
+ /// "you draw your <ordinal> card each turn"
+ ///
+ /// CR 121.2 + CR 603.2: The "you" subject restricts the trigger to the
+@@ -22688,14 +22711,14 @@ fn try_parse_nth_draw_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefini
+ fn try_parse_nth_draw_you(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
+     let prefix = "you draw your ";
+     let after = strip_after(lower, prefix)?;
+-    let (n, rest) = parse_ordinal(after)?;
++    let (n, comparator, rest) = parse_nth_draw_ordinal(after)?;
+     let timing = classify_nth_draw_timing(rest)?;
+     let mut def = make_base();
+     def.mode = TriggerMode::Drawn;
+     def.valid_target = Some(TargetFilter::Typed(
+         TypedFilter::default().controller(ControllerRef::You),
+     ));
+-    def.constraint = Some(TriggerConstraint::NthDrawThisTurn { n });
++    def.constraint = Some(TriggerConstraint::NthDrawThisTurn { n, comparator });
+     def.condition = timing_condition(timing);
+     Some((TriggerMode::Drawn, def))
+ }
+@@ -22704,14 +22727,14 @@ fn try_parse_nth_draw_you(lower: &str) -> Option<(TriggerMode, TriggerDefinition
+ fn try_parse_nth_draw_opponent(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
+     let prefix = "an opponent draws their ";
+     let after = strip_after(lower, prefix)?;
+-    let (n, rest) = parse_ordinal(after)?;
++    let (n, comparator, rest) = parse_nth_draw_ordinal(after)?;
+     let timing = classify_nth_draw_timing(rest)?;
+     let mut def = make_base();
+     def.mode = TriggerMode::Drawn;
+     def.valid_target = Some(TargetFilter::Typed(
+         TypedFilter::default().controller(ControllerRef::Opponent),
+     ));
+-    def.constraint = Some(TriggerConstraint::NthDrawThisTurn { n });
++    def.constraint = Some(TriggerConstraint::NthDrawThisTurn { n, comparator });
+     def.condition = timing_condition(timing);
+     Some((TriggerMode::Drawn, def))
+ }
+@@ -22721,11 +22744,11 @@ fn try_parse_nth_draw_opponent(lower: &str) -> Option<(TriggerMode, TriggerDefin
+ fn try_parse_nth_draw_any_player(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
+     let prefix = "a player draws their ";
+     let after = strip_after(lower, prefix)?;
+-    let (n, rest) = parse_ordinal(after)?;
++    let (n, comparator, rest) = parse_nth_draw_ordinal(after)?;
+     let timing = classify_nth_draw_timing(rest)?;
+     let mut def = make_base();
+     def.mode = TriggerMode::Drawn;
+-    def.constraint = Some(TriggerConstraint::NthDrawThisTurn { n });
++    def.constraint = Some(TriggerConstraint::NthDrawThisTurn { n, comparator });
+     def.condition = timing_condition(timing);
+     Some((TriggerMode::Drawn, def))
+ }
+diff --git a/crates/phase-parser/src/parser/oracle_trigger_tests.rs b/crates/phase-parser/src/parser/oracle_trigger_tests.rs
+index ae1f1b68d..a2f32f2f1 100644
+--- a/crates/phase-parser/src/parser/oracle_trigger_tests.rs
++++ b/crates/phase-parser/src/parser/oracle_trigger_tests.rs
+@@ -16953,7 +16953,39 @@ fn trigger_nth_draw_second() {
+     );
+     assert_eq!(
+         def.constraint,
+-        Some(TriggerConstraint::NthDrawThisTurn { n: 2 })
++        Some(TriggerConstraint::NthDrawThisTurn {
++            n: 2,
++            comparator: crate::types::ability::Comparator::EQ,
++        })
++    );
++}
++
++#[test]
++fn trigger_nth_draw_first_or_second_card() {
++    let def = parse_trigger_line(
++        "Whenever you draw your first or second card each turn, put an ingenuity counter on Lady Octopus.",
++        "Lady Octopus, Inspired Inventor",
++    );
++    assert_eq!(def.mode, TriggerMode::Drawn);
++    assert_eq!(
++        def.valid_target,
++        Some(TargetFilter::Typed(
++            TypedFilter::default().controller(ControllerRef::You),
++        ))
++    );
++    assert_eq!(
++        def.constraint,
++        Some(TriggerConstraint::NthDrawThisTurn {
++            n: 2,
++            comparator: crate::types::ability::Comparator::LE,
++        })
++    );
++    assert!(
++        matches!(
++            def.execute.as_ref().map(|execute| execute.effect.as_ref()),
++            Some(Effect::PutCounter { .. })
++        ),
++        "the draw trigger body must remain parsed: {def:?}"
+     );
+ }
+ 
+@@ -16974,7 +17006,10 @@ fn trigger_nth_draw_you_in_a_turn_phrasing() {
+     );
+     assert_eq!(
+         def.constraint,
+-        Some(TriggerConstraint::NthDrawThisTurn { n: 3 })
++        Some(TriggerConstraint::NthDrawThisTurn {
++            n: 3,
++            comparator: crate::types::ability::Comparator::EQ,
++        })
+     );
+ }
+ 
+@@ -16993,7 +17028,10 @@ fn trigger_nth_draw_opponent_second() {
+     );
+     assert_eq!(
+         def.constraint,
+-        Some(TriggerConstraint::NthDrawThisTurn { n: 2 })
++        Some(TriggerConstraint::NthDrawThisTurn {
++            n: 2,
++            comparator: crate::types::ability::Comparator::EQ,
++        })
+     );
+ }
+ 
+@@ -17007,7 +17045,10 @@ fn trigger_nth_draw_any_player() {
+     assert_eq!(def.valid_target, None);
+     assert_eq!(
+         def.constraint,
+-        Some(TriggerConstraint::NthDrawThisTurn { n: 3 })
++        Some(TriggerConstraint::NthDrawThisTurn {
++            n: 3,
++            comparator: crate::types::ability::Comparator::EQ,
++        })
+     );
+ }
+ 
+@@ -17025,7 +17066,10 @@ fn trigger_nth_draw_any_player_during_their_turn() {
+     assert_eq!(def.valid_target, None);
+     assert_eq!(
+         def.constraint,
+-        Some(TriggerConstraint::NthDrawThisTurn { n: 2 })
++        Some(TriggerConstraint::NthDrawThisTurn {
++            n: 2,
++            comparator: crate::types::ability::Comparator::EQ,
++        })
+     );
+     assert_eq!(
+         def.condition,
+diff --git a/crates/phase-parser/src/parser/swallow_check.rs b/crates/phase-parser/src/parser/swallow_check.rs
+index 327d513bf..f13c2d7c8 100644
+--- a/crates/phase-parser/src/parser/swallow_check.rs
++++ b/crates/phase-parser/src/parser/swallow_check.rs
+@@ -13363,7 +13363,7 @@ this spell's mana cost.\nDestroy target attacking creature without flying.",
+             .find(|t| {
+                 matches!(
+                     t.constraint,
+-                    Some(crate::types::ability::TriggerConstraint::NthDrawThisTurn { n: 2 })
++                    Some(crate::types::ability::TriggerConstraint::NthDrawThisTurn { n: 2, .. })
+                 )
+             })
+             .and_then(|t| t.execute.as_deref())
+-- 
+2.56.0
+
