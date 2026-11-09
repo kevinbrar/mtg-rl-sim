@@ -46,3 +46,14 @@ lands, creature casts, all-or-none attacks, and declines blocks.
    `divergence.json` with both prompts and exit non-zero (that is the signal to extend).
 5. Run one game per meta-deck pair that contains each fixed card; record results in
    `oracle/README.md` and `STATUS.md`.
+
+## Oracle coverage (2026-11-09)
+- XMage upstream lacks 4 of the 18 fixed cards: Seasoned Cryomancer, Jace's Machinations,
+  Uldaros Theorix, Extrapolate the Impossible. Local mage-bench XMage (2026-10-21) also lacks
+  Essence Burn, Theorist's Sanctum, Kíli → update mage-bench's XMage first.
+- Forge (Card-Forge/forge) has scripts for all 18 → add Forge as a second oracle for cards XMage
+  lacks; 2-of-3 agreement is evidence, not proof.
+- Adjudication of any disagreement: Comprehensive Rules (`phase/docs/MagicCompRules.txt`,
+  effective 2026-09-25) + official rulings (Scryfall `/cards/:id/rulings`); cite rule numbers;
+  record as a regression test; escalate to Kevin only if genuinely ambiguous.
+- Official rulings → per-card scenario tests whose expected outcomes come from the ruling text.

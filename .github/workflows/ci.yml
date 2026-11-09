@@ -1,0 +1,299 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@nightly-2026-04-19
+        with:
+          components: rustfmt
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install ruff==0.14.10
+      - run: cargo fmt --check
+      - run: ruff format --check driver scripts tests --exclude driver/diff_game.py
+
+  clippy:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Apply local engine patches
+        run: ./scripts/apply-phase-patches.sh
+      - uses: dtolnay/rust-toolchain@nightly-2026-04-19
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          shared-key: clippy-${{ hashFiles('phase-patches/*.patch') }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install ruff==0.14.10
+      - run: cargo clippy --workspace -- -D warnings
+      - run: ruff check driver scripts tests
+      - run: cargo build --release -p phase-env
+
+  test-full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      CARGO_INCREMENTAL: 0
+      PHASE_PATCHED_CARD_DATA_URL: ${{ vars.PHASE_PATCHED_CARD_DATA_URL }}
+      PHASE_PATCHED_CARD_DATA_SHA256: ${{ vars.PHASE_PATCHED_CARD_DATA_SHA256 }}
+    steps:
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          docker image prune --all --force || true
+          df -h /
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Apply local engine patches
+        run: ./scripts/apply-phase-patches.sh
+      - uses: dtolnay/rust-toolchain@nightly-2026-04-19
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: phase -> target
+          shared-key: test-full-${{ hashFiles('phase-patches/*.patch') }}
+      - name: Install matching patched card data when configured
+        working-directory: phase
+        run: |
+          if [[ -n "$PHASE_PATCHED_CARD_DATA_URL" && -n "$PHASE_PATCHED_CARD_DATA_SHA256" ]]; then
+            curl --fail --location "$PHASE_PATCHED_CARD_DATA_URL" --output "$RUNNER_TEMP/card-data.json"
+            printf '%s  %s\n' "$PHASE_PATCHED_CARD_DATA_SHA256" "$RUNNER_TEMP/card-data.json" | sha256sum --check
+            install -D "$RUNNER_TEMP/card-data.json" client/public/card-data.json
+          else
+            echo "::warning::No matching patched card-data export configured; export-wide census tests may return early. Expected local SHA-256: 54ebe1c98e5d15de9d3e844845cb96a7cd87e3229957222616bec782827a8d6a"
+          fi
+      - name: Run the complete phase-engine suite
+        working-directory: phase
+        run: |
+          set -o pipefail
+          cargo test -p phase-engine 2>&1 | tee "$RUNNER_TEMP/phase-engine-test.log"
+      - name: Enforce the test-count floor
+        working-directory: phase
+        run: |
+          test_floor="$(tr -d '[:space:]' < ../ci/test-floor.txt)"
+          if [[ ! "$test_floor" =~ ^[0-9]+$ ]]; then
+            echo "::error::ci/test-floor.txt must contain one non-negative integer"
+            exit 1
+          fi
+          python ../scripts/check_test_count.py "$RUNNER_TEMP/phase-engine-test.log" --min "$test_floor"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pytest==8.4.2
+      - name: Compile Python sources
+        run: python -m compileall -q driver scripts tests
+      - name: Run Python tests
+        run: python -m pytest driver tests -q
+      - name: Upload full engine test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-engine-full-suite
+          path: ${{ runner.temp }}/phase-engine-test.log
+          if-no-files-found: ignore
+
+  xmage-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - name: Fail closed until differential harness v1
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            git fetch origin "$BASE_REF"
+            git diff --name-only "origin/$BASE_REF...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+          elif [[ "$EVENT_NAME" == "push" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            git diff --name-only "$BEFORE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+          else
+            git fetch origin main
+            git diff --name-only origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
+          fi
+          if grep -E '^(phase-patches/|phase(/|$)|phase-env/|oracle/|driver/diff_game\.py$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
+            echo "::error::xmage-diff not implemented yet; see docs/harness-v1-plan.md"
+            exit 1
+          fi
+          echo "No XMage-gated paths changed."
+
+  mutants:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_BUILD_JOBS: 2
+      MUTANTS_THRESHOLD_FILE: ${{ github.workspace }}/ci/mutants-threshold.txt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+      - name: Check whether engine patches changed
+        id: patch-changes
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch origin "$BASE_REF"
+          git diff --name-only "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/changed-files.txt"
+          if grep -q '^phase-patches/' "$RUNNER_TEMP/changed-files.txt"; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Free runner disk space
+        if: steps.patch-changes.outputs.changed == 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          docker image prune --all --force || true
+          df -h /
+      - name: Install mutation toolchain
+        if: steps.patch-changes.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@nightly-2026-04-19
+      - name: Install cargo-mutants
+        if: steps.patch-changes.outputs.changed == 'true'
+        run: cargo install cargo-mutants --locked --version 27.1.0
+      - name: Build patched base and head phase trees
+        if: steps.patch-changes.outputs.changed == 'true'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$BASE_REF"
+          base_commit="$(git rev-parse "origin/$BASE_REF")"
+          head_commit="$GITHUB_SHA"
+          base_phase="$(git -C phase rev-parse "$base_commit:phase")"
+          head_phase="$(git -C phase rev-parse "$head_commit:phase")"
+          base_tree="$RUNNER_TEMP/phase-base"
+          head_tree="$RUNNER_TEMP/phase-head"
+          git -C phase fetch --no-tags origin "$base_phase" || true
+          git -C phase fetch --no-tags origin "$head_phase" || true
+          git -C phase worktree add --detach "$base_tree" "$base_phase"
+          git -C phase worktree add --detach "$head_tree" "$head_phase"
+          mkdir "$RUNNER_TEMP/base-source" "$RUNNER_TEMP/head-source"
+          git archive "$base_commit" phase-patches | tar -x -C "$RUNNER_TEMP/base-source"
+          mkdir "$RUNNER_TEMP/base-patches"
+          cp "$RUNNER_TEMP/base-source/phase-patches/"*.patch "$RUNNER_TEMP/base-patches/"
+          git archive "$head_commit" phase-patches | tar -x -C "$RUNNER_TEMP/head-source"
+          mkdir "$RUNNER_TEMP/head-patches"
+          cp "$RUNNER_TEMP/head-source/phase-patches/"*.patch "$RUNNER_TEMP/head-patches/"
+          (
+            cd "$base_tree"
+            git -c user.name=CI -c user.email=ci@example.invalid am "$RUNNER_TEMP"/base-patches/*.patch
+          )
+          (
+            cd "$head_tree"
+            git -c user.name=CI -c user.email=ci@example.invalid am "$RUNNER_TEMP"/head-patches/*.patch
+          )
+          base_patched="$(git -C "$base_tree" rev-parse HEAD)"
+          head_patched="$(git -C "$head_tree" rev-parse HEAD)"
+          git -C "$head_tree" diff --no-ext-diff "$base_patched" "$head_patched" -- crates/ > "$RUNNER_TEMP/engine-changes.diff"
+          echo "BASE_PATCHED=$base_patched" >> "$GITHUB_ENV"
+          echo "HEAD_PATCHED=$head_patched" >> "$GITHUB_ENV"
+          echo "BASE_TREE=$base_tree" >> "$GITHUB_ENV"
+          echo "HEAD_TREE=$head_tree" >> "$GITHUB_ENV"
+      - name: Run changed-line mutation tests
+        if: steps.patch-changes.outputs.changed == 'true'
+        working-directory: ${{ runner.temp }}/phase-head
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/phase-mutants-target
+        run: |
+          set -o pipefail
+          test_filter=()
+          changed_modules="$(git diff --name-only "$BASE_PATCHED" "$HEAD_PATCHED" -- crates/engine/tests/integration)"
+          if [[ "$(printf '%s\n' "$changed_modules" | sed '/^$/d' | wc -l)" -eq 1 ]]; then
+            module="$(basename "$changed_modules" .rs)"
+            if [[ "$module" =~ ^[a-zA-Z0-9_]+$ ]]; then
+              test_filter=("$module")
+            fi
+          fi
+          set +e
+          cargo mutants \
+            --in-diff "$RUNNER_TEMP/engine-changes.diff" \
+            -p phase-engine \
+            --cargo-arg=--test \
+            --cargo-arg=integration \
+            --jobs 2 \
+            --timeout 60 \
+            --build-timeout 300 \
+            --output "$RUNNER_TEMP/mutants.out" \
+            -- "${test_filter[@]}" \
+            2>&1 | tee "$RUNNER_TEMP/mutants.log"
+          mutants_status=${PIPESTATUS[0]}
+          set -e
+          missed_count="$(grep -c '^MISSED ' "$RUNNER_TEMP/mutants.log" || true)"
+          threshold="$(tr -d '[:space:]' < "$MUTANTS_THRESHOLD_FILE")"
+          if [[ ! "$threshold" =~ ^[0-9]+$ ]]; then
+            echo "::error::ci/mutants-threshold.txt must contain one non-negative integer"
+            exit 1
+          fi
+          echo "Missed mutants: $missed_count; allowed threshold: $threshold"
+          if [[ "$missed_count" -gt "$threshold" ]]; then
+            echo "::error::Missed mutant count exceeds ci/mutants-threshold.txt"
+            grep '^MISSED ' "$RUNNER_TEMP/mutants.log" || true
+            exit 1
+          fi
+          if [[ "$mutants_status" != 0 && "$mutants_status" != 2 && "$mutants_status" != 3 ]]; then
+            echo "::error::cargo mutants failed with exit status $mutants_status"
+            exit "$mutants_status"
+          fi
+          echo "Missed mutants are within threshold; timeouts and unviable mutants are non-failing."
+      - name: Upload mutation results and survivors
+        if: always() && steps.patch-changes.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: changed-line-mutation-results
+          path: |
+            ${{ runner.temp }}/mutants.out/
+            ${{ runner.temp }}/mutants.log
+          if-no-files-found: ignore
+
+  packet-lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Get changed files
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch origin "$BASE_REF"
+          git diff --name-only "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/changed-files.txt"
+      - name: Lint review packet
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python scripts/check_review_packet.py --changed-files "$RUNNER_TEMP/changed-files.txt"

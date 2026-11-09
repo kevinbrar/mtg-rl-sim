@@ -1,0 +1,182 @@
+import pytest
+
+from scripts.check_review_packet import REQUIRED_SECTIONS, validate_review_packet
+
+
+DEFAULT_ROW = (
+    "Parser behavior | python -m pytest tests -q | passed: 3 "
+    "| artifacts/test-results.log | N"
+)
+
+
+def packet(
+    *,
+    sections: tuple[str, ...] = REQUIRED_SECTIONS,
+    evidence_header: str = (
+        "| Claim | Check | Result | Artifact | Independent (Y/N, producer) |"
+    ),
+    evidence_rows: tuple[str, ...] = (DEFAULT_ROW,),
+    cards: str = "cards: none",
+) -> str:
+    section_content = {
+        "## Brief / decision reference": "Implements the approved CI governance brief.",
+        "## Surfaces": f"Workflow and Python review-packet checks.\n\n{cards}",
+        "## Evidence": "\n".join(
+            (
+                evidence_header,
+                "| --- | --- | --- | --- | --- |",
+                *(f"| {row} |" for row in evidence_rows),
+            )
+        ),
+        "## Not verified": "GitHub-hosted runner disk capacity.",
+        "## Divergence from plan": "None.",
+        "## Risk & rollback": "Revert this commit to remove the gates.",
+    }
+    return "\n\n".join(
+        f"{heading}\n\n{section_content[heading]}"
+        for heading in sections
+        if heading in section_content
+    )
+
+
+def test_valid_packet_passes_for_changes_outside_engine_paths() -> None:
+    assert validate_review_packet(packet(), ["README.md"]) == []
+
+
+@pytest.mark.parametrize("heading", REQUIRED_SECTIONS)
+def test_each_required_section_is_enforced(heading: str) -> None:
+    errors = validate_review_packet(
+        packet(
+            sections=tuple(
+                section for section in REQUIRED_SECTIONS if section != heading
+            )
+        ),
+        ["README.md"],
+    )
+    assert f"Missing required section: {heading}" in errors
+
+
+def test_evidence_section_requires_a_markdown_table() -> None:
+    body = packet().replace(
+        "| Claim | Check | Result | Artifact | Independent (Y/N, producer) |",
+        "Claim: Check: Result: Artifact: Independent:",
+    )
+    errors = validate_review_packet(body, ["README.md"])
+    assert any(
+        "Evidence section must contain a Markdown table" in error for error in errors
+    )
+
+
+@pytest.mark.parametrize(
+    "header",
+    (
+        "| Check | Result | Artifact | Independent |",
+        "| Claim | Result | Artifact | Independent |",
+        "| Claim | Check | Artifact | Independent |",
+        "| Claim | Check | Result | Independent |",
+        "| Claim | Check | Result | Artifact |",
+    ),
+)
+def test_evidence_table_requires_each_header(header: str) -> None:
+    errors = validate_review_packet(packet(evidence_header=header), ["README.md"])
+    assert any(
+        "header includes Claim, Check, Result, Artifact, and Independent" in error
+        for error in errors
+    )
+
+
+@pytest.mark.parametrize(
+    "result", ("verified", "pass", "passed", "Passed with warnings")
+)
+@pytest.mark.parametrize("artifact", ("", "ran focused test"))
+def test_verified_results_require_an_artifact_path_or_link(
+    result: str,
+    artifact: str,
+) -> None:
+    row = f"Parser behavior | focused test | {result} | {artifact} | N"
+    errors = validate_review_packet(packet(evidence_rows=(row,)), ["README.md"])
+    assert (
+        "Evidence table row 1 has a verified/pass result but Artifact must contain a link or path"
+        in errors
+    )
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    ("artifacts/engine-tests.log", "[test log](https://example.test/engine.log)"),
+)
+def test_verified_results_accept_artifact_paths_and_links(artifact: str) -> None:
+    row = f"Parser behavior | focused test | passed | {artifact} | N"
+    assert validate_review_packet(packet(evidence_rows=(row,)), ["README.md"]) == []
+
+
+def test_unverified_result_does_not_require_an_artifact() -> None:
+    row = "Parser behavior | focused test | not run |  | N"
+    assert validate_review_packet(packet(evidence_rows=(row,)), ["README.md"]) == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "phase-patches/0001-example.patch",
+        "phase",
+        "phase/crates/engine/src/lib.rs",
+        "phase-env/src/main.rs",
+        "driver/diff_game.py",
+        "oracle/README.md",
+        "card-data.json",
+    ),
+)
+def test_engine_paths_require_cards_and_independent_evidence(path: str) -> None:
+    assert (
+        validate_review_packet(
+            packet(
+                evidence_rows=(DEFAULT_ROW.replace(" | N", " | Yes, cargo mutants"),)
+            ),
+            [path],
+        )
+        == []
+    )
+
+
+def test_engine_path_without_independent_row_fails() -> None:
+    errors = validate_review_packet(packet(), ["phase-env/src/main.rs"])
+    assert (
+        "Engine-path changes require an Evidence row whose Independent value starts with Y"
+        in errors
+    )
+
+
+def test_engine_path_without_cards_line_fails() -> None:
+    body = packet(cards="")
+    errors = validate_review_packet(body, ["phase-patches/0001-example.patch"])
+    assert "Engine-path changes require a cards: line" in errors
+
+
+@pytest.mark.parametrize(
+    "cards",
+    ("cards: Bringer of the Last Gift, Firebender Ascension", "Cards: none"),
+)
+def test_cards_line_accepts_names_or_none_case_insensitively(cards: str) -> None:
+    body = packet(
+        cards=cards,
+        evidence_rows=(DEFAULT_ROW.replace(" | N", " | Y, mutants"),),
+    )
+    assert validate_review_packet(body, ["phase-patches/0001-example.patch"]) == []
+
+
+@pytest.mark.parametrize(
+    "cards",
+    (
+        "cards:",
+        "cards: Bringer of the Last Gift,, Firebender Ascension",
+        "cards: none, Firebender Ascension",
+    ),
+)
+def test_cards_line_must_be_none_or_comma_separated_names(cards: str) -> None:
+    body = packet(
+        cards=cards,
+        evidence_rows=(DEFAULT_ROW.replace(" | N", " | Y, mutants"),),
+    )
+    errors = validate_review_packet(body, ["phase-patches/0001-example.patch"])
+    assert "cards: must be `none` or a comma-separated list of card names" in errors
