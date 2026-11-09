@@ -1,7 +1,7 @@
 From 0621bcebc88f0ab367d567d4bfe475fe4b443c76 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Sun, 8 Nov 2026 18:34:44 +0000
-Subject: [PATCH 02/21] Accept registered creature subtypes in the subtype
+Subject: [PATCH 02/23] Accept registered creature subtypes in the subtype
  lexicon (Restless Prairie)
 
 collect_valid_subtypes now includes oracle_subtypes(), so animation-only

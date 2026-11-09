@@ -1,7 +1,7 @@
 From 52c928d3439580638f95283b2ef3f75c449757f3 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Mon, 9 Nov 2026 02:39:30 +0000
-Subject: [PATCH 18/21] Add conditional alternative Equip activation costs
+Subject: [PATCH 18/23] Add conditional alternative Equip activation costs
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---

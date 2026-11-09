@@ -1,7 +1,7 @@
 From 55b63c91a446a419f7f725cb95797d4f9cbb39d5 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Mon, 9 Nov 2026 00:10:16 +0000
-Subject: [PATCH 14/21] Update Karoo MayCost tests for unpayable costs
+Subject: [PATCH 14/23] Update Karoo MayCost tests for unpayable costs
 
 Theorist's Sanctum makes an unpayable MayCost auto-apply its decline branch under CR 118.3 and CR 614.12a. Keep voluntary decline covered with payable costs, and assert the no-choice path when payment is impossible.
 

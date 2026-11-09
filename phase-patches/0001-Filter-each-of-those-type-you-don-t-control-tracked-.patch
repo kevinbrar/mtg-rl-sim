@@ -1,7 +1,7 @@
 From 93dfa0c8ee33ea6122b20bc3b0995fab0c0b327d Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Sun, 8 Nov 2026 18:34:44 +0000
-Subject: [PATCH 01/21] Filter 'each of those <type> you (don't) control'
+Subject: [PATCH 01/23] Filter 'each of those <type> you (don't) control'
  tracked sets by controller
 
 Lost in the Maze: 'Put a stun counter on each of those creatures you don't

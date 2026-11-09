@@ -1,0 +1,135 @@
+From c759b3948c51bfcd40a68b876b2fcf9b0fa38551 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Mon, 9 Nov 2026 03:37:52 +0000
+Subject: [PATCH 22/23] Preserve optional exact outside-game searches
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../integration/extrapolate_the_impossible.rs | 20 +++++++------
+ .../src/parser/oracle_effect/assembly.rs      | 20 +++++++++----
+ .../phase-parser/src/parser/swallow_check.rs  | 30 +++++++++++++++++++
+ 3 files changed, 55 insertions(+), 15 deletions(-)
+
+diff --git a/crates/engine/tests/integration/extrapolate_the_impossible.rs b/crates/engine/tests/integration/extrapolate_the_impossible.rs
+index 656d2e11b..3ac73bbec 100644
+--- a/crates/engine/tests/integration/extrapolate_the_impossible.rs
++++ b/crates/engine/tests/integration/extrapolate_the_impossible.rs
+@@ -41,16 +41,18 @@ fn setup(sideboard: Vec<DeckEntry>) -> (GameRunner, engine::types::identifiers::
+ }
+ 
+ fn resolve_extrapolate(runner: &mut GameRunner, spell: engine::types::identifiers::ObjectId) {
+-    runner.cast(spell).resolve();
++    runner.cast(spell).commit().stop_at_optional().resolve();
++    assert!(
++        matches!(
++            runner.state().waiting_for,
++            WaitingFor::OptionalEffectChoice { .. }
++        ),
++        "the spell's You may must be offered before revealing"
++    );
++    runner
++        .act(GameAction::DecideOptionalEffect { accept: true })
++        .expect("accept the optional reveal");
+     runner.advance_until_stack_empty();
+-    if matches!(
+-        runner.state().waiting_for,
+-        WaitingFor::OptionalEffectChoice { .. }
+-    ) {
+-        runner
+-            .act(GameAction::DecideOptionalEffect { accept: true })
+-            .expect("accept the optional reveal");
+-    }
+ }
+ 
+ #[test]
+diff --git a/crates/phase-parser/src/parser/oracle_effect/assembly.rs b/crates/phase-parser/src/parser/oracle_effect/assembly.rs
+index 0ac2bef46..f6db14321 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/assembly.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/assembly.rs
+@@ -3370,7 +3370,10 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
+                     .to_ascii_lowercase(),
+             );
+         if clause_ir.is_optional
+-            && !matches!(&clause_ir.parsed.effect, Effect::SearchOutsideGame { .. })
++            && !matches!(
++                &clause_ir.parsed.effect,
++                Effect::SearchOutsideGame { count, .. } if count.is_up_to()
++            )
+             && !matches!(
+                 &clause_ir.parsed.effect,
+                 Effect::GrantCastingPermission { .. }
+@@ -3502,12 +3505,14 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
+                     subject_anchored_optional_actor(&def, ActorBindingWindow::ThisResolution);
+             }
+         }
+-        if matches!(&clause_ir.parsed.effect, Effect::SearchOutsideGame { .. }) {
++        if matches!(
++            &clause_ir.parsed.effect,
++            Effect::SearchOutsideGame { count, .. } if count.is_up_to()
++        ) {
+             def.optional = false;
+             def.optional_for = None;
+-            // CR 608.2d: no gate opens, so no announcer exists. Inert at runtime
+-            // (`upfront_optional_gate` requires `ability.optional`) but a stray key
+-            // here would land in `card-data.json` and break V7's acceptance diff.
++            // CR 701.23j: an up-to outside-game selection carries its optionality
++            // internally, so no def-level gate or announcer is needed.
+             def.optional_player = None;
+         }
+         if let Some(ref qty) = clause_ir.repeat_for {
+@@ -4768,7 +4773,10 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
+     // with ~" pick as the host's last chosen card (Koh, the Face Stealer).
+     append_remember_card_to_standalone_exiled_choice(&mut result);
+     fold_search_choose_type_conditional_destination(&mut result);
+-    if matches!(&*result.effect, Effect::SearchOutsideGame { .. }) {
++    if matches!(
++        &*result.effect,
++        Effect::SearchOutsideGame { count, .. } if count.is_up_to()
++    ) {
+         result.optional = false;
+         result.optional_for = None;
+     }
+diff --git a/crates/phase-parser/src/parser/swallow_check.rs b/crates/phase-parser/src/parser/swallow_check.rs
+index b14167385..327d513bf 100644
+--- a/crates/phase-parser/src/parser/swallow_check.rs
++++ b/crates/phase-parser/src/parser/swallow_check.rs
+@@ -8490,6 +8490,36 @@ If you sang a song the whole time you were searching and shuffling, you may unta
+         assert!(!has_swallowed_detector(&parsed, "Optional_YouMay"));
+     }
+ 
++    #[test]
++    fn optional_you_may_exact_outside_game_pair_preserves_ability_optionality() {
++        let parsed = parse_named(
++            "You may reveal exactly two cards you own with different names from outside the game. \
++             An opponent chooses one of them. You put that card into your hand.",
++            "Extrapolate the Impossible",
++            &["Sorcery"],
++        );
++
++        assert!(
++            parsed
++                .abilities
++                .iter()
++                .all(|def| !def_tree_has_unimplemented(def)),
++            "Extrapolate must parse without Unimplemented: {:#?}",
++            parsed.abilities
++        );
++        let ability = parsed.abilities.first().expect("Extrapolate spell ability");
++        assert!(ability.optional, "the printed You may must be represented");
++        assert!(matches!(
++            ability.effect.as_ref(),
++            Effect::SearchOutsideGame {
++                count: QuantityExpr::Fixed { value: 2 },
++                selection_mode: crate::types::ability::OutsideGameSelectionMode::OpponentChoosesOne,
++                ..
++            }
++        ));
++        assert!(!has_swallowed_detector(&parsed, "Optional_YouMay"));
++    }
++
+     #[test]
+     fn kaya_orzhov_usurper_plus_one_gates_gain_life_on_creature_exiled_this_way() {
+         // PR #2447 / issue #1998 follow-up. With the +1 conditional now parsed,
+-- 
+2.56.0
+

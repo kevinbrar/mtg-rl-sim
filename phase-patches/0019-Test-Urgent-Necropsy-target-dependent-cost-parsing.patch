@@ -1,7 +1,7 @@
 From 7b75abb6e85ab2c2146e1ff3d52eb2254c1f1252 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Mon, 9 Nov 2026 02:40:27 +0000
-Subject: [PATCH 19/21] Test Urgent Necropsy target-dependent cost parsing
+Subject: [PATCH 19/23] Test Urgent Necropsy target-dependent cost parsing
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---

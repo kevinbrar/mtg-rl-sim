@@ -1,7 +1,7 @@
 From 6999757f8330c036daba63a8a1298a6e533e9114 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Sun, 8 Nov 2026 20:46:24 +0000
-Subject: [PATCH 08/21] Test Narset's reflexive discard damage
+Subject: [PATCH 08/23] Test Narset's reflexive discard damage
 
 The discard trigger announces its own target and uses the discarded card's mana value.
 

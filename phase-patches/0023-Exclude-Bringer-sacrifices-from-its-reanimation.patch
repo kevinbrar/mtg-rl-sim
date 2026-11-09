@@ -1,0 +1,277 @@
+From cd078932e686b4d85934a16063cc163fa69d9626 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Mon, 9 Nov 2026 03:43:05 +0000
+Subject: [PATCH 23/23] Exclude Bringer sacrifices from its reanimation
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../integration/bringer_of_the_last_gift.rs   | 82 +++++++++++++++++++
+ crates/engine/tests/integration/main.rs       |  1 +
+ .../src/parser/oracle_effect/tests.rs         | 62 ++++++++++++++
+ .../phase-parser/src/parser/oracle_target.rs  | 62 ++++++++++++++
+ 4 files changed, 207 insertions(+)
+ create mode 100644 crates/engine/tests/integration/bringer_of_the_last_gift.rs
+
+diff --git a/crates/engine/tests/integration/bringer_of_the_last_gift.rs b/crates/engine/tests/integration/bringer_of_the_last_gift.rs
+new file mode 100644
+index 000000000..af2c0417e
+--- /dev/null
++++ b/crates/engine/tests/integration/bringer_of_the_last_gift.rs
+@@ -0,0 +1,82 @@
++use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
++use engine::types::game_state::WaitingFor;
++use engine::types::identifiers::ObjectId;
++use engine::types::mana::ManaCost;
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const ORACLE: &str = "Flying\nWhen this creature enters, if you cast it, each player sacrifices all other creatures they control. Then each player returns all creature cards from their graveyard that weren't put there this way to the battlefield.";
++
++struct Setup {
++    runner: GameRunner,
++    bringer: ObjectId,
++    prior_graveyard_creatures: [ObjectId; 2],
++    sacrificed_creatures: [ObjectId; 2],
++}
++
++fn setup() -> Setup {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let bringer = scenario
++        .add_creature_to_hand_from_oracle(P0, "Bringer of the Last Gift", 6, 6, ORACLE)
++        .with_mana_cost(ManaCost::zero())
++        .id();
++    let prior_graveyard_creatures = [
++        scenario
++            .add_creature_to_graveyard(P0, "Prior P0 Creature", 2, 2)
++            .id(),
++        scenario
++            .add_creature_to_graveyard(P1, "Prior P1 Creature", 2, 2)
++            .id(),
++    ];
++    let sacrificed_creatures = [
++        scenario.add_creature(P0, "P0 Creature", 2, 2).id(),
++        scenario.add_creature(P1, "P1 Creature", 2, 2).id(),
++    ];
++    Setup {
++        runner: scenario.build(),
++        bringer,
++        prior_graveyard_creatures,
++        sacrificed_creatures,
++    }
++}
++
++fn cast_and_resolve_bringer(setup: &mut Setup) {
++    setup.runner.cast(setup.bringer).resolve();
++    setup.runner.advance_until_stack_empty();
++    assert!(
++        matches!(
++            setup.runner.state().waiting_for,
++            WaitingFor::Priority { .. }
++        ),
++        "Bringer's cast trigger should resolve without prompting"
++    );
++}
++
++#[test]
++fn returns_creatures_that_were_already_in_each_graveyard() {
++    let mut setup = setup();
++    cast_and_resolve_bringer(&mut setup);
++
++    for creature in setup.prior_graveyard_creatures {
++        assert_eq!(
++            setup.runner.state().objects[&creature].zone,
++            Zone::Battlefield,
++            "creatures already in graveyards should return"
++        );
++    }
++}
++
++#[test]
++fn does_not_return_creatures_put_into_graveyards_by_its_sacrifice() {
++    let mut setup = setup();
++    cast_and_resolve_bringer(&mut setup);
++
++    for creature in setup.sacrificed_creatures {
++        assert_eq!(
++            setup.runner.state().objects[&creature].zone,
++            Zone::Graveyard,
++            "creatures sacrificed by this trigger must be excluded from its return"
++        );
++    }
++}
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index 5f278d932..cd688cf0e 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -36,6 +36,7 @@ mod blitz_em_dash_graveyard_cast;
+ mod blizzard_brawl_snow_indestructible;
+ mod board_wipe_co_departure_scaling;
+ mod bring_to_light_free_cast_2880;
++mod bringer_of_the_last_gift;
+ mod cartographers_hawk_relative_damage_recipient;
+ mod case_solve_condition;
+ mod cast_this_way_gate_8721;
+diff --git a/crates/phase-parser/src/parser/oracle_effect/tests.rs b/crates/phase-parser/src/parser/oracle_effect/tests.rs
+index 21d0c98b9..dcdb6f848 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/tests.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/tests.rs
+@@ -30,6 +30,68 @@ use crate::types::card_type::CoreType;
+ use crate::types::mana::{ManaCost, ManaCostShard};
+ use crate::types::statics::CostModifyMode;
+ 
++#[test]
++fn bringer_of_the_last_gift_tracks_sacrificed_creatures_as_excluded() {
++    let parsed = parse_oracle_text(
++        "Flying\nWhen this creature enters, if you cast it, each player sacrifices all other \
++         creatures they control. Then each player returns all creature cards from their \
++         graveyard that weren't put there this way to the battlefield.",
++        "Bringer of the Last Gift",
++        &[],
++        &["Creature".to_string()],
++        &[],
++    );
++    let trigger = parsed.triggers.first().expect("Bringer ETB trigger");
++    assert!(matches!(
++        trigger.condition,
++        Some(crate::types::ability::TriggerCondition::WasCast { .. })
++    ));
++    let execute = trigger.execute.as_deref().expect("trigger body");
++    assert!(matches!(*execute.effect, Effect::Sacrifice { .. }));
++    let returned = execute
++        .sub_ability
++        .as_deref()
++        .expect("graveyard return follows the sacrifice");
++    let Effect::ChangeZoneAll {
++        origin,
++        destination,
++        target,
++        ..
++    } = &*returned.effect
++    else {
++        panic!("expected mass return, got {:?}", returned.effect);
++    };
++    assert_eq!(*origin, Some(crate::types::zones::Zone::Graveyard));
++    assert_eq!(*destination, crate::types::zones::Zone::Battlefield);
++    let TargetFilter::Typed(filter) = target else {
++        panic!("expected a typed graveyard filter, got {target:?}");
++    };
++    assert!(filter
++        .type_filters
++        .contains(&crate::types::ability::TypeFilter::Creature));
++    assert!(
++        filter.properties.iter().any(|prop| matches!(
++            prop,
++            FilterProp::Not { prop }
++                if matches!(
++                    &**prop,
++                    FilterProp::InTrackedSet { id }
++                        if *id == crate::types::identifiers::TrackedSetId(0)
++                )
++        )),
++        "the returned population must exclude cards moved by the sacrifice: {filter:?}"
++    );
++    let mut node = Some(execute);
++    while let Some(ability) = node {
++        assert!(
++            !matches!(&*ability.effect, Effect::Unimplemented { .. }),
++            "Bringer must parse without a swallowed effect: {:?}",
++            ability.effect
++        );
++        node = ability.sub_ability.as_deref();
++    }
++}
++
+ /// SHAPE: real Technomancer Oracle keeps mill before the direct whole-graveyard
+ /// choice, whose immediate continuation moves only the selected parents.
+ #[test]
+diff --git a/crates/phase-parser/src/parser/oracle_target.rs b/crates/phase-parser/src/parser/oracle_target.rs
+index 4041b3d98..d563ca502 100644
+--- a/crates/phase-parser/src/parser/oracle_target.rs
++++ b/crates/phase-parser/src/parser/oracle_target.rs
+@@ -4529,6 +4529,11 @@ fn parse_type_phrase_folding_unbound<'a>(
+         pos += consumed;
+     }
+ 
++    if let Some((prop, consumed)) = parse_not_put_there_this_way_suffix(&lower[pos..]) {
++        properties.push(prop);
++        pos += consumed;
++    }
++
+     // Check "of the chosen type" / "of that type" suffix (Cavern of Souls,
+     // Metallic Mimic; Selfless Safewright). CR 205.3m + CR 608.2c: "of that
+     // type" is the anaphor form of "of the chosen type" — same typed reference,
+@@ -9434,6 +9439,33 @@ pub(crate) fn parse_zone_changed_this_turn_suffix(
+     parse_zone_change_provenance(input, to, false)
+ }
+ 
++fn parse_not_put_there_this_way_suffix(input: &str) -> Option<(FilterProp, usize)> {
++    let trimmed = input.trim_start();
++    let offset = input.len() - trimmed.len();
++    let (rest, _) = (
++        tag::<_, _, OracleError<'_>>("that "),
++        alt((
++            tag("weren't "),
++            tag("were not "),
++            tag("wasn't "),
++            tag("was not "),
++        )),
++        alt((tag("put "), tag("placed "), tag("moved "))),
++        tag("there this way"),
++    )
++        .parse(trimmed)
++        .ok()?;
++
++    Some((
++        FilterProp::Not {
++            prop: Box::new(FilterProp::InTrackedSet {
++                id: crate::types::identifiers::TrackedSetId(0),
++            }),
++        },
++        offset + trimmed.len() - rest.len(),
++    ))
++}
++
+ fn zone_for_scope(props: &[FilterProp]) -> Option<Zone> {
+     props.iter().find_map(|prop| match prop {
+         FilterProp::InZone { zone } => Some(*zone),
+@@ -21401,6 +21433,36 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn type_phrase_cards_not_put_there_this_way_excludes_tracked_set() {
++        let (filter, rest) = parse_type_phrase_folding(
++            "creature cards from your graveyard that weren't put there this way",
++        );
++        let TargetFilter::Typed(tf) = filter else {
++            panic!("expected Typed filter, got {filter:?}");
++        };
++        assert!(tf.type_filters.contains(&TypeFilter::Creature));
++        assert!(tf.properties.contains(&FilterProp::InZone {
++            zone: Zone::Graveyard
++        }));
++        assert!(
++            tf.properties.iter().any(|prop| matches!(
++                prop,
++                FilterProp::Not { prop }
++                    if matches!(
++                        &**prop,
++                        FilterProp::InTrackedSet { id }
++                            if *id == crate::types::identifiers::TrackedSetId(0)
++                    )
++            )),
++            "the negative this-way qualifier must exclude the current tracked set: {tf:?}"
++        );
++        assert!(
++            rest.trim().is_empty(),
++            "expected empty remainder, got: {rest:?}"
++        );
++    }
++
+     #[test]
+     fn that_attacked_this_turn() {
+         let (filter, rest) = parse_target("target creature that attacked this turn");
+-- 
+2.56.0
+

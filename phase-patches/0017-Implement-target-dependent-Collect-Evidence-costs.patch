@@ -1,7 +1,7 @@
 From 32412a72a8d4046c1c8e5e82d61f94023a2aa0e6 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Mon, 9 Nov 2026 02:30:32 +0000
-Subject: [PATCH 17/21] Implement target-dependent Collect Evidence costs
+Subject: [PATCH 17/23] Implement target-dependent Collect Evidence costs
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
