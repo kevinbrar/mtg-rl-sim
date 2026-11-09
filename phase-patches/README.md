@@ -297,28 +297,43 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
 
 ## Final 18-card gates
 
-- Card data: `/home/ubuntu/repos/eng/pdata/patched/card-data.json`,
-  SHA-256 `e9a3303f9e09c5c5474c0607a434ceebcc3f431d6c4d16c85e3cad162b1fda1a`
-  (MTGJSON 2026-11-08); coverage is
-  32,330/36,280 (89.1%). All 18 target cards are supported with
-  `gap_count: 0`, including Extrapolate and Firebender.
-- Semantic audit: 32,843 supported cards audited; 191 cards have findings;
-  none of the 18 targets were flagged.
-- Supported-to-unsupported comparison against the requested 45bb5ca3 baseline found one
-  flip: Gaea's Liege. Its nine focused integration failures also reproduce at
-  the pre-Firebender `5d9db2489` parent.
-- Parsed-ability diff against the 988bc34 data artifact reported no card-parse
-  changes. The diff artifacts are in `/home/ubuntu/repos/eng/pdata/patched/`.
-- Gate A passed against `988bc3412f5d4e475c1837fbc88062b14d1f5489`; Gate G/H
-  passed with 121 residue obligations under the 123 ceiling.
-- Full `cargo test -p phase-engine` did not pass: 2,887 passed, 10 failed,
-  3 ignored. Nine failures are Gaea's Liege tests reproduced at the
-  pre-Firebender parent. The remaining failure,
-  `issue_6877_departed_triggering_spell::older_trigger_copies_its_own_cast_not_a_later_recast`,
-  passed when rerun alone on the current tree; no cause was confirmed.
-- `phase-env` release build passed. A raw JSON sideboard game containing all
-  18 targets plus Opt and Shock in each sideboard reached `game_over` after
-  24 turns and 390 decisions, with no unresolved cards.
-- Patch reproduction passed: all 29 patches reproduce the `local-fixes` tree.
-  Generator outputs were isolated in the patch-reproduction worktree; the
-  active phase worktree was not changed by card-data generation.
+- The corrected `local-fixes` head is
+  `34ab5f693a6c5c383a8eccab25f4bbf1fa0af37c`, based on
+  `988bc3412f5d4e475c1837fbc88062b14d1f5489`. The CDA regression was
+  introduced by `5d9db2489`: the shared Ms. Marvel self-reference change
+  stopped recognizing the generic pronoun “its,” leaving Gaea's Liege's
+  dynamic power/toughness modifiers unparsed. The shared parser now maps
+  “its” to `SelfRef`; a parser regression asserts both dynamic modifiers for
+  Gaea's Liege. No card-name special case is used.
+- `cargo fmt --all` and Gate A passed. Gate G/H passed with 121 residue
+  obligations under the 123 ceiling; 19 parser files were scanned.
+- Full `cargo test -p phase-engine` passed: 29,417 passed, 0 failed, 18
+  ignored. This includes 13,791 library tests (4 ignored), 90 binary tests,
+  15,536 integration tests (12 ignored), and 2 ignored doc tests.
+  `issue_6877_departed_triggering_spell::older_trigger_copies_its_own_cast_not_a_later_recast`
+  passed 10/10 on the fixed head and 10/10 on pinned base `988bc34`; no
+  flakiness was observed. The earlier head-only trigger-identity regression
+  was fixed by limiting identity reservation to attack-caused triggers
+  Firebender observes.
+- Regenerated data is in `/home/ubuntu/repos/eng/pdata/patched/`:
+  `card-data.json` SHA-256
+  `54ebe1c98e5d15de9d3e844845cb96a7cd87e3229957222616bec782827a8d6a`,
+  and coverage is 32,331/36,280 (89.1%), up from 32,303. The flip comparison
+  against the pinned-base coverage generated from the requested
+  `45bb5ca39612` baseline found zero supported-to-unsupported flips and 28
+  newly supported cards. All 18 target cards are supported with
+  `gap_count: 0`.
+- The corrected parsed-ability diff compares coverage snapshots (the format
+  consumed by `coverage-parse-diff`) and reports 41 changed cards and 53
+  signatures against the `45bb5ca3` baseline. Its Markdown and JSON artifacts
+  are in `/home/ubuntu/repos/eng/pdata/patched/parsed-ability-diff.{md,json}`.
+  It includes the expected shared Equip, Cycling, tracked-set, trigger,
+  target-filter, and fixed Collect Evidence parser changes; there were no
+  support regressions.
+- Semantic audit was not rerun for this corrective parser commit; the
+  previously recorded audit predates the Gaea's Liege correction.
+- Re-exported 30 patches. The apply-script check reproduced tree
+  `b55566fad463e2e8f99ebef1c27f9af24cf0137e`, matching the tree at
+  `local-fixes`; the phase submodule was returned to `local-fixes`.
+- Card-data generation ran in an isolated worktree; generator side effects
+  were not applied to the active phase worktree.

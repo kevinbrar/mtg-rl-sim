@@ -1,0 +1,101 @@
+From 34ab5f693a6c5c383a8eccab25f4bbf1fa0af37c Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Mon, 9 Nov 2026 06:06:19 +0000
+Subject: [PATCH] Fix Gaea's Liege CDA and isolate trigger identities
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/triggers.rs            | 26 +++++++++----------
+ .../src/parser/oracle_static/cda.rs           |  1 +
+ .../src/parser/oracle_static/tests.rs         | 11 ++++++++
+ 3 files changed, 24 insertions(+), 14 deletions(-)
+
+diff --git a/crates/engine/src/game/triggers.rs b/crates/engine/src/game/triggers.rs
+index 21c00dfd8..200a2f76c 100644
+--- a/crates/engine/src/game/triggers.rs
++++ b/crates/engine/src/game/triggers.rs
+@@ -7401,10 +7401,19 @@ fn collect_pending_triggers_with_collection(
+     // then clone matching pending triggers.
+     apply_trigger_doubling(state, &mut pending);
+ 
+-    // CR 603.2 + CR 508.1m + CR 508.3a: Each attack-caused trigger whose
+-    // source is the declared attacker gets an identity before observers are
+-    // collected. Reserve the same ObjectId that stack placement will use.
++    // CR 603.2 + CR 508.1m + CR 508.3a: Reserve stack identity for each
++    // attack-caused trigger whose source is the declared attacker, so observers
++    // can refer to that exact instance without changing allocation for other
++    // triggers.
+     for trigger_context in &mut pending {
++        let Some(GameEvent::AttackersDeclared { attacker_ids, .. }) =
++            trigger_context.pending.trigger_event.as_ref()
++        else {
++            continue;
++        };
++        if !attacker_ids.contains(&trigger_context.pending.source_id) {
++            continue;
++        }
+         let trigger_instance = ObjectId(state.next_object_id);
+         state.next_object_id += 1;
+         trigger_context.trigger_instance = Some(trigger_instance);
+@@ -7476,11 +7485,6 @@ fn collect_pending_triggers_with_collection(
+         }
+     }
+     apply_trigger_doubling(state, &mut ability_triggered_pending);
+-    for trigger_context in &mut ability_triggered_pending {
+-        let trigger_instance = ObjectId(state.next_object_id);
+-        state.next_object_id += 1;
+-        trigger_context.trigger_instance = Some(trigger_instance);
+-    }
+     pending.extend(ability_triggered_pending);
+     pending = filter_auto_inert_noop_triggers(state, pending);
+ 
+@@ -16169,12 +16173,6 @@ fn collect_pending_and_delayed_triggers_reporting_terminalized(
+     } = collect_matching_delayed_triggers(state, delayed_events, delayed_scope);
+     let mut contexts = normal_pending;
+     contexts.extend(delayed_pending);
+-    for context in &mut contexts {
+-        if context.trigger_instance.is_none() {
+-            context.trigger_instance = Some(ObjectId(state.next_object_id));
+-            state.next_object_id += 1;
+-        }
+-    }
+     contexts.sort_by_key(|ctx| {
+         (
+             trigger_apnap_rank(state, ctx.pending.controller),
+diff --git a/crates/phase-parser/src/parser/oracle_static/cda.rs b/crates/phase-parser/src/parser/oracle_static/cda.rs
+index fc4a86e6c..c65ee4161 100644
+--- a/crates/phase-parser/src/parser/oracle_static/cda.rs
++++ b/crates/phase-parser/src/parser/oracle_static/cda.rs
+@@ -183,6 +183,7 @@ fn cda_pt_equality_affected(lower: &str) -> Option<TargetFilter> {
+     preceded(
+         multispace0,
+         alt((
++            value(TargetFilter::SelfRef, tag::<_, _, OracleError<'_>>("its ")),
+             terminated(
+                 crate::parser::oracle_nom::target::parse_self_reference,
+                 tag::<_, _, OracleError<'_>>("'s "),
+diff --git a/crates/phase-parser/src/parser/oracle_static/tests.rs b/crates/phase-parser/src/parser/oracle_static/tests.rs
+index 6c997705a..c1f0499d0 100644
+--- a/crates/phase-parser/src/parser/oracle_static/tests.rs
++++ b/crates/phase-parser/src/parser/oracle_static/tests.rs
+@@ -42325,6 +42325,17 @@ fn static_gaeas_liege_full_oracle_dispatch() {
+     );
+     assert_eq!(parsed.statics.len(), 2, "{parsed:?}");
+     assert_eq!(parsed.abilities.len(), 1, "{parsed:?}");
++    for definition in &parsed.statics {
++        assert_eq!(definition.modifications.len(), 2, "{definition:?}");
++        assert!(matches!(
++            definition.modifications[0],
++            ContinuousModification::SetPowerDynamic { .. }
++        ));
++        assert!(matches!(
++            definition.modifications[1],
++            ContinuousModification::SetToughnessDynamic { .. }
++        ));
++    }
+     assert!(parsed
+         .abilities
+         .iter()
+-- 
+2.56.0
+
