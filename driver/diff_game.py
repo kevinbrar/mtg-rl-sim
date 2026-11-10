@@ -930,11 +930,17 @@ def _mana_plan_from_events(
         matching_indices = []
         for line in rules:
             normalized = line.strip().strip("'")
+            if ": Add {" not in normalized:
+                continue
             match_rule = MANA_RULE_PATTERN.fullmatch(normalized)
-            if match_rule:
-                mana_lines.append(match_rule.group(1))
-                if match_rule.group(1) == symbol:
-                    matching_indices.append(len(mana_lines) - 1)
+            if match_rule is None:
+                raise UnmappedPromptError(
+                    f"Unsupported mana-ability line for XMage permanent "
+                    f"{permanent}: {normalized!r}; rules={rules}"
+                )
+            mana_lines.append(match_rule.group(1))
+            if match_rule.group(1) == symbol:
+                matching_indices.append(len(mana_lines) - 1)
         if len(matching_indices) != 1:
             raise UnmappedPromptError(
                 f"No unique {symbol} mana-ability rule for XMage source "

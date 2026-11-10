@@ -2025,6 +2025,56 @@ def test_single_ability_land_mana_plan_omits_ability_index() -> None:
 
 
 @pytest.mark.parametrize(
+    ("mana_type", "rules"),
+    (
+        (
+            "Colorless",
+            ["{T}: Add {C}.", "{T}, Pay 1 life: Add {R}."],
+        ),
+        (
+            "Red",
+            ["{T}: Add {C}.", "{T}, Pay 1 life: Add {R}."],
+        ),
+        ("Red", ["{T}: Add {R} or {W}."]),
+    ),
+)
+def test_mana_plan_rejects_unsupported_mana_ability_lines(
+    mana_type: str, rules: list[str]
+) -> None:
+    symbol = "C" if mana_type == "Colorless" else "R"
+    phase_source = _mana_permanent(51, "Synthetic Land", symbol)
+    decision = _mana_source_decision([phase_source])
+    xmage_state = {
+        "players": [
+            {
+                "name": "DiffA",
+                "battlefield": [
+                    {
+                        "id": "p5",
+                        "name": "Synthetic Land",
+                        "tapped": False,
+                        "damage": 0,
+                        "rules": rules,
+                    }
+                ],
+            }
+        ]
+    }
+
+    with pytest.raises(UnmappedPromptError) as error:
+        diff_game._mana_plan_from_events(
+            [_mana_added(51, mana_type, decision)],
+            0,
+            ObjectBindings(),
+            xmage_state,
+        )
+
+    message = str(error.value)
+    assert "Synthetic Land" in message
+    assert all(line in message for line in rules)
+
+
+@pytest.mark.parametrize(
     ("mana_type", "expected"), (("White", "p7:1"), ("Red", "p7:0"))
 )
 def test_inspiring_vantage_plan_uses_color_rule_index(
