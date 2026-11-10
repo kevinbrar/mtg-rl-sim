@@ -1614,13 +1614,6 @@ async def _sync_xmage_to_decision(
                         },
                         "reason": batch_error,
                     }
-                if _unmapped_combat_followup(result):
-                    return result, {
-                        "kind": "unmapped_prompt",
-                        "seat": seat,
-                        "reason": "XMage returned an unsupported combat follow-up prompt",
-                    }
-
             if result.get("success") is False:
                 raise RuntimeError(f"XMage rejected a previous choice: {result}")
             if result.get("game_over"):
@@ -1641,6 +1634,13 @@ async def _sync_xmage_to_decision(
             if not result.get("action_pending"):
                 pending_results.pop(seat, None)
                 continue
+
+            if _unmapped_combat_followup(result):
+                return result, {
+                    "kind": "unmapped_prompt",
+                    "seat": seat,
+                    "reason": "XMage returned an unsupported combat follow-up prompt",
+                }
 
             stop = _matching_trivial_combat_stop(result, skipped_stops)
             if stop is not None:

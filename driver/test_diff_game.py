@@ -708,6 +708,59 @@ def test_unmapped_combat_followup_returns_unmapped_prompt() -> None:
     }
 
 
+def test_unmapped_combat_followup_on_other_seat_is_not_passed(monkeypatch) -> None:
+    decision = {
+        "owner": 1,
+        "state": {"turn": 3, "active_player": 0, "phase": "DeclareBlockers"},
+        "candidates": [{"type": "PassPriority"}],
+    }
+    results = {
+        "DiffA": {
+            "action_pending": True,
+            "action_type": "GAME_SELECT",
+            "response_type": "select",
+            "combat_phase": "damage",
+            "message": "Assign damage order",
+            "context": "T2 Combat/Combat Damage (DiffA)",
+            "board": [
+                {"name": "DiffA", "is_active": True, "is_you": True},
+                {"name": "DiffB", "is_active": False, "is_you": False},
+            ],
+            "choices": [],
+        },
+        "DiffB": {"game_over": True},
+    }
+    calls = []
+
+    async def call(session, method, arguments=None):
+        calls.append((session, method))
+        return results[session]
+
+    monkeypatch.setattr(diff_game, "_call", call)
+    xmage_result, point_diff = asyncio.run(
+        _sync_xmage_to_decision(
+            ["DiffA", "DiffB"],
+            decision,
+            {},
+            {},
+            [
+                {
+                    "kind": "priority",
+                    "turn": 3,
+                    "active_player": "DiffA",
+                    "step": "combatdamage",
+                }
+            ],
+            [],
+            timeout=0.1,
+        )
+    )
+
+    assert xmage_result == results["DiffA"]
+    assert point_diff["kind"] == "unmapped_prompt"
+    assert not any(method == "pass_priority" for _, method in calls)
+
+
 def test_phase_auto_empty_blockers_declines_xmage_prompt(monkeypatch) -> None:
     fixture = json.loads(AUTO_EMPTY_BLOCKER_FIXTURE.read_text())
     decision = fixture["phase"]
