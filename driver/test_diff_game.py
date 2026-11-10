@@ -16,6 +16,7 @@ from diff_game import (
     _scry_selection_payload,
     _xmage_activation_choice,
     _xmage_activation_set,
+    _xmage_target_key,
     _policy_candidate_v0,
     policy_candidate,
     summary_exit_code,
@@ -248,6 +249,35 @@ def test_target_maps_by_card_controller_and_zone() -> None:
     assert "phase_choices=" in str(error.value)
     assert "xmage_choices=" in str(error.value)
     assert "Dwarven Mauler" in str(error.value)
+
+
+def test_xmage_target_controller_comes_from_choice_source_id() -> None:
+    result = {
+        "board": [
+            {
+                "name": "DiffA",
+                "battlefield": [{"id": "p3", "name": "Dwarven Mauler"}],
+            },
+            {
+                "name": "DiffB",
+                "battlefield": [{"id": "p4", "name": "Dwarven Mauler"}],
+            },
+        ],
+        "choices": [
+            {"id": "p3", "name": "Dwarven Mauler"},
+            {"id": "p4", "name": "Dwarven Mauler"},
+        ],
+    }
+
+    assert _xmage_target_key(
+        {"id": "p4", "name": "Dwarven Mauler", "target_type": "permanent"},
+        result,
+    ) == ("permanent", "dwarven mauler", 1, "battlefield")
+    with pytest.raises(UnmappedPromptError):
+        _xmage_target_key(
+            {"id": "missing", "name": "Dwarven Mauler", "target_type": "permanent"},
+            result,
+        )
 
 
 def test_choose_player_target_uses_the_phase_player_name() -> None:
