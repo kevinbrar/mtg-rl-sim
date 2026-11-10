@@ -275,7 +275,7 @@ def test_activation_key_uses_the_choice_source_zone() -> None:
     assert _legal_action_diff(decision, xmage) == {}
 
 
-def test_target_without_board_source_id_fails_closed() -> None:
+def test_duplicate_target_without_board_ids_fails_closed() -> None:
     fixture = json.loads(DUPLICATE_FIXTURE.read_text())
     prompt = fixture["prompts"]["target"]
     decision = prompt["phase"]
@@ -315,6 +315,37 @@ def test_xmage_target_controller_comes_from_choice_source_id() -> None:
     with pytest.raises(UnmappedPromptError):
         _xmage_target_key(
             {"id": "missing", "name": "Dwarven Mauler", "target_type": "permanent"},
+            result,
+        )
+
+
+def test_xmage_target_uses_name_when_unique_and_board_ids_are_absent() -> None:
+    result = {
+        "board": [
+            {"name": "DiffA", "battlefield": [{"name": "Dwarven Mauler"}]},
+            {"name": "DiffB", "battlefield": [{"name": "Dream Beavers"}]},
+        ],
+        "choices": [{"id": "p5", "name": "Dwarven Mauler"}],
+    }
+
+    assert _xmage_target_key(
+        {"id": "p5", "name": "Dwarven Mauler", "target_type": "permanent"},
+        result,
+    ) == ("permanent", "dwarven mauler", 0, "battlefield")
+
+
+def test_xmage_target_mirror_duplicates_without_ids_fail_closed() -> None:
+    result = {
+        "board": [
+            {"name": "DiffA", "battlefield": [{"name": "Dwarven Mauler"}]},
+            {"name": "DiffB", "battlefield": [{"name": "Dwarven Mauler"}]},
+        ],
+        "choices": [{"id": "p5", "name": "Dwarven Mauler"}],
+    }
+
+    with pytest.raises(UnmappedPromptError):
+        _xmage_target_key(
+            {"id": "p5", "name": "Dwarven Mauler", "target_type": "permanent"},
             result,
         )
 

@@ -580,25 +580,35 @@ def _xmage_target_key(choice: dict, result: dict) -> tuple:
     if choice.get("target_type") != "permanent":
         return ("unknown", normalize_name(choice.get("name", "")))
     name = normalize_name(choice.get("name", ""))
-    choice_id = choice.get("id")
-    if choice_id is None:
-        raise UnmappedPromptError(f"XMage permanent choice has no id: {choice}")
-    sources = []
-    for player in result.get("board", []):
-        if player.get("name") not in PLAYER_NAMES:
-            continue
-        sources.extend(
-            PLAYER_NAMES.index(player["name"])
-            for card in player.get("battlefield", [])
+    battlefield = [
+        (player, card)
+        for player in result.get("board", [])
+        for card in player.get("battlefield", [])
+    ]
+    if any(card.get("id") is not None for _, card in battlefield):
+        choice_id = choice.get("id")
+        matches = [
+            (player, card)
+            for player, card in battlefield
             if card.get("id") == choice_id
             and normalize_name(card.get("name", "")) == name
-        )
-    if len(sources) != 1:
+        ]
+    else:
+        matches = [
+            (player, card)
+            for player, card in battlefield
+            if normalize_name(card.get("name", "")) == name
+        ]
+    if (
+        len(matches) != 1
+        or matches[0][0].get("name") not in PLAYER_NAMES
+    ):
         raise UnmappedPromptError(
             f"Could not identify XMage permanent source for {choice}: "
             f"xmage_choices={result.get('choices', [])}"
         )
-    return ("permanent", name, sources[0], "battlefield")
+    controller = PLAYER_NAMES.index(matches[0][0]["name"])
+    return ("permanent", name, controller, "battlefield")
 
 
 def _phase_target_set(decision: dict) -> Counter:
