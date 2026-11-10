@@ -28,12 +28,12 @@ jobs:
         run: |
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             git fetch origin "$BASE_REF"
-            git diff --name-only "origin/$BASE_REF...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames "origin/$BASE_REF...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
           elif [[ "$EVENT_NAME" == "push" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
-            git diff --name-only "$BEFORE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames "$BEFORE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
           else
             git fetch origin main
-            git diff --name-only origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
           fi
           if grep -q '^phase-patches/' "$RUNNER_TEMP/changed-files.txt"; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -77,12 +77,12 @@ jobs:
         run: |
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             git fetch origin "$BASE_REF"
-            git diff --name-only "origin/$BASE_REF...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames "origin/$BASE_REF...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
           elif [[ "$EVENT_NAME" == "push" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
-            git diff --name-only "$BEFORE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames "$BEFORE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
           else
             git fetch origin main
-            git diff --name-only origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
           fi
           if grep -q '^phase-patches/' "$RUNNER_TEMP/changed-files.txt"; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -117,24 +117,95 @@ jobs:
     env:
       CARGO_INCREMENTAL: 0
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - name: Detect engine scope
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          changed_files="$RUNNER_TEMP/changed-files.txt"
+          diff_ok=true
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            if git fetch origin "$BASE_REF" &&
+              git diff --name-only --no-renames "origin/$BASE_REF...$HEAD_SHA" > "$changed_files"; then
+              :
+            else
+              diff_ok=false
+            fi
+          elif [[ "$EVENT_NAME" == "push" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
+            if git diff --name-only --no-renames "$BEFORE_SHA...$HEAD_SHA" > "$changed_files"; then
+              :
+            else
+              diff_ok=false
+            fi
+          else
+            if git fetch origin main &&
+              git diff --name-only --no-renames origin/main...HEAD > "$changed_files"; then
+              :
+            else
+              diff_ok=false
+            fi
+          fi
+
+          mode=full
+          reason=
+          if [[ "$diff_ok" != "true" ]]; then
+            reason=changed-file-diff-failed
+            echo "::warning::Could not compute changed files; running full engine suite."
+          elif [[ ! -s "$changed_files" ]]; then
+            reason=empty-changed-file-list
+            echo "::warning::Changed-file list is empty; running full engine suite."
+          elif [[ "$EVENT_NAME" != "pull_request" ]]; then
+            reason=non-pull-request-event
+          else
+            engine_path_regex='^(phase-patches/|phase(/|$)|([^/]+/)*card-data[^/]*\.json$|ci/card-data\.txt$|ci/test-floor\.txt$|scripts/apply-phase-patches\.sh$|scripts/check_test_count\.py$|\.github/workflows/ci\.yml$|rust-toolchain)'
+            if grep -Eiq "$engine_path_regex" "$changed_files"; then
+              reason=engine-paths-changed
+            else
+              grep_status=$?
+              if [[ "$grep_status" -eq 1 ]]; then
+                mode=python-only
+                reason=no-engine-paths-changed
+              else
+                reason=scope-match-failed
+                echo "::warning::Could not classify changed files; running full engine suite."
+              fi
+            fi
+          fi
+
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          if [[ "$mode" == "python-only" ]]; then
+            echo "::notice::Engine suite skipped: no engine paths changed"
+            echo "Changed files:"
+            cat "$changed_files"
+          fi
       - name: Free runner disk space
+        if: steps.scope.outputs.mode == 'full'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           docker image prune --all --force || true
           df -h /
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - name: Apply local engine patches
+        if: steps.scope.outputs.mode == 'full'
         run: ./scripts/apply-phase-patches.sh
       - uses: dtolnay/rust-toolchain@master
+        if: steps.scope.outputs.mode == 'full'
         with:
           toolchain: nightly-2026-04-19
       - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.mode == 'full'
         with:
           workspaces: phase -> target
           shared-key: test-full-${{ hashFiles('phase-patches/*.patch') }}
       - name: Download and verify matching patched card data
+        if: steps.scope.outputs.mode == 'full'
         working-directory: phase
         env:
           GH_TOKEN: ${{ github.token }}
@@ -179,11 +250,13 @@ jobs:
           install -D "$data_file" client/public/card-data.json
           echo "Installed patched card data with SHA-256 $actual_sha"
       - name: Run the complete phase-engine suite
+        if: steps.scope.outputs.mode == 'full'
         working-directory: phase
         run: |
           set -o pipefail
           cargo test -p phase-engine 2>&1 | tee "$RUNNER_TEMP/phase-engine-test.log"
       - name: Enforce the test-count floor
+        if: steps.scope.outputs.mode == 'full'
         working-directory: phase
         run: |
           test_floor="$(tr -d '[:space:]' < ../ci/test-floor.txt)"
@@ -229,12 +302,12 @@ jobs:
         run: |
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             git fetch origin "$BASE_REF"
-            git diff --name-only "origin/$BASE_REF...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames "origin/$BASE_REF...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
           elif [[ "$EVENT_NAME" == "push" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
-            git diff --name-only "$BEFORE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames "$BEFORE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
           else
             git fetch origin main
-            git diff --name-only origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
           fi
           if grep -Eiq '^(phase-patches/|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
             echo "mode=fail-closed" >> "$GITHUB_OUTPUT"
@@ -442,7 +515,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           git fetch origin "$BASE_REF"
-          git diff --name-only "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/changed-files.txt"
+          git diff --name-only --no-renames "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/changed-files.txt"
           if grep -q '^phase-patches/' "$RUNNER_TEMP/changed-files.txt"; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
@@ -509,7 +582,7 @@ jobs:
         run: |
           set -o pipefail
           test_filter=()
-          changed_modules="$(git diff --name-only "$BASE_PATCHED" "$HEAD_PATCHED" -- crates/engine/tests/integration)"
+          changed_modules="$(git diff --name-only --no-renames "$BASE_PATCHED" "$HEAD_PATCHED" -- crates/engine/tests/integration)"
           if [[ "$(printf '%s\n' "$changed_modules" | sed '/^$/d' | wc -l)" -eq 1 ]]; then
             module="$(basename "$changed_modules" .rs)"
             if [[ "$module" =~ ^[a-zA-Z0-9_]+$ ]]; then
@@ -573,7 +646,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           git fetch origin "$BASE_REF"
-          git diff --name-only "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/changed-files.txt"
+          git diff --name-only --no-renames "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/changed-files.txt"
       - name: Lint review packet
         env:
           PR_BODY: ${{ github.event.pull_request.body }}

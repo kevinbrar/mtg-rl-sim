@@ -13,7 +13,7 @@ XMage via mage-bench (`oracle/README.md`) is the correctness oracle; Kevin named
 |---|---|
 | `fmt` | `cargo fmt --check` / `ruff format --check` differ |
 | `clippy` | `cargo clippy --workspace -D warnings` / `ruff` report anything |
-| `test-full` | after `scripts/apply-phase-patches.sh`: `cargo test -p phase-engine` + `pytest driver`; printed count below `ci/test-floor.txt` (~29.4k; raise when adding tests, never lower silently) |
+| `test-full` | always compiles/runs Python tests; full patched engine suite and test-count floor on engine-path changes, non-PR events, or failed/empty scope detection |
 | `xmage-diff` | untriaged divergence; `cards:` entry without a report artifact; `cards:` missing on an engine-path change |
 | `mutants` | `cargo mutants --in-diff` survivors in engine/card logic above `ci/mutants-threshold.txt`; survivors posted as PR comment |
 | `packet-lint` | missing template section; engine PR with no `independent: Y` row; "verified" claim without a link |
