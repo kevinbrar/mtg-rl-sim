@@ -164,7 +164,7 @@ jobs:
           elif [[ "$EVENT_NAME" != "pull_request" ]]; then
             reason=non-pull-request-event
           else
-            engine_path_regex='^(phase-patches/|phase(/|$)|([^/]+/)*card-data[^/]*\.json$|ci/card-data\.txt$|ci/test-floor\.txt$|scripts/apply-phase-patches\.sh$|scripts/check_test_count\.py$|\.github/workflows/ci\.yml$|rust-toolchain)'
+            engine_path_regex='^(phase-patches/|phase(/|$)|phase-env/|([^/]+/)*card-data[^/]*\.json$|ci/card-data\.txt$|ci/test-floor\.txt$|scripts/apply-phase-patches\.sh$|scripts/check_test_count\.py$|\.github/workflows/ci\.yml$|rust-toolchain)'
             if grep -Eiq "$engine_path_regex" "$changed_files"; then
               reason=engine-paths-changed
             else
