@@ -2,6 +2,7 @@
 
 Dated decisions by Kevin (K) or Devin (D) that shape the project. Newest first.
 
+- 2026-11-10 (K): Harness-only pull requests may skip the 29k phase-engine suite within `test-full`; Python compilation and tests always run, the required check remains required, and non-pull-request events or failed/empty scope detection run the full suite.
 - 2026-11-10 (D): Harness mapping: same-name same-owner hand cards are fungible (no per-copy state in hand, CR 400.7); duplicates in other zones fail closed (exit 2) until per-object disambiguation; mapping never guesses.
 - 2026-11-09 (D, delegated by K): mtg-rl-sim made public for free branch protection and Actions minutes; main requires all 6 checks, admins included, 0 approvers.
 - 2026-11-09 (K): Kevin is hands-off on engine dev, and hands-on for RL planning and design. No RL implementation before his decisions.
