@@ -1,0 +1,308 @@
+{
+  "source_run": {
+    "artifact": "runs/20261110T041756644740Z/divergence.json",
+    "prompt_captures": {
+      "activation": "runs/20261110T041428784284Z/divergence.json",
+      "target": "runs/20261110T041626561368Z/divergence.json"
+    },
+    "step": 40,
+    "phase_turn": 5,
+    "phase": "PostCombatMain",
+    "phase_candidates": [
+      {
+        "data": {
+          "ability_index": 0,
+          "source_id": 27
+        },
+        "type": "ActivateAbility"
+      },
+      {
+        "data": {
+          "ability_index": 0,
+          "source_id": 45
+        },
+        "type": "ActivateAbility"
+      }
+    ],
+    "phase_permanents": [
+      {
+        "controller": 0,
+        "id": 27,
+        "name": "Basilisk Collar"
+      },
+      {
+        "controller": 0,
+        "id": 45,
+        "name": "Basilisk Collar"
+      },
+      {
+        "controller": 0,
+        "id": 2,
+        "name": "Dwarven Mauler"
+      },
+      {
+        "controller": 0,
+        "id": 23,
+        "name": "Dwarven Mauler"
+      },
+      {
+        "controller": 0,
+        "id": 25,
+        "name": "Dwarven Mauler"
+      }
+    ],
+    "xmage_permanents": [
+      {
+        "id": "p3",
+        "name": "Basilisk Collar"
+      },
+      {
+        "id": "p4",
+        "name": "Basilisk Collar"
+      },
+      {
+        "id": "p5",
+        "name": "Dwarven Mauler"
+      },
+      {
+        "id": "p28",
+        "name": "Dwarven Mauler"
+      },
+      {
+        "id": "p43",
+        "name": "Dwarven Mauler"
+      }
+    ],
+    "observed_target_prompt": {
+      "game_seq": 181,
+      "action_type": "GAME_TARGET",
+      "message": "Select a creature you control"
+    }
+  },
+  "prompts": {
+    "activation": {
+      "phase": {
+        "owner": 0,
+        "state": {
+          "players": []
+        },
+        "waiting_for": {
+          "type": "Priority",
+          "data": {
+            "player": 0
+          }
+        },
+        "objects": {
+          "27": {
+            "abilities": [
+              {
+                "index": 0,
+                "kind": "Activated",
+                "text": "Equip {2}"
+              }
+            ],
+            "controller": 0,
+            "name": "Basilisk Collar",
+            "zone": "Battlefield"
+          },
+          "45": {
+            "abilities": [
+              {
+                "index": 0,
+                "kind": "Activated",
+                "text": "Equip {2}"
+              }
+            ],
+            "controller": 0,
+            "name": "Basilisk Collar",
+            "zone": "Battlefield"
+          }
+        },
+        "candidates": [
+          {
+            "type": "PassPriority"
+          },
+          {
+            "data": {
+              "ability_index": 0,
+              "source_id": 27
+            },
+            "type": "ActivateAbility"
+          },
+          {
+            "data": {
+              "ability_index": 0,
+              "source_id": 45
+            },
+            "type": "ActivateAbility"
+          }
+        ]
+      },
+      "xmage": {
+        "action_pending": true,
+        "action_type": "GAME_SELECT",
+        "context": "T2 Precombat Main/Precombat Main (DiffA) YOUR_MAIN",
+        "board": [
+          {
+            "name": "DiffA",
+            "is_you": true,
+            "battlefield": [
+              {
+                "name": "Basilisk Collar",
+                "id": "p3"
+              },
+              {
+                "name": "Basilisk Collar",
+                "id": "p4"
+              },
+              {
+                "name": "Dwarven Mauler"
+              },
+              {
+                "name": "Dwarven Mauler"
+              },
+              {
+                "name": "Dwarven Mauler"
+              }
+            ]
+          },
+          {
+            "name": "DiffB",
+            "is_you": false,
+            "battlefield": []
+          }
+        ],
+        "choices": [
+          {
+            "name": "Basilisk Collar",
+            "index": 0,
+            "action": "activate",
+            "playable_abilities": [
+              "Equip {2} <i>({2}: Attach to target creature you ..."
+            ],
+            "id": "p3"
+          },
+          {
+            "name": "Basilisk Collar",
+            "index": 1,
+            "action": "activate",
+            "playable_abilities": [
+              "Equip {2} <i>({2}: Attach to target creature you ..."
+            ],
+            "id": "p4"
+          }
+        ]
+      }
+    },
+    "target": {
+      "phase": {
+        "owner": 0,
+        "state": {
+          "players": []
+        },
+        "waiting_for": {
+          "type": "TargetSelection",
+          "data": {
+            "player": 0
+          }
+        },
+        "objects": {
+          "2": {
+            "name": "Dwarven Mauler",
+            "zone": "Battlefield",
+            "controller": 0
+          },
+          "23": {
+            "name": "Dwarven Mauler",
+            "zone": "Battlefield",
+            "controller": 0
+          },
+          "25": {
+            "name": "Dwarven Mauler",
+            "zone": "Battlefield",
+            "controller": 0
+          }
+        },
+        "candidates": [
+          {
+            "type": "ChooseTarget",
+            "data": {
+              "target": {
+                "Object": 2
+              }
+            }
+          },
+          {
+            "type": "ChooseTarget",
+            "data": {
+              "target": {
+                "Object": 23
+              }
+            }
+          },
+          {
+            "type": "ChooseTarget",
+            "data": {
+              "target": {
+                "Object": 25
+              }
+            }
+          }
+        ]
+      },
+      "xmage": {
+        "action_pending": true,
+        "action_type": "GAME_TARGET",
+        "message": "Select a creature you control",
+        "board": [
+          {
+            "name": "DiffA",
+            "is_you": true,
+            "battlefield": [
+              {
+                "name": "Basilisk Collar"
+              },
+              {
+                "name": "Basilisk Collar"
+              },
+              {
+                "name": "Dwarven Mauler"
+              },
+              {
+                "name": "Dwarven Mauler"
+              },
+              {
+                "name": "Dwarven Mauler"
+              }
+            ]
+          },
+          {
+            "name": "DiffB",
+            "is_you": false,
+            "battlefield": []
+          }
+        ],
+        "choices": [
+          {
+            "name": "Dwarven Mauler",
+            "target_type": "permanent",
+            "index": 0,
+            "id": "p5"
+          },
+          {
+            "name": "Dwarven Mauler",
+            "target_type": "permanent",
+            "index": 1,
+            "id": "p28"
+          },
+          {
+            "name": "Dwarven Mauler",
+            "target_type": "permanent",
+            "index": 2,
+            "id": "p43"
+          }
+        ]
+      }
+    }
+  }
+}

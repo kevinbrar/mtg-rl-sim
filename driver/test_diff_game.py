@@ -6,11 +6,19 @@ import pytest
 
 from diff_game import (
     _legal_action_diff,
+    _matching_trivial_priority_stop,
+    _phase_activation_set,
+    _phase_hand_card,
+    _xmage_hand_choice,
+    _xmage_target_choice,
     _scry_legal_choices,
     _scry_selection_payload,
+    _xmage_activation_choice,
+    _xmage_activation_set,
     _policy_candidate_v0,
     policy_candidate,
     summary_exit_code,
+    UnmappedPromptError,
 )
 
 SCRY_FIXTURE = (
@@ -18,6 +26,30 @@ SCRY_FIXTURE = (
     / "tests"
     / "fixtures"
     / "boros-dimir-seed-17-scry.json"
+)
+DUPLICATE_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "boros-dimir-seed-17-duplicate-choices.json"
+)
+HAND_DUPLICATE_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "mono-green-v0-seed-17-duplicate-forests.json"
+)
+DISCARD_HAND_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "mono-green-v0-seed-42-discard-hand.json"
+)
+ABILITY_ZONE_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "boros-dimir-seed-42-ability-zone.json"
 )
 
 
@@ -86,6 +118,135 @@ def test_scry_waiting_player_mismatch_is_a_divergence() -> None:
     xmage = fixture["prompts"]["xmage"]
 
     assert _legal_action_diff(decision, xmage)
+
+
+def test_trivial_priority_stop_does_not_pass_activated_ability_prompt() -> None:
+    decision = {
+        "owner": 0,
+        "state": {"turn": 3, "active_player": 0, "phase": "PreCombatMain"},
+        "candidates": [{"type": "PassPriority"}, {"type": "ActivateAbility"}],
+    }
+    xmage = {
+        "action_pending": True,
+        "action_type": "GAME_SELECT",
+        "response_type": "select",
+        "context": "T2 Precombat Main/Precombat Main (DiffA) YOUR_MAIN",
+        "board": [{"name": "DiffA", "is_active": True, "is_you": True}],
+        "choices": [{"name": "Basilisk Collar", "action": "activate"}],
+    }
+    skipped_stops = [
+        {
+            "kind": "priority",
+            "turn": 3,
+            "active_player": "DiffA",
+            "step": "precombatmain",
+        }
+    ]
+
+    assert _matching_trivial_priority_stop(xmage, decision, skipped_stops) is None
+
+
+def test_duplicate_activation_matches_are_unmapped_with_both_choice_lists() -> None:
+    fixture = json.loads(DUPLICATE_FIXTURE.read_text())
+    prompt = fixture["prompts"]["activation"]
+    decision = prompt["phase"]
+    xmage = prompt["xmage"]
+
+    assert _phase_activation_set(decision) == _xmage_activation_set(xmage)
+    assert _legal_action_diff(decision, xmage) == {}
+    assert fixture["source_run"]["phase_candidates"] == [
+        candidate
+        for candidate in decision["candidates"]
+        if candidate["type"] == "ActivateAbility"
+    ]
+    action = next(
+        candidate
+        for candidate in decision["candidates"]
+        if candidate["type"] == "ActivateAbility"
+        and candidate["data"]["source_id"] == 45
+    )
+    with pytest.raises(UnmappedPromptError) as error:
+        _xmage_activation_choice(action, decision, xmage)
+    assert "phase_choices=" in str(error.value)
+    assert "xmage_choices=" in str(error.value)
+    assert "Basilisk Collar" in str(error.value)
+    xmage["choices"][0]["playable_abilities"] = ["Equip {1}"]
+    assert _legal_action_diff(decision, xmage)
+
+
+def test_duplicate_hand_land_choices_are_fungible() -> None:
+    fixture = json.loads(HAND_DUPLICATE_FIXTURE.read_text())
+    decision = fixture["prompts"]["phase"]
+    xmage = fixture["prompts"]["xmage"]
+    action = next(
+        candidate
+        for candidate in decision["candidates"]
+        if candidate["type"] == "PlayLand" and candidate["data"]["object_id"] == 75
+    )
+    card, owner = _phase_hand_card(action["data"]["object_id"], decision)
+
+    choice = _xmage_hand_choice(card["name"], owner, "land", decision, xmage)
+
+    assert fixture["source_artifact"] == "runs/20261110T042903165466Z/divergence.json"
+    assert owner == 1
+    assert len(xmage["choices"]) == 2
+    assert choice == xmage["choices"][0]
+
+
+def test_duplicate_hand_select_choices_are_fungible() -> None:
+    fixture = json.loads(DISCARD_HAND_FIXTURE.read_text())
+    decision = fixture["prompts"]["phase"]
+    xmage = fixture["prompts"]["xmage"]
+    action = next(
+        candidate
+        for candidate in decision["candidates"]
+        if candidate["type"] == "SelectCards" and candidate["data"]["cards"] == [67]
+    )
+    card, owner = _phase_hand_card(action["data"]["cards"][0], decision)
+
+    assert _legal_action_diff(decision, xmage) == {}
+    choice = _xmage_hand_choice(card["name"], owner, None, decision, xmage)
+
+    assert fixture["source_artifact"] == "runs/20261110T043821774195Z/divergence.json"
+    assert choice == xmage["choices"][1]
+    assert (
+        len(
+            [
+                candidate
+                for candidate in xmage["choices"]
+                if candidate["name"] == "Forest"
+            ]
+        )
+        == 2
+    )
+
+
+def test_activation_key_uses_the_choice_source_zone() -> None:
+    fixture = json.loads(ABILITY_ZONE_FIXTURE.read_text())
+    decision = fixture["prompts"]["phase"]
+    xmage = fixture["prompts"]["xmage"]
+
+    assert fixture["source_artifact"] == "runs/20261110T044740750318Z/divergence.json"
+    assert _legal_action_diff(decision, xmage) == {}
+
+
+def test_target_maps_by_card_controller_and_zone() -> None:
+    fixture = json.loads(DUPLICATE_FIXTURE.read_text())
+    prompt = fixture["prompts"]["target"]
+    decision = prompt["phase"]
+    xmage = prompt["xmage"]
+
+    assert _legal_action_diff(decision, xmage) == {}
+    assert [choice["id"] for choice in xmage["choices"]] == [
+        permanent["id"]
+        for permanent in fixture["source_run"]["xmage_permanents"]
+        if permanent["name"] == "Dwarven Mauler"
+    ]
+    with pytest.raises(UnmappedPromptError) as error:
+        _xmage_target_choice(decision["candidates"][0], decision, xmage)
+    assert "phase_choices=" in str(error.value)
+    assert "xmage_choices=" in str(error.value)
+    assert "Dwarven Mauler" in str(error.value)
 
 
 def test_v0_policy_keeps_existing_choice_stream() -> None:

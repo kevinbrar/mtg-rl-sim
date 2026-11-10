@@ -188,15 +188,6 @@ fn keep_opening_hands(state: &mut GameState) {
     );
 }
 
-fn waiting_for_label(state: &GameState) -> String {
-    // Debug-print the discriminant only (drop payloads for a stable label).
-    let dbg = format!("{:?}", state.waiting_for);
-    dbg.split([' ', '{', '('])
-        .next()
-        .unwrap_or(&dbg)
-        .to_string()
-}
-
 fn objects_for_candidates(
     state: &GameState,
     candidates: &[engine::types::actions::GameAction],
@@ -207,14 +198,36 @@ fn objects_for_candidates(
             .objects
             .get(&id)
             .expect("candidate object reference must exist in game state");
-        objects.insert(
-            id.0.to_string(),
-            json!({
-                "name": object.name,
-                "zone": format!("{:?}", object.zone),
-                "controller": object.controller.0,
-            }),
-        );
+        let abilities: Vec<Value> = candidates
+            .iter()
+            .filter_map(|candidate| match candidate {
+                GameAction::ActivateAbility {
+                    source_id,
+                    ability_index,
+                    ..
+                } if *source_id == id => {
+                    let ability = object
+                        .abilities
+                        .get(*ability_index)
+                        .expect("candidate ability index must exist on its source");
+                    Some(json!({
+                        "index": ability_index,
+                        "kind": format!("{:?}", ability.kind),
+                        "text": ability.description.as_deref(),
+                    }))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut metadata = json!({
+            "name": object.name,
+            "zone": format!("{:?}", object.zone),
+            "controller": object.controller.0,
+        });
+        if !abilities.is_empty() {
+            metadata["abilities"] = json!(abilities);
+        }
+        objects.insert(id.0.to_string(), metadata);
     }
     Value::Object(objects)
 }
@@ -282,7 +295,7 @@ fn run_game(out: &mut impl Write, inp: &mut impl BufRead, db: &CardDatabase, spe
                 json!({
                     "type": "blocked",
                     "reason": "no acting players",
-                    "waiting_for": waiting_for_label(&state),
+                    "waiting_for": serde_json::to_value(&state.waiting_for).unwrap(),
                     "state": snapshot(&state),
                 }),
             );

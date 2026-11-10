@@ -1,0 +1,107 @@
+{
+  "prompts": {
+    "phase": {
+      "owner": 0,
+      "state": {
+        "players": []
+      },
+      "waiting_for": {
+        "type": "Priority",
+        "data": {
+          "player": 0
+        }
+      },
+      "objects": {
+        "27": {
+          "abilities": [
+            {
+              "index": 0,
+              "kind": "Activated",
+              "text": "Equip {2}"
+            }
+          ],
+          "controller": 0,
+          "name": "Basilisk Collar",
+          "zone": "Battlefield"
+        },
+        "45": {
+          "abilities": [
+            {
+              "index": 0,
+              "kind": "Activated",
+              "text": "Equip {2}"
+            }
+          ],
+          "controller": 0,
+          "name": "Basilisk Collar",
+          "zone": "Battlefield"
+        }
+      },
+      "candidates": [
+        {
+          "type": "PassPriority"
+        },
+        {
+          "data": {
+            "ability_index": 0,
+            "source_id": 27
+          },
+          "type": "ActivateAbility"
+        },
+        {
+          "data": {
+            "ability_index": 0,
+            "source_id": 45
+          },
+          "type": "ActivateAbility"
+        }
+      ]
+    },
+    "xmage": {
+      "action_pending": true,
+      "action_type": "GAME_SELECT",
+      "context": "T2 Precombat Main/Precombat Main (DiffA) YOUR_MAIN",
+      "board": [
+        {
+          "name": "DiffA",
+          "is_you": true,
+          "battlefield": [
+            {
+              "name": "Basilisk Collar",
+              "id": "p3"
+            },
+            {
+              "name": "Basilisk Collar",
+              "id": "p4"
+            }
+          ]
+        },
+        {
+          "name": "DiffB",
+          "is_you": false,
+          "battlefield": []
+        }
+      ],
+      "choices": [
+        {
+          "name": "Basilisk Collar",
+          "index": 0,
+          "action": "activate",
+          "playable_abilities": [
+            "Equip {2} <i>({2}: Attach to target creature you ..."
+          ],
+          "id": "p3"
+        },
+        {
+          "name": "Basilisk Collar",
+          "index": 1,
+          "action": "activate",
+          "playable_abilities": [
+            "Equip {2} <i>({2}: Attach to target creature you ..."
+          ],
+          "id": "p4"
+        }
+      ]
+    }
+  }
+}
