@@ -1,0 +1,195 @@
+{
+  "source_run": "20261110T131055574998Z",
+  "source_artifact": "runs/20261110T131055574998Z/divergence.json",
+  "phase": {
+    "waiting_for": {
+      "type": "DeclareBlockers",
+      "data": {
+        "block_capacities": {
+          "69": 1,
+          "90": 1
+        },
+        "player": 1,
+        "valid_block_targets": {
+          "69": [
+            12
+          ],
+          "90": [
+            12
+          ]
+        },
+        "valid_blocker_ids": [
+          69,
+          90
+        ]
+      }
+    },
+    "objects": {
+      "12": {
+        "name": "Dwarven Mauler",
+        "zone": "Battlefield",
+        "controller": 0,
+        "incarnation": 3,
+        "tapped": true,
+        "power": 2,
+        "toughness": 1,
+        "damage": 0,
+        "summoning_sick": false,
+        "attached_to": null
+      },
+      "69": {
+        "name": "Dream Beavers",
+        "zone": "Battlefield",
+        "controller": 1,
+        "incarnation": 3,
+        "tapped": false,
+        "power": 1,
+        "toughness": 1,
+        "damage": 0,
+        "summoning_sick": false,
+        "attached_to": null
+      },
+      "90": {
+        "name": "Dream Beavers",
+        "zone": "Battlefield",
+        "controller": 1,
+        "incarnation": 3,
+        "tapped": false,
+        "power": 1,
+        "toughness": 1,
+        "damage": 0,
+        "summoning_sick": true,
+        "attached_to": null
+      }
+    },
+    "state": {
+      "turn": 5,
+      "active_player": 0,
+      "phase": "DeclareBlockers",
+      "battlefield": [
+        {
+          "id": 12,
+          "incarnation": 3
+        },
+        {
+          "id": 69,
+          "incarnation": 3
+        },
+        {
+          "id": 90,
+          "incarnation": 3
+        }
+      ]
+    },
+    "candidates": [
+      {
+        "type": "DeclareBlockers",
+        "data": {
+          "assignments": []
+        }
+      },
+      {
+        "type": "DeclareBlockers",
+        "data": {
+          "assignments": [
+            [
+              69,
+              12
+            ]
+          ]
+        }
+      },
+      {
+        "type": "DeclareBlockers",
+        "data": {
+          "assignments": [
+            [
+              90,
+              12
+            ]
+          ]
+        }
+      }
+    ]
+  },
+  "xmage": {
+    "action_pending": true,
+    "action_type": "GAME_SELECT",
+    "message": "Select blockers",
+    "response_type": "select",
+    "context": "T3 Combat/Declare Blockers (DiffA)",
+    "combat_phase": "blockers",
+    "stop_reason": "combat",
+    "choices": [
+      {
+        "name": "Dream Beavers",
+        "index": 0,
+        "choice_type": "blocker",
+        "id": "p24",
+        "power": "1",
+        "toughness": "1"
+      },
+      {
+        "name": "Dream Beavers",
+        "index": 1,
+        "choice_type": "blocker",
+        "id": "p27",
+        "power": "1",
+        "toughness": "1"
+      }
+    ],
+    "incoming_attackers": [
+      {
+        "name": "Dwarven Mauler",
+        "id": "p5",
+        "power": "2",
+        "toughness": "1"
+      }
+    ]
+  },
+  "xmage_state": {
+    "available": true,
+    "players": [
+      {
+        "name": "DiffA",
+        "battlefield": [
+          {
+            "id": "p5",
+            "name": "Dwarven Mauler",
+            "tapped": true,
+            "power": "2",
+            "toughness": "1",
+            "damage": 0,
+            "summoning_sick": false,
+            "attached_to": null
+          }
+        ]
+      },
+      {
+        "name": "DiffB",
+        "battlefield": [
+          {
+            "id": "p24",
+            "name": "Dream Beavers",
+            "tapped": false,
+            "power": "1",
+            "toughness": "1",
+            "damage": 0,
+            "summoning_sick": false,
+            "attached_to": null
+          },
+          {
+            "id": "p27",
+            "name": "Dream Beavers",
+            "tapped": false,
+            "power": "1",
+            "toughness": "1",
+            "damage": 0,
+            "summoning_sick": true,
+            "attached_to": null
+          }
+        ]
+      }
+    ]
+  }
+}

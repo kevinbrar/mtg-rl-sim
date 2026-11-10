@@ -1250,6 +1250,80 @@ def _matching_trivial_combat_stop(result: dict, skipped_stops: list[dict]) -> di
     )
 
 
+def _matching_phase_auto_empty_blockers(
+    result: dict,
+    phase_attack_records: set[tuple[int, int]],
+    phase_blocker_decisions: set[tuple[int, int]],
+) -> dict | None:
+    combat_phase = _normalize_phase(result.get("combat_phase"))
+    if combat_phase not in {"blockers", "declareblockers"}:
+        return None
+    metadata = _decision_metadata(result)
+    active_player = metadata["active_player"]
+    actor = metadata["actor"]
+    turn = metadata["turn"]
+    if (
+        active_player not in PLAYER_NAMES
+        or actor not in PLAYER_NAMES
+        or actor == active_player
+        or not isinstance(turn, int)
+    ):
+        return None
+    key = (turn, PLAYER_NAMES.index(active_player))
+    if key not in phase_attack_records or key in phase_blocker_decisions:
+        return None
+    return {"turn": turn, "active_player": active_player}
+
+
+def _combat_batch_error(result: dict, expected: tuple[str, int]) -> str | None:
+    expected_action, expected_declared = expected
+    action_taken = result.get("action_taken")
+    if action_taken != expected_action:
+        return f"expected {expected_action}, got {action_taken!r}"
+    if result.get("failed"):
+        return f"failed entries: {result['failed']}"
+    if result.get("interrupted"):
+        return "batch interrupted"
+    if result.get("success") is False:
+        return f"success was false: {result}"
+    declared = result.get("declared")
+    if not isinstance(declared, list) or len(declared) != expected_declared:
+        count = len(declared) if isinstance(declared, list) else None
+        return f"declared {count} entries; Phase declared {expected_declared}"
+    return None
+
+
+def _unmapped_combat_followup(result: dict) -> bool:
+    if not result.get("action_pending"):
+        return False
+    combat_phase = _normalize_phase(result.get("combat_phase"))
+    if result.get("stop_reason") == "combat" and combat_phase not in {
+        "attackers",
+        "declareattackers",
+        "blockers",
+        "declareblockers",
+    }:
+        return True
+    prompt = re.sub(
+        r"[^a-z0-9]+",
+        " ",
+        " ".join(
+            str(result.get(field) or "")
+            for field in ("message", "respond_with", "context")
+        ).casefold(),
+    )
+    return any(
+        phrase in prompt
+        for phrase in (
+            "assign combat damage",
+            "assign damage",
+            "damage assignment",
+            "damage order",
+            "order blockers",
+        )
+    )
+
+
 def _is_xmage_combat_selection(result: dict) -> bool:
     return result.get("stop_reason") == "combat" or _normalize_phase(
         result.get("combat_phase")
@@ -1339,16 +1413,62 @@ def _normalize_xmage_turn(turn: int, active_player: int) -> int:
     return turn * 2 - 1 + active_player
 
 
+def _phase_combat_key(decision: dict) -> tuple[int, int]:
+    state = decision.get("state", {})
+    turn = state.get("turn")
+    active_player = state.get("active_player")
+    if (
+        not isinstance(turn, int)
+        or isinstance(turn, bool)
+        or not isinstance(active_player, int)
+        or isinstance(active_player, bool)
+        or not 0 <= active_player < len(PLAYER_NAMES)
+    ):
+        raise UnmappedPromptError(f"Invalid Phase combat state: {state}")
+    return turn, active_player
+
+
+def _phase_attack_key(action: dict, decision: dict) -> tuple[int, int] | None:
+    if action.get("type") != "DeclareAttackers":
+        return None
+    attacks = action.get("data", {}).get("attacks", [])
+    if not attacks:
+        return None
+    if not isinstance(attacks, list):
+        raise UnmappedPromptError(f"Invalid Phase attacker declaration: {action}")
+    return _phase_combat_key(decision)
+
+
+def _phase_blocker_key(decision: dict) -> tuple[int, int] | None:
+    waiting_for = decision.get("waiting_for", {})
+    if (
+        isinstance(waiting_for, dict) and waiting_for.get("type") == "DeclareBlockers"
+    ) or any(
+        action.get("type") == "DeclareBlockers"
+        for action in decision.get("candidates", [])
+    ):
+        return _phase_combat_key(decision)
+    return None
+
+
 async def _phase_advance_to_meaningful(
     phase: PhaseEnv,
     decision: dict,
     skipped_stops: list[dict],
     normalization_events: list[dict],
+    phase_attack_records: set[tuple[int, int]],
+    phase_blocker_decisions: set[tuple[int, int]],
 ) -> dict:
-    while decision["type"] == "decision" and not _is_meaningful_decision(decision):
+    while decision["type"] == "decision":
+        blocker_key = _phase_blocker_key(decision)
+        if blocker_key is not None:
+            phase_blocker_decisions.add(blocker_key)
+        if _is_meaningful_decision(decision):
+            break
         index, action = _trivial_action_index(decision)
         state = decision["state"]
         kind = action["type"]
+        attack_key = _phase_attack_key(action, decision)
         if kind == "PassPriority":
             skipped_stops.append(
                 {
@@ -1370,6 +1490,8 @@ async def _phase_advance_to_meaningful(
         applied = await asyncio.to_thread(phase.choose, index)
         if applied.get("type") != "applied" or not applied.get("ok"):
             raise RuntimeError(f"phase rejected automatic stop {action}: {applied}")
+        if attack_key is not None:
+            phase_attack_records.add(attack_key)
         decision = await asyncio.to_thread(phase._read)
     return decision
 
@@ -1441,12 +1563,22 @@ async def _sync_xmage_to_decision(
     skipped_stops: list[dict],
     normalization_events: list[dict],
     timeout: float = 45,
+    phase_attack_records: set[tuple[int, int]] | None = None,
+    phase_blocker_decisions: set[tuple[int, int]] | None = None,
+    expected_combat_batches: dict[int, tuple[str, int]] | None = None,
 ) -> tuple[dict | None, dict]:
     owner = decision["owner"]
+    if phase_attack_records is None:
+        phase_attack_records = set()
+    if phase_blocker_decisions is None:
+        phase_blocker_decisions = set()
+    if expected_combat_batches is None:
+        expected_combat_batches = {}
     deadline = time.monotonic() + timeout
     last_results: dict[int, dict] = {}
     while time.monotonic() < deadline:
         for seat, session in enumerate(sessions):
+            from_action_task = False
             if seat in pending_results:
                 result = pending_results[seat]
             else:
@@ -1456,6 +1588,7 @@ async def _sync_xmage_to_decision(
                         continue
                     del action_tasks[seat]
                     result = task.result()
+                    from_action_task = True
                 else:
                     result = await _call(session, "get_action_choices")
                 last_results[seat] = result
@@ -1467,6 +1600,20 @@ async def _sync_xmage_to_decision(
                     "warning": result.get("warning"),
                     "action_taken": result.get("action_taken"),
                 }
+
+            if from_action_task and seat in expected_combat_batches:
+                expected = expected_combat_batches.pop(seat)
+                batch_error = _combat_batch_error(result, expected)
+                if batch_error is not None:
+                    return result, {
+                        "kind": "combat_batch",
+                        "seat": seat,
+                        "expected": {
+                            "action_taken": expected[0],
+                            "declared": expected[1],
+                        },
+                        "reason": batch_error,
+                    }
             if result.get("success") is False:
                 raise RuntimeError(f"XMage rejected a previous choice: {result}")
             if result.get("game_over"):
@@ -1488,6 +1635,13 @@ async def _sync_xmage_to_decision(
                 pending_results.pop(seat, None)
                 continue
 
+            if _unmapped_combat_followup(result):
+                return result, {
+                    "kind": "unmapped_prompt",
+                    "seat": seat,
+                    "reason": "XMage returned an unsupported combat follow-up prompt",
+                }
+
             stop = _matching_trivial_combat_stop(result, skipped_stops)
             if stop is not None:
                 normalization_events.append(
@@ -1496,6 +1650,25 @@ async def _sync_xmage_to_decision(
                         "rule": "decline_combat_prompt_without_phase_action",
                         "context": result.get("context"),
                         "combat_phase": result.get("combat_phase"),
+                    }
+                )
+                pending_results.pop(seat, None)
+                action_tasks[seat] = asyncio.create_task(
+                    _call(session, "choose_action", {"choice": "no"})
+                )
+                continue
+
+            stop = _matching_phase_auto_empty_blockers(
+                result, phase_attack_records, phase_blocker_decisions
+            )
+            if stop is not None:
+                normalization_events.append(
+                    {
+                        "engine": "xmage",
+                        "rule": "phase_auto_empty_blockers",
+                        "context": result.get("context"),
+                        "turn": stop["turn"],
+                        "active_player": stop["active_player"],
                     }
                 )
                 pending_results.pop(seat, None)
@@ -1821,6 +1994,151 @@ async def _keep_opening_hands(sessions: list) -> dict[int, asyncio.Task]:
     )
 
 
+def _xmage_combatant_short_id(
+    kind: str,
+    phase_id: object,
+    decision: dict,
+    xmage_result: dict,
+    choices: list[dict],
+    bindings: ObjectBindings,
+    xmage_state: dict,
+) -> str:
+    if not isinstance(phase_id, int) or isinstance(phase_id, bool):
+        raise UnmappedPromptError(f"Invalid Phase {kind} object id: {phase_id!r}")
+    phase_object = decision.get("objects", {}).get(str(phase_id))
+    if not isinstance(phase_object, dict) or phase_object.get("zone") != "Battlefield":
+        raise UnmappedPromptError(
+            f"Phase {kind} is not a battlefield object: "
+            f"phase_id={phase_id}, object={phase_object}"
+        )
+    choice = _resolve_battlefield_choice(
+        kind,
+        (kind, phase_id),
+        phase_id,
+        phase_object,
+        decision,
+        xmage_result,
+        choices,
+        bindings,
+        xmage_state,
+    )
+    short_id = choice.get("id")
+    if short_id is None:
+        raise UnmappedPromptError(
+            f"XMage {kind} choice has no short id: {choice}; "
+            f"xmage_choices={xmage_result.get('choices', [])}"
+        )
+    return str(short_id)
+
+
+def _map_attackers(
+    action: dict,
+    decision: dict,
+    xmage_result: dict,
+    bindings: ObjectBindings,
+    xmage_state: dict,
+) -> list[str]:
+    attacks = action.get("data", {}).get("attacks", [])
+    if not isinstance(attacks, list):
+        raise UnmappedPromptError(f"Invalid Phase attacker declaration: {action}")
+    active_player = decision.get("state", {}).get("active_player")
+    if (
+        not isinstance(active_player, int)
+        or isinstance(active_player, bool)
+        or not 0 <= active_player < len(PLAYER_NAMES)
+    ):
+        raise UnmappedPromptError(
+            f"Invalid Phase active player for attacker declaration: {decision}"
+        )
+    opponent = 1 - active_player
+    xmage_choices = xmage_result.get("choices")
+    if not isinstance(xmage_choices, list):
+        raise UnmappedPromptError(
+            f"XMage attacker prompt omitted choices: {xmage_result}"
+        )
+    choices = [
+        choice for choice in xmage_choices if choice.get("choice_type") == "attacker"
+    ]
+    mapped = []
+    for attack in attacks:
+        if not isinstance(attack, (list, tuple)) or len(attack) != 2:
+            raise UnmappedPromptError(f"Invalid Phase attack assignment: {attack}")
+        phase_id, target = attack
+        if (
+            not isinstance(target, dict)
+            or set(target) != {"type", "data"}
+            or target["type"] != "Player"
+            or not isinstance(target["data"], int)
+            or isinstance(target["data"], bool)
+            or target["data"] != opponent
+        ):
+            raise UnmappedPromptError(
+                f"Phase attack target is not the opponent player: {attack}"
+            )
+        mapped.append(
+            _xmage_combatant_short_id(
+                "attacker",
+                phase_id,
+                decision,
+                xmage_result,
+                choices,
+                bindings,
+                xmage_state,
+            )
+        )
+    return mapped
+
+
+def _map_blockers(
+    action: dict,
+    decision: dict,
+    xmage_result: dict,
+    bindings: ObjectBindings,
+    xmage_state: dict,
+) -> list[str]:
+    assignments = action.get("data", {}).get("assignments", [])
+    if not isinstance(assignments, list):
+        raise UnmappedPromptError(f"Invalid Phase blocker assignments: {action}")
+    xmage_choices = xmage_result.get("choices")
+    if not isinstance(xmage_choices, list):
+        raise UnmappedPromptError(
+            f"XMage blocker prompt omitted choices: {xmage_result}"
+        )
+    blocker_choices = [
+        choice for choice in xmage_choices if choice.get("choice_type") == "blocker"
+    ]
+    incoming_attackers = xmage_result.get("incoming_attackers")
+    if not isinstance(incoming_attackers, list):
+        raise UnmappedPromptError(
+            f"XMage blocker prompt omitted incoming attackers: {xmage_result}"
+        )
+    mapped = []
+    for assignment in assignments:
+        if not isinstance(assignment, (list, tuple)) or len(assignment) != 2:
+            raise UnmappedPromptError(f"Invalid Phase blocker assignment: {assignment}")
+        blocker_id, attacker_id = assignment
+        blocker = _xmage_combatant_short_id(
+            "blocker",
+            blocker_id,
+            decision,
+            xmage_result,
+            blocker_choices,
+            bindings,
+            xmage_state,
+        )
+        attacker = _xmage_combatant_short_id(
+            "attacker",
+            attacker_id,
+            decision,
+            xmage_result,
+            incoming_attackers,
+            bindings,
+            xmage_state,
+        )
+        mapped.append(f"{blocker}:{attacker}")
+    return mapped
+
+
 async def _apply_xmage_action(
     session,
     action: dict,
@@ -1876,11 +2194,42 @@ async def _apply_xmage_action(
     if kind == "DeclareAttackers":
         attacks = data.get("attacks", [])
         if attacks:
-            return asyncio.create_task(_call(session, "choose_action", {"attackers": "all"}))
+            if bindings is None:
+                raise UnmappedPromptError(
+                    "Combat mapping requires Phase-to-XMage object bindings"
+                )
+            xmage_state = await _get_state(session)
+            bindings.prune(decision.get("state", {}), xmage_state)
+            attackers = _map_attackers(
+                action, decision, xmage_result, bindings, xmage_state
+            )
+            if not attackers:
+                raise UnmappedPromptError(
+                    f"Phase attacker declaration mapped to no XMage attackers: {action}"
+                )
+            return asyncio.create_task(
+                _call(session, "choose_action", {"attackers": ",".join(attackers)})
+            )
         return asyncio.create_task(_call(session, "choose_action", {"choice": "no"}))
     if kind == "DeclareBlockers":
-        if data.get("assignments"):
-            raise UnmappedPromptError("Policy does not map blocker assignments")
+        assignments = data.get("assignments", [])
+        if assignments:
+            if bindings is None:
+                raise UnmappedPromptError(
+                    "Combat mapping requires Phase-to-XMage object bindings"
+                )
+            xmage_state = await _get_state(session)
+            bindings.prune(decision.get("state", {}), xmage_state)
+            blockers = _map_blockers(
+                action, decision, xmage_result, bindings, xmage_state
+            )
+            if not blockers:
+                raise UnmappedPromptError(
+                    f"Phase blocker assignments mapped to no XMage blockers: {action}"
+                )
+            return asyncio.create_task(
+                _call(session, "choose_action", {"blockers": ",".join(blockers)})
+            )
         return asyncio.create_task(_call(session, "choose_action", {"choice": "no"}))
     raise UnmappedPromptError(f"Unsupported phase action: {action}")
 
@@ -1953,7 +2302,10 @@ async def _advance_xmage_to_terminal(
     fallback_result: dict | None,
     fallback_states: list[dict],
     timeout: float = 45,
+    expected_combat_batches: dict[int, tuple[str, int]] | None = None,
 ) -> tuple[list[dict], dict | None]:
+    if expected_combat_batches is None:
+        expected_combat_batches = {}
     deadline = time.monotonic() + timeout
     last_result = fallback_result
     while time.monotonic() < deadline:
@@ -1967,6 +2319,19 @@ async def _advance_xmage_to_terminal(
             except Exception as exc:
                 return _result_states(last_result), {"seat": PLAYER_NAMES[seat], "error": str(exc)}
             last_result = result
+            expected_batch = expected_combat_batches.pop(seat, None)
+            if expected_batch is not None:
+                batch_error = _combat_batch_error(result, expected_batch)
+                if batch_error is not None:
+                    return fallback_states, {
+                        "kind": "combat_batch",
+                        "seat": seat,
+                        "expected": {
+                            "action_taken": expected_batch[0],
+                            "declared": expected_batch[1],
+                        },
+                        "reason": batch_error,
+                    }
             if result.get("success") is False:
                 return _result_states(result), {"seat": PLAYER_NAMES[seat], "result": result}
             if result.get("game_over"):
@@ -2094,6 +2459,9 @@ async def run_game(args: argparse.Namespace) -> dict:
             skipped_stops: list[dict] = []
             pending_results: dict[int, dict] = {}
             object_bindings = ObjectBindings()
+            phase_attack_records: set[tuple[int, int]] = set()
+            phase_blocker_decisions: set[tuple[int, int]] = set()
+            expected_combat_batches: dict[int, tuple[str, int]] = {}
             phase_projection = projection_from_phase(phase.started["state"])
             xmage_states = await asyncio.gather(*(_get_state(session) for session in sessions))
             xmage_projection = projection_from_xmage(xmage_states)
@@ -2118,7 +2486,12 @@ async def run_game(args: argparse.Namespace) -> dict:
                 return {"type": "divergence", "run_dir": run_dir, "step": 0, "kind": "state", "diff": diff}
 
             decision = await _phase_advance_to_meaningful(
-                phase, decision, skipped_stops, normalization_events
+                phase,
+                decision,
+                skipped_stops,
+                normalization_events,
+                phase_attack_records,
+                phase_blocker_decisions,
             )
             steps = 0
             last_xmage_states = xmage_states
@@ -2128,6 +2501,9 @@ async def run_game(args: argparse.Namespace) -> dict:
                 if not _is_meaningful_decision(decision):
                     raise RuntimeError(f"phase trivial-stop normalization failed: {decision}")
                 owner = decision["owner"]
+                blocker_key = _phase_blocker_key(decision)
+                if blocker_key is not None:
+                    phase_blocker_decisions.add(blocker_key)
                 xmage_result, point_diff = await _sync_xmage_to_decision(
                     sessions,
                     decision,
@@ -2135,6 +2511,9 @@ async def run_game(args: argparse.Namespace) -> dict:
                     pending_results,
                     skipped_stops,
                     normalization_events,
+                    phase_attack_records=phase_attack_records,
+                    phase_blocker_decisions=phase_blocker_decisions,
+                    expected_combat_batches=expected_combat_batches,
                 )
                 if xmage_result is None:
                     report = {
@@ -2151,12 +2530,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                         "reason": point_diff,
                     }
                     (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
-                    return {
-                        "type": "divergence",
-                        "run_dir": run_dir,
-                        "step": steps,
-                        "kind": "decision_point",
-                    }
+                    return {"type": "divergence", "run_dir": run_dir, "step": steps, "kind": "decision_point"}
                 if point_diff.get("kind") == "xmage_loop_guard":
                     report = {
                         "run_id": run_id,
@@ -2171,15 +2545,47 @@ async def run_game(args: argparse.Namespace) -> dict:
                         "xmage_choices": xmage_result.get("choices", []),
                         "reason": point_diff,
                     }
-                    (run_dir / "divergence.json").write_text(
-                        json.dumps(report, indent=2) + "\n"
-                    )
+                    (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
                     return {
                         "type": "divergence",
                         "run_dir": run_dir,
                         "step": steps,
                         "kind": "xmage_loop_guard",
                     }
+                if point_diff.get("kind") == "combat_batch":
+                    report = {
+                        "run_id": run_id,
+                        "seed": args.seed,
+                        "kind": "combat_batch",
+                        "step": steps,
+                        "state": {
+                            "phase": decision["state"],
+                            "xmage": xmage_result,
+                        },
+                        "phase_candidates": decision["candidates"],
+                        "xmage_choices": xmage_result.get("choices", []),
+                        "reason": point_diff,
+                    }
+                    (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
+                    return {
+                        "type": "divergence",
+                        "run_dir": run_dir,
+                        "step": steps,
+                        "kind": "combat_batch",
+                    }
+                if point_diff.get("kind") == "unmapped_prompt":
+                    xmage_states = await asyncio.gather(*(_get_state(session) for session in sessions))
+                    return _unmapped_prompt_result(
+                        run_dir,
+                        run_id,
+                        args.seed,
+                        steps,
+                        point_diff["reason"],
+                        decision,
+                        xmage_result,
+                        projection_from_phase(decision["state"]),
+                        projection_from_xmage(xmage_states),
+                    )
                 if xmage_result.get("game_over"):
                     report = {
                         "run_id": run_id,
@@ -2195,12 +2601,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                         "reason": "XMage game ended before the phase decision point",
                     }
                     (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
-                    return {
-                        "type": "divergence",
-                        "run_dir": run_dir,
-                        "step": steps,
-                        "kind": "decision_point",
-                    }
+                    return {"type": "divergence", "run_dir": run_dir, "step": steps, "kind": "decision_point"}
 
                 if point_diff:
                     report = {
@@ -2311,12 +2712,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                         "xmage_choices": xmage_result.get("choices", []),
                     }
                     (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
-                    return {
-                        "type": "divergence",
-                        "run_dir": run_dir,
-                        "step": steps,
-                        "kind": "legal_actions",
-                    }
+                    return {"type": "divergence", "run_dir": run_dir, "step": steps, "kind": "legal_actions"}
 
                 if decision["state"]["turn"] >= MAX_TURNS:
                     summary = {
@@ -2336,6 +2732,7 @@ async def run_game(args: argparse.Namespace) -> dict:
 
                 try:
                     index, action = policy_candidate(decision, rng, v0=args.v0)
+                    attack_key = _phase_attack_key(action, decision)
                     action_task = await _apply_xmage_action(
                         sessions[owner],
                         action,
@@ -2362,10 +2759,34 @@ async def run_game(args: argparse.Namespace) -> dict:
                 applied = await asyncio.to_thread(phase.choose, index)
                 if applied.get("type") != "applied" or not applied.get("ok"):
                     raise RuntimeError(f"phase rejected policy action {action}: {applied}")
+                if attack_key is not None:
+                    phase_attack_records.add(attack_key)
+                batch_data = action.get("data", {})
+                if action.get("type") == "DeclareAttackers" and batch_data.get(
+                    "attacks"
+                ):
+                    expected_combat_batches[owner] = (
+                        "batch_attack",
+                        len(batch_data["attacks"]),
+                    )
+                elif action.get("type") == "DeclareBlockers" and batch_data.get(
+                    "assignments"
+                ):
+                    expected_combat_batches[owner] = (
+                        "batch_block",
+                        len(batch_data["assignments"]),
+                    )
+                else:
+                    expected_combat_batches.pop(owner, None)
                 steps += 1
                 decision = await asyncio.to_thread(phase._read)
                 decision = await _phase_advance_to_meaningful(
-                    phase, decision, skipped_stops, normalization_events
+                    phase,
+                    decision,
+                    skipped_stops,
+                    normalization_events,
+                    phase_attack_records,
+                    phase_blocker_decisions,
                 )
                 if decision["type"] == "game_over":
                     break
@@ -2376,8 +2797,42 @@ async def run_game(args: argparse.Namespace) -> dict:
             game_completed = True
             phase_state = projection_from_phase(decision["state"])
             xmage_states, terminal_issue = await _advance_xmage_to_terminal(
-                sessions, action_tasks, phase_state, last_xmage_pending, last_xmage_states
+                sessions,
+                action_tasks,
+                phase_state,
+                last_xmage_pending,
+                last_xmage_states,
+                expected_combat_batches=expected_combat_batches,
             )
+            if expected_combat_batches:
+                seat, expected_batch = next(iter(expected_combat_batches.items()))
+                terminal_issue = {
+                    "kind": "combat_batch",
+                    "seat": seat,
+                    "expected": {
+                        "action_taken": expected_batch[0],
+                        "declared": expected_batch[1],
+                    },
+                    "reason": "XMage did not return the combat batch result before terminal state",
+                }
+            if terminal_issue and terminal_issue.get("kind") == "combat_batch":
+                report = {
+                    "run_id": run_id,
+                    "seed": args.seed,
+                    "kind": "combat_batch",
+                    "step": steps,
+                    "state": {"phase": phase_state, "xmage": xmage_states},
+                    "reason": terminal_issue,
+                }
+                (run_dir / "divergence.json").write_text(
+                    json.dumps(report, indent=2) + "\n"
+                )
+                return {
+                    "type": "divergence",
+                    "run_dir": run_dir,
+                    "step": steps,
+                    "kind": "combat_batch",
+                }
             xmage_state = projection_from_xmage(xmage_states)
             final_diff = compare_projection(phase_state, xmage_state)
             terminal_unavailable = terminal_issue and (

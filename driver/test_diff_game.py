@@ -23,10 +23,13 @@ from diff_game import (
     _scry_legal_choices,
     _scry_selection_payload,
     _suppress_broken_resource_after_terminal,
+    _apply_xmage_action,
+    _phase_blocker_key,
     _xmage_activation_choice,
     _xmage_activation_set,
     _xmage_target_key,
     _xmage_target_choice,
+    _advance_xmage_to_terminal,
     _policy_candidate_v0,
     policy_candidate,
     summary_exit_code,
@@ -70,6 +73,18 @@ ABILITY_ZONE_FIXTURE = (
     / "fixtures"
     / "boros-dimir-seed-42-ability-zone.json"
 )
+COMBAT_BLOCKER_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "boros-dimir-seed-101-blockers.json"
+)
+AUTO_EMPTY_BLOCKER_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "boros-dimir-seed-17-auto-empty-blockers.json"
+)
 
 
 def _signature_fields(decision: dict) -> None:
@@ -104,6 +119,76 @@ def _xmage_signature_state(battlefields: dict[str, list[dict]]) -> dict:
             for name, permanents in battlefields.items()
         ],
     }
+
+
+def _combat_permanent(
+    object_id: int,
+    name: str,
+    *,
+    controller: int = 0,
+    power: int = 2,
+    summoning_sick: bool = False,
+) -> dict:
+    return {
+        "id": object_id,
+        "incarnation": 1,
+        "name": name,
+        "zone": "Battlefield",
+        "controller": controller,
+        "tapped": False,
+        "power": power,
+        "toughness": 1,
+        "damage": 0,
+        "summoning_sick": summoning_sick,
+        "attached_to": None,
+    }
+
+
+def _combat_mapping_decision(permanents: list[dict]) -> dict:
+    objects = {str(item["id"]): item for item in permanents}
+    return {
+        "owner": 0,
+        "waiting_for": {"type": "DeclareAttackers", "data": {"player": 0}},
+        "objects": objects,
+        "state": {
+            "turn": 3,
+            "active_player": 0,
+            "phase": "DeclareAttackers",
+            "battlefield": [
+                {"id": item["id"], "incarnation": item["incarnation"]}
+                for item in permanents
+            ],
+        },
+        "candidates": [],
+    }
+
+
+def _run_combat_action(
+    monkeypatch,
+    action: dict,
+    decision: dict,
+    xmage_result: dict,
+    xmage_state: dict,
+) -> list[tuple[str, dict | None]]:
+    calls = []
+
+    async def get_state(_session):
+        return xmage_state
+
+    async def call(_session, method, arguments=None):
+        calls.append((method, arguments))
+        return {"action_pending": True}
+
+    async def apply():
+        task = await _apply_xmage_action(
+            object(), action, decision, xmage_result, ObjectBindings()
+        )
+        return await task
+
+    monkeypatch.setattr(diff_game, "_get_state", get_state)
+    monkeypatch.setattr(diff_game, "_call", call)
+    asyncio.run(apply())
+    return calls
 
 
 def _install_fake_anyio_resource_errors(monkeypatch):
@@ -174,6 +259,47 @@ def test_terminal_summary_with_matching_winner_exits_successfully(status: str) -
     }
 
     assert summary_exit_code(summary) == 0
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    (
+        ({"failed": [{"id": "p5"}]}, "failed entries"),
+        ({"interrupted": True}, "batch interrupted"),
+    ),
+)
+def test_terminal_combat_batch_results_fail_closed(
+    overrides: dict, reason: str
+) -> None:
+    result = {
+        "action_taken": "batch_block",
+        "success": True,
+        "interrupted": False,
+        "failed": [],
+        "declared": [{"id": "p5:p1"}],
+        "action_pending": False,
+    }
+    result.update(overrides)
+    fallback_states = [{"available": True}, {"available": True}]
+
+    async def advance():
+        task = asyncio.get_running_loop().create_future()
+        task.set_result(result)
+        return await _advance_xmage_to_terminal(
+            [object()],
+            {0: task},
+            {},
+            None,
+            fallback_states,
+            expected_combat_batches={0: ("batch_block", 1)},
+        )
+
+    states, terminal_issue = asyncio.run(advance())
+
+    assert states == fallback_states
+    assert terminal_issue["kind"] == "combat_batch"
+    assert reason in terminal_issue["reason"]
+    assert summary_exit_code({"type": "divergence", "kind": "combat_batch"}) == 1
 
 
 def test_unmapped_prompt_summary_exits_with_distinct_status() -> None:
@@ -382,6 +508,416 @@ def test_blocker_prompt_does_not_match_priority_or_pass(monkeypatch) -> None:
         },
     }
     assert calls == ["get_action_choices"]
+
+
+def test_attacker_subset_maps_to_explicit_xmage_ids(monkeypatch) -> None:
+    permanents = [
+        _combat_permanent(10, "Dwarven Mauler"),
+        _combat_permanent(20, "Dwarven Mauler", power=3),
+        _combat_permanent(30, "Dream Beavers", power=1),
+    ]
+    decision = _combat_mapping_decision(permanents)
+    action = {
+        "type": "DeclareAttackers",
+        "data": {
+            "attacks": [
+                [10, {"type": "Player", "data": 1}],
+                [30, {"type": "Player", "data": 1}],
+            ]
+        },
+    }
+    xmage = {
+        "choices": [
+            {"choice_type": "attacker", "id": "p5"},
+            {"choice_type": "attacker", "id": "p6"},
+            {"choice_type": "attacker", "id": "p7"},
+        ]
+    }
+    xmage_state = _xmage_signature_state(
+        {
+            "DiffA": [
+                {
+                    "id": "p5",
+                    "name": "Dwarven Mauler",
+                    "tapped": False,
+                    "power": "2",
+                    "toughness": "1",
+                    "damage": 0,
+                    "summoning_sick": False,
+                    "attached_to": None,
+                },
+                {
+                    "id": "p6",
+                    "name": "Dwarven Mauler",
+                    "tapped": False,
+                    "power": "3",
+                    "toughness": "1",
+                    "damage": 0,
+                    "summoning_sick": False,
+                    "attached_to": None,
+                },
+                {
+                    "id": "p7",
+                    "name": "Dream Beavers",
+                    "tapped": False,
+                    "power": "1",
+                    "toughness": "1",
+                    "damage": 0,
+                    "summoning_sick": False,
+                    "attached_to": None,
+                },
+            ],
+            "DiffB": [],
+        }
+    )
+
+    calls = _run_combat_action(monkeypatch, action, decision, xmage, xmage_state)
+
+    assert calls == [("choose_action", {"attackers": "p5,p7"})]
+
+
+def test_duplicate_attackers_bind_by_observable_state(monkeypatch) -> None:
+    permanents = [
+        _combat_permanent(10, "Dwarven Mauler", power=2),
+        _combat_permanent(20, "Dwarven Mauler", power=3),
+    ]
+    decision = _combat_mapping_decision(permanents)
+    action = {
+        "type": "DeclareAttackers",
+        "data": {"attacks": [[20, {"type": "Player", "data": 1}]]},
+    }
+    xmage = {
+        "choices": [
+            {"choice_type": "attacker", "id": "p5"},
+            {"choice_type": "attacker", "id": "p6"},
+        ]
+    }
+    xmage_state = _xmage_signature_state(
+        {
+            "DiffA": [
+                {
+                    "id": "p5",
+                    "name": "Dwarven Mauler",
+                    "tapped": False,
+                    "power": "2",
+                    "toughness": "1",
+                    "damage": 0,
+                    "summoning_sick": False,
+                    "attached_to": None,
+                },
+                {
+                    "id": "p6",
+                    "name": "Dwarven Mauler",
+                    "tapped": False,
+                    "power": "3",
+                    "toughness": "1",
+                    "damage": 0,
+                    "summoning_sick": False,
+                    "attached_to": None,
+                },
+            ],
+            "DiffB": [],
+        }
+    )
+
+    calls = _run_combat_action(monkeypatch, action, decision, xmage, xmage_state)
+
+    assert calls == [("choose_action", {"attackers": "p6"})]
+
+
+def test_non_player_attack_target_is_unmapped(monkeypatch) -> None:
+    permanents = [_combat_permanent(10, "Dwarven Mauler")]
+    decision = _combat_mapping_decision(permanents)
+    action = {
+        "type": "DeclareAttackers",
+        "data": {"attacks": [[10, {"type": "Object", "data": 99}]]},
+    }
+    xmage = {"choices": [{"choice_type": "attacker", "id": "p5"}]}
+    xmage_state = _xmage_signature_state({"DiffA": [], "DiffB": []})
+
+    with pytest.raises(UnmappedPromptError, match="not the opponent player"):
+        _run_combat_action(monkeypatch, action, decision, xmage, xmage_state)
+
+
+def test_blocker_assignment_maps_seed_101_fixture_to_bridge_string(
+    monkeypatch,
+) -> None:
+    fixture = json.loads(COMBAT_BLOCKER_FIXTURE.read_text())
+    action = {
+        "type": "DeclareBlockers",
+        "data": {
+            "assignments": [
+                assignment
+                for candidate in fixture["phase"]["candidates"][1:]
+                for assignment in candidate["data"]["assignments"]
+            ]
+        },
+    }
+
+    calls = _run_combat_action(
+        monkeypatch,
+        action,
+        fixture["phase"],
+        fixture["xmage"],
+        fixture["xmage_state"],
+    )
+
+    assert calls == [("choose_action", {"blockers": "p24:p5,p27:p5"})]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"failed": [{"id": "p5"}]}, "failed entries"),
+        ({"interrupted": True}, "interrupted"),
+        ({"success": False}, "success was false"),
+        ({"declared": []}, "declared 0 entries"),
+    ],
+)
+def test_combat_batch_results_fail_closed(overrides: dict, reason: str) -> None:
+    result = {
+        "action_taken": "batch_attack",
+        "success": True,
+        "interrupted": False,
+        "failed": [],
+        "declared": [{"id": "p5"}],
+        "action_pending": False,
+    }
+    result.update(overrides)
+    decision = {
+        "owner": 0,
+        "state": {"turn": 3, "active_player": 0, "phase": "DeclareAttackers"},
+        "candidates": [],
+    }
+
+    async def sync():
+        task = asyncio.get_running_loop().create_future()
+        task.set_result(result)
+        return await _sync_xmage_to_decision(
+            [object()],
+            decision,
+            {0: task},
+            {},
+            [],
+            [],
+            expected_combat_batches={0: ("batch_attack", 1)},
+        )
+
+    xmage_result, point_diff = asyncio.run(sync())
+
+    assert xmage_result == result
+    assert point_diff["kind"] == "combat_batch"
+    assert reason in point_diff["reason"]
+
+
+def test_unmapped_combat_followup_returns_unmapped_prompt() -> None:
+    result = {
+        "action_taken": "batch_attack",
+        "success": True,
+        "interrupted": False,
+        "failed": [],
+        "declared": [{"id": "p5"}],
+        "action_pending": True,
+        "action_type": "GAME_SELECT",
+        "message": "Assign damage order",
+    }
+    decision = {
+        "owner": 0,
+        "state": {"turn": 3, "active_player": 0, "phase": "DeclareAttackers"},
+        "candidates": [],
+    }
+
+    async def sync():
+        task = asyncio.get_running_loop().create_future()
+        task.set_result(result)
+        return await _sync_xmage_to_decision(
+            [object()],
+            decision,
+            {0: task},
+            {},
+            [],
+            [],
+            expected_combat_batches={0: ("batch_attack", 1)},
+        )
+
+    xmage_result, point_diff = asyncio.run(sync())
+
+    assert xmage_result == result
+    assert point_diff == {
+        "kind": "unmapped_prompt",
+        "seat": 0,
+        "reason": "XMage returned an unsupported combat follow-up prompt",
+    }
+
+
+def test_unmapped_combat_followup_on_other_seat_is_not_passed(monkeypatch) -> None:
+    decision = {
+        "owner": 1,
+        "state": {"turn": 3, "active_player": 0, "phase": "DeclareBlockers"},
+        "candidates": [{"type": "PassPriority"}],
+    }
+    results = {
+        "DiffA": {
+            "action_pending": True,
+            "action_type": "GAME_SELECT",
+            "response_type": "select",
+            "combat_phase": "damage",
+            "message": "Assign damage order",
+            "context": "T2 Combat/Combat Damage (DiffA)",
+            "board": [
+                {"name": "DiffA", "is_active": True, "is_you": True},
+                {"name": "DiffB", "is_active": False, "is_you": False},
+            ],
+            "choices": [],
+        },
+        "DiffB": {"game_over": True},
+    }
+    calls = []
+
+    async def call(session, method, arguments=None):
+        calls.append((session, method))
+        return results[session]
+
+    monkeypatch.setattr(diff_game, "_call", call)
+    xmage_result, point_diff = asyncio.run(
+        _sync_xmage_to_decision(
+            ["DiffA", "DiffB"],
+            decision,
+            {},
+            {},
+            [
+                {
+                    "kind": "priority",
+                    "turn": 3,
+                    "active_player": "DiffA",
+                    "step": "combatdamage",
+                }
+            ],
+            [],
+            timeout=0.1,
+        )
+    )
+
+    assert xmage_result == results["DiffA"]
+    assert point_diff["kind"] == "unmapped_prompt"
+    assert not any(method == "pass_priority" for _, method in calls)
+
+
+def test_phase_auto_empty_blockers_declines_xmage_prompt(monkeypatch) -> None:
+    fixture = json.loads(AUTO_EMPTY_BLOCKER_FIXTURE.read_text())
+    decision = fixture["phase"]
+    xmage = fixture["xmage"]
+    record = fixture["phase_attack_record"]
+    calls = []
+    priority_result = {
+        "action_pending": True,
+        "action_type": "GAME_SELECT",
+        "response_type": "select",
+        "context": "T3 Precombat Main (DiffA) YOUR_MAIN",
+        "board": [
+            {"name": "DiffA", "is_active": True, "is_you": True},
+            {"name": "DiffB", "is_active": False, "is_you": False},
+        ],
+        "choices": [{"name": "Forest", "action": "land"}],
+    }
+
+    async def call(_session, method, arguments=None):
+        calls.append((method, arguments))
+        return priority_result
+
+    monkeypatch.setattr(diff_game, "_call", call)
+    events = []
+    result, point_diff = asyncio.run(
+        _sync_xmage_to_decision(
+            [object()],
+            decision,
+            {},
+            {0: xmage},
+            [],
+            events,
+            phase_attack_records={(record["turn"], record["active_player"])},
+            phase_blocker_decisions=set(),
+        )
+    )
+
+    assert result == priority_result
+    assert point_diff == {}
+    assert calls == [("choose_action", {"choice": "no"})]
+    assert events == [
+        {
+            "engine": "xmage",
+            "rule": "phase_auto_empty_blockers",
+            "context": xmage["context"],
+            "turn": record["turn"],
+            "active_player": "DiffB",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("attack_records", "blocker_decisions"),
+    [
+        ({(4, 1)}, {(4, 1)}),
+        (set(), set()),
+    ],
+)
+def test_phase_auto_empty_blockers_requires_matching_phase_evidence(
+    attack_records: set[tuple[int, int]],
+    blocker_decisions: set[tuple[int, int]],
+) -> None:
+    fixture = json.loads(AUTO_EMPTY_BLOCKER_FIXTURE.read_text())
+    decision = fixture["phase"]
+    xmage = fixture["xmage"]
+    events = []
+
+    result, point_diff = asyncio.run(
+        _sync_xmage_to_decision(
+            [object()],
+            decision,
+            {},
+            {0: xmage},
+            [],
+            events,
+            phase_attack_records=attack_records,
+            phase_blocker_decisions=blocker_decisions,
+        )
+    )
+
+    assert result == xmage
+    assert point_diff == {
+        "phase": {
+            "turn": 5,
+            "active_player": "DiffA",
+            "actor": "DiffA",
+            "step": "precombatmain",
+        },
+        "xmage": {
+            "turn": 4,
+            "active_player": "DiffB",
+            "actor": "DiffA",
+            "step": "declareblockers",
+        },
+    }
+    assert events == []
+
+
+def test_phase_blocker_decision_is_recorded_by_turn_and_active_player() -> None:
+    decision = {
+        "waiting_for": {"type": "DeclareBlockers"},
+        "state": {
+            "turn": 4,
+            "active_player": 1,
+            "phase": "DeclareBlockers",
+        },
+        "candidates": [
+            {
+                "type": "DeclareBlockers",
+                "data": {"assignments": [[69, 12]]},
+            }
+        ],
+    }
+
+    assert _phase_blocker_key(decision) == (4, 1)
 
 
 def test_mage_bench_config_sets_loop_guard_limit_for_both_external_players() -> None:
