@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MAGE_BENCH = Path("/home/ubuntu/repos/eng/mage-bench")
 PLAYER_NAMES = ("DiffA", "DiffB")
 MAX_TURNS = 30
+# Differential runs use deterministic policies, not the LLM loop guard.
+DIFF_MAX_INTERACTIONS_PER_TURN = 100_000
 TERMINAL_STATUSES = frozenset(
     ("completed", "completed_terminal_projection_unavailable")
 )
@@ -91,6 +93,18 @@ def normalize_name(value: str) -> str:
     decomposed = unicodedata.normalize("NFKD", front)
     plain = "".join(char for char in decomposed if not unicodedata.combining(char))
     return " ".join(plain.casefold().split())
+
+
+def _mage_bench_external_players(decks: list[Path]) -> list[dict]:
+    return [
+        {
+            "type": "external",
+            "name": name,
+            "deck": str(deck),
+            "max_interactions_per_turn": DIFF_MAX_INTERACTIONS_PER_TURN,
+        }
+        for name, deck in zip(PLAYER_NAMES, decks)
+    ]
 
 
 def summary_exit_code(summary: dict) -> int:
@@ -1392,6 +1406,25 @@ def _matching_trivial_priority_stop(
     return None
 
 
+def _xmage_loop_guard(result: dict) -> bool:
+    warning = result.get("warning")
+    normalized_warning = warning.casefold().replace("-", " ") if isinstance(warning, str) else ""
+    return result.get("action_taken") == "auto_passed_loop_detected" or (
+        "loop detected" in normalized_warning
+        or "too many interactions" in normalized_warning
+    )
+
+
+def _empty_action_result(result: dict) -> bool:
+    return (
+        result.get("action_pending") is False
+        and result.get("success") is not False
+        and set(result).issubset(
+            {"action_pending", "success", "board", "board_cursor", "board_unchanged"}
+        )
+    )
+
+
 async def _sync_xmage_to_decision(
     sessions: list,
     decision: dict,
@@ -1417,16 +1450,29 @@ async def _sync_xmage_to_decision(
                     result = task.result()
                 else:
                     result = await _call(session, "get_action_choices")
-                if result.get("success") is False:
-                    raise RuntimeError(f"XMage rejected a previous choice: {result}")
                 last_results[seat] = result
-                if result.get("game_over"):
-                    pending_results[seat] = result
-                elif not result.get("action_pending"):
-                    action_tasks[seat] = asyncio.create_task(
-                        _call(session, "pass_priority")
+
+            if _xmage_loop_guard(result):
+                return result, {
+                    "kind": "xmage_loop_guard",
+                    "seat": seat,
+                    "warning": result.get("warning"),
+                    "action_taken": result.get("action_taken"),
+                }
+            if result.get("success") is False:
+                raise RuntimeError(f"XMage rejected a previous choice: {result}")
+            if result.get("game_over"):
+                pending_results[seat] = result
+            elif not result.get("action_pending"):
+                if not _empty_action_result(result):
+                    raise UnmappedPromptError(
+                        f"Unsupported XMage non-pending result: {result}"
                     )
-                    continue
+                pending_results.pop(seat, None)
+                action_tasks[seat] = asyncio.create_task(
+                    _call(session, "pass_priority")
+                )
+                continue
 
             if result.get("game_over"):
                 continue
@@ -1990,10 +2036,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                 "skipInitShuffling": True,
                 "skipPostGamePrompts": True,
                 "logDir": str(game_logs),
-                "players": [
-                    {"type": "external", "name": name, "deck": str(deck)}
-                    for name, deck in zip(PLAYER_NAMES, xmage_decks)
-                ],
+                "players": _mage_bench_external_players(xmage_decks),
             },
             indent=2,
         )
@@ -2098,6 +2141,29 @@ async def run_game(args: argparse.Namespace) -> dict:
                         "run_dir": run_dir,
                         "step": steps,
                         "kind": "decision_point",
+                    }
+                if point_diff.get("kind") == "xmage_loop_guard":
+                    report = {
+                        "run_id": run_id,
+                        "seed": args.seed,
+                        "kind": "xmage_loop_guard",
+                        "step": steps,
+                        "state": {
+                            "phase": decision["state"],
+                            "xmage": xmage_result,
+                        },
+                        "phase_candidates": decision["candidates"],
+                        "xmage_choices": xmage_result.get("choices", []),
+                        "reason": point_diff,
+                    }
+                    (run_dir / "divergence.json").write_text(
+                        json.dumps(report, indent=2) + "\n"
+                    )
+                    return {
+                        "type": "divergence",
+                        "run_dir": run_dir,
+                        "step": steps,
+                        "kind": "xmage_loop_guard",
                     }
                 if xmage_result.get("game_over"):
                     report = {
