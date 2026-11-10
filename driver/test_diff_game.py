@@ -9,6 +9,7 @@ from diff_game import (
     _matching_trivial_priority_stop,
     _phase_activation_set,
     _phase_hand_card,
+    _phase_target_key,
     _xmage_hand_choice,
     _xmage_target_choice,
     _scry_legal_choices,
@@ -247,6 +248,12 @@ def test_target_maps_by_card_controller_and_zone() -> None:
     assert "phase_choices=" in str(error.value)
     assert "xmage_choices=" in str(error.value)
     assert "Dwarven Mauler" in str(error.value)
+
+
+def test_choose_player_target_uses_the_phase_player_name() -> None:
+    action = {"type": "ChooseTarget", "data": {"target": {"Player": 1}}}
+
+    assert _phase_target_key(action, {}) == ("player", "diffb")
 
 
 def test_v0_policy_keeps_existing_choice_stream() -> None:
