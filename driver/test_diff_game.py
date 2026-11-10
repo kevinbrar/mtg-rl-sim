@@ -276,23 +276,19 @@ def test_activation_key_uses_the_choice_source_zone() -> None:
     assert _legal_action_diff(decision, xmage) == {}
 
 
-def test_target_maps_by_card_controller_and_zone() -> None:
+def test_target_without_board_source_id_fails_closed() -> None:
     fixture = json.loads(DUPLICATE_FIXTURE.read_text())
     prompt = fixture["prompts"]["target"]
     decision = prompt["phase"]
     xmage = prompt["xmage"]
 
-    assert _legal_action_diff(decision, xmage) == {}
+    with pytest.raises(UnmappedPromptError, match="Could not identify XMage permanent"):
+        _legal_action_diff(decision, xmage)
     assert [choice["id"] for choice in xmage["choices"]] == [
         permanent["id"]
         for permanent in fixture["source_run"]["xmage_permanents"]
         if permanent["name"] == "Dwarven Mauler"
     ]
-    with pytest.raises(UnmappedPromptError) as error:
-        _xmage_target_choice(decision["candidates"][0], decision, xmage)
-    assert "phase_choices=" in str(error.value)
-    assert "xmage_choices=" in str(error.value)
-    assert "Dwarven Mauler" in str(error.value)
 
 
 def test_xmage_target_controller_comes_from_choice_source_id() -> None:
