@@ -373,18 +373,31 @@ def compare_projection(left: dict, right: dict) -> dict:
     return diff
 
 
+def _policy_candidates_without_cancel_cast(decision: dict) -> list[tuple[int, dict]]:
+    candidates = [
+        (index, action)
+        for index, action in enumerate(decision["candidates"])
+        if action.get("type") != "CancelCast"
+    ]
+    if not candidates:
+        raise UnmappedPromptError(
+            f"No phase action remains after excluding CancelCast: {decision}"
+        )
+    return candidates
+
+
 def _policy_candidate_v0(decision: dict, rng: random.Random) -> tuple[int, dict]:
-    candidates = decision["candidates"]
+    candidates = _policy_candidates_without_cancel_cast(decision)
     attacks = [
         (index, action)
-        for index, action in enumerate(candidates)
+        for index, action in candidates
         if action.get("type") == "DeclareAttackers"
         and action.get("data", {}).get("attacks")
     ]
     if attacks:
         empty = [
             (index, action)
-            for index, action in enumerate(candidates)
+            for index, action in candidates
             if action.get("type") == "DeclareAttackers"
             and not action.get("data", {}).get("attacks")
         ]
@@ -394,14 +407,14 @@ def _policy_candidate_v0(decision: dict, rng: random.Random) -> tuple[int, dict]
 
     blockers = [
         (index, action)
-        for index, action in enumerate(candidates)
+        for index, action in candidates
         if action.get("type") == "DeclareBlockers"
         and action.get("data", {}).get("assignments")
     ]
     if blockers:
         empty = [
             (index, action)
-            for index, action in enumerate(candidates)
+            for index, action in candidates
             if action.get("type") == "DeclareBlockers"
             and not action.get("data", {}).get("assignments")
         ]
@@ -410,7 +423,7 @@ def _policy_candidate_v0(decision: dict, rng: random.Random) -> tuple[int, dict]
         return empty[0]
 
     supported: list[tuple[int, dict]] = []
-    for index, action in enumerate(candidates):
+    for index, action in candidates:
         kind = action.get("type")
         if kind in {"PlayLand", "CastSpell", "PassPriority", "SelectCards"}:
             supported.append((index, action))
@@ -424,7 +437,7 @@ def policy_candidate(
 ) -> tuple[int, dict]:
     if v0:
         return _policy_candidate_v0(decision, rng)
-    candidates = list(enumerate(decision["candidates"]))
+    candidates = _policy_candidates_without_cancel_cast(decision)
     preferred = [
         item
         for item in candidates

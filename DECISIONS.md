@@ -2,6 +2,7 @@
 
 Dated decisions by Kevin (K) or Devin (D) that shape the project. Newest first.
 
+- 2026-11-10 (D): Exclude Phase's UI-only `CancelCast` candidate from both seeded differential-policy selectors. It is a UI back-out, not a game action, and mapping it to XMage would validate a UI rewind rather than rules behavior. If no candidates remain, fail with `UnmappedPromptError`; retain `_action_task`'s unsupported-action guard.
 - 2026-11-10 (D): Normalize an XMage empty-blocker prompt only when the matching turn/active player has a recorded non-empty Phase attack and Phase observed no blocker decision. XMage's possibleBlockers list is not legality-filtered, so this can mask a Phase bug that wrongly finds no legal blockers; a follow-up should attempt the XMage declaration and observe acceptance or rejection.
 - 2026-11-10 (D): Differential runs set Mage-Bench's per-player interaction limit to 100,000; deterministic oracle play must not be auto-passed by an LLM-pilot loop guard.
 - 2026-11-10 (D): Phase `ScryChoice` `SelectCards.cards` is the keep-on-top set (engine_resolution_choices.rs:2296–2323; CR 701.22a); the driver maps its complement to XMage bottom selections and fails closed outside scry 1.
