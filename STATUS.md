@@ -1,15 +1,18 @@
 # Status
 
-_Updated 2026-11-09._
+_Updated 2026-11-10._
 
 ## State
 - phase-rs pinned at `988bc34` + 30 local patches (`phase-patches/`, apply with `scripts/apply-phase-patches.sh`); all 18 unsupported Standard-meta cards supported; 29,417 engine tests pass. Evidence: `phase-patches/README.md`, `docs/debrief.md`.
-- Differential harness (`driver/diff_game.py`) v0: lands, creature casts, all-or-none attacks, no blocks, no targets. 3 clean games with a mono-green test deck. Real meta decks are **not** supported yet.
+- Differential harness (`driver/diff_game.py`) v0: lands, creature casts, all-or-none attacks, no blocks, no targets. Real meta decks are **not** supported yet; the first Boros-vs-Dimir run reached an unmapped scry prompt at step 4.
 - phase-rs web client runs locally on the patched engine (`docs/play.md`).
 - Upstream offer: phase-rs#10736; patches public at kevinbrar/phase@standard-meta-fixes.
 
 ## In progress
 - Extend the differential harness to real Standard meta decks containing the 18 fixed cards (targets, blocks, activated abilities, modal choices, mulligans).
+- Harness-v1 PR3 infrastructure adds opt-in `--v0` deck validation, an `unmapped_prompt` artifact/exit status, copied/generated meta-deck inputs, and five XMage backports: Essence Burn, Theorist's Sanctum, Kíli the Resourceful, Countersculpt, and Theorist's Proxy (including Empower Jace leaf classes). `meta_decks.py` matches exact set/card-number registrations and writes Scryfall-canonical names. Of five distinct gaps found in the non-mono-green exports, Countersculpt and Theorist's Proxy were backported; Jace's Machinations and Extrapolate the Impossible are absent upstream, and Enlightened Confidant requires a pinned-core accessor. Those three cards have no supported printing and are listed in `oracle/xmage-missing.txt`; Azorius Control, 4c Control, and Lifegain are marked XMage-unrunnable.
+- Harness-v1 PR3 local evidence: `mvn -pl Mage.Tests -Dtest=MissingMetaCardsTest test` — 3 tests, 0 failures/errors/skips; `mvn install package -DskipTests` — 42 modules passed; `cargo build --release -p phase-env` passed; pytest — 82 passed; Ruff check/format and actionlint passed. `git diff --check` passes on source/docs; the new unified-diff artifact's four blank context lines are flagged as trailing whitespace by the outer diff check, and the patch applies cleanly. Mono-green `--v0` seed 17: 44 steps, 0 divergences, winner matched (phase=1, XMage=1), summary `runs/20261110T022329183834Z/summary.json`. Seed 42: 53 steps, 0 divergences, winner matched (phase=1, XMage=1), summary `runs/20261110T022643347113Z/summary.json`. Both report `completed_terminal_projection_unavailable`.
+- Boros Dwarves vs Dimir Midrange seed 17, run `20261110T022222182183Z`, reached its first unmapped prompt at step 4 / turn 2: Phase offered a `SelectCards` scry choice containing card ID 96, while XMage asked whether to put the top card, Dream Beavers, on the bottom. `runs/20261110T022222182183Z/divergence.json` contains both prompts and the last state. Both decks loaded and reached the XMage game; canonical `Dáin's Company` and `Kíli the Resourceful` resolved in Phase. Mono-green loaded and completed both smokes. A real Lifegain attempt reached the XMage server but could not load its `Enlightened Confidant` entry (`[None:None]`); it remains unrunnable as recorded.
 - Governance: `AGENTS.md` + `docs/review-patterns.md` landed; required CI checks, PR template/lint, `oracle/known-diffs.toml`, and the first postmortem are implemented.
 - CI: per-card XMage diffs remain fail-closed until the differential harness supports real meta decks.
 
@@ -19,7 +22,7 @@ _Updated 2026-11-09._
 - PR #2 run `42676376772` (head `728e76d`): `fmt` (129358720789), `test-full` (129358720255), `xmage-diff` (129358720679), `mutants` (129358720956), and `packet-lint` (129358720829) passed; `clippy` (129358721184) failed only on the accepted dead-code `Out` warning at `phase-env/src/main.rs:38`. Devin Review passed (no Actions job ID).
 - PR #2 pull-request runs `42672336187` and `42673028298` failed with zero jobs; at inspection the PR was mergeable and `refs/pull/2/merge` existed, so the cause at those runs is unconfirmed.
 - Patched card-data release: `card-data-34ab5f693`, SHA-256 `54ebe1c98e5d15de9d3e844845cb96a7cd87e3229957222616bec782827a8d6a`.
-- XMage CI runs real mono-green smoke seeds 17 and 42 for `cards: none` engine-path changes; per-card diffs remain fail-closed until harness v1.
+- XMage CI runs real mono-green smoke seeds 17 and 42 with `--v0` for `cards: none` engine-path changes; it applies all `oracle/patches/mage-bench-*.patch` in sorted order and hashes them in the mage-bench build cache. Per-card diffs remain fail-closed until the harness supports them.
 - PR #2 run `42708710196` (head `ed14e61`): `fmt` (129472259370), `clippy` (129472259056), `test-full` (129472259311), `mutants` (129472259445), and `packet-lint` (129472259454) passed; `xmage-diff` (129472259510) failed, and Devin Review was pending (no Actions job ID). Artifact `xmage-diff-runs` (13715279152): seed 17 (`20261109T222148893318Z`) and seed 42 (`20261109T222226237722Z`) both exited before starting a game because the spectator client lacked an X11 display; neither produced a summary or decision, divergence, or winner results. The workflow now runs each smoke under `xvfb-run`.
 - The dead-code `Out` warning was removed in PR #2. Patched-engine Clippy also reports `expect_fun_call` in `kili_the_resourceful.rs:40` from patch 0018; it will surface on the next engine PR.
 - Representative mutants measurement: 16 candidates; 4 missed, 1 timeout, 11 unknown after about 33 minutes. Log: `/home/ubuntu/ci-governance-worktrees/mutants-0017-tmpfs.log`.

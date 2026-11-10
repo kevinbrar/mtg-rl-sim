@@ -2,6 +2,8 @@
 
 Dated decisions by Kevin (K) or Devin (D) that shape the project. Newest first.
 
+- 2026-11-09 (D, delegated by K): mtg-rl-sim made public for free branch protection and Actions minutes; main requires all 6 checks, admins included, 0 approvers.
+- 2026-11-09 (K): Kevin is hands-off on engine dev, and hands-on for RL planning and design. No RL implementation before his decisions.
 - 2026-11-09 (K): Governance stack approved: XMage differential, full-suite test-count floor, mutation testing on changed lines, PR evidence template + lint, advisory fresh-context reviewer, decisions/postmortems as files. Replay corpus deferred ("don't overengineer"). No required human approver: Devin merges when required checks are green and escalates only on the triggers in `AGENTS.md` (Kevin "can be in the loop, not needed in the loop"). Global steering changes always reviewed by Kevin; project docs Devin edits directly.
 - 2026-11-09 (K): Approved steering changes: mission/decisions/status files in the repo; read external rules before offering choices; correctness work needs an author-independent check; enforce invariants with CI. Success criteria for the project are still open.
 - 2026-11-09 (K): Review, not writing code, is the bottleneck. Research governance/review literature and borrow what works; no process for its own sake.

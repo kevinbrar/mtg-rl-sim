@@ -312,16 +312,19 @@ jobs:
           java-version: "21"
           cache: maven
           cache-dependency-path: mage-bench/**/pom.xml
-      - name: Apply local external-pilot patch
+      - name: Apply local mage-bench patches
         if: steps.scope.outputs.mode == 'smoke'
         run: |
-          (cd mage-bench && git apply ../oracle/patches/mage-bench-external-pilot.patch)
+          mapfile -t patches < <(find oracle/patches -maxdepth 1 -type f -name 'mage-bench-*.patch' -print | LC_ALL=C sort)
+          for patch in "${patches[@]}"; do
+            (cd mage-bench && git apply "../$patch")
+          done
       - name: Cache mage-bench build output
         if: steps.scope.outputs.mode == 'smoke'
         uses: actions/cache@v4
         with:
           path: mage-bench/**/target
-          key: mage-bench-${{ runner.os }}-${{ steps.mage-bench-pin.outputs.sha }}-${{ hashFiles('oracle/patches/mage-bench-external-pilot.patch') }}
+          key: mage-bench-${{ runner.os }}-${{ steps.mage-bench-pin.outputs.sha }}-${{ hashFiles('oracle/patches/mage-bench-*.patch') }}
       - name: Build mage-bench
         if: steps.scope.outputs.mode == 'smoke'
         working-directory: mage-bench
@@ -407,7 +410,7 @@ jobs:
           failed=0
           for seed in 17 42; do
             if ! xvfb-run -a python driver/diff_game.py oracle/decks/mono-green-v0.txt \
-              oracle/decks/mono-green-v0.txt --seed "$seed" \
+              oracle/decks/mono-green-v0.txt --seed "$seed" --v0 \
               --data-root phase/client/public; then
               failed=1
             fi
