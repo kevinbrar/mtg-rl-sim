@@ -547,8 +547,14 @@ def _attached_signature(
             return ("bound", bound_id)
         return (
             "unbound",
-            normalize_name(attached.get("name", "")),
-            attached.get("controller"),
+            _object_signature(
+                attached,
+                "phase",
+                decision,
+                xmage_state,
+                bindings,
+                include_attachment=False,
+            ),
         )
     attached_id = str(attached_to)
     phase_id = bindings.xmage_to_phase.get(attached_id)
@@ -565,8 +571,15 @@ def _attached_signature(
         raise UnmappedPromptError(f"Unknown XMage attachment controller: {entry}")
     return (
         "unbound",
-        normalize_name(attached.get("name", "")),
-        PLAYER_NAMES.index(attached_player["name"]),
+        _object_signature(
+            attached,
+            "xmage",
+            decision,
+            xmage_state,
+            bindings,
+            player=attached_player,
+            include_attachment=False,
+        ),
     )
 
 
@@ -577,6 +590,7 @@ def _object_signature(
     xmage_state: dict,
     bindings: ObjectBindings,
     player: dict | None = None,
+    include_attachment: bool = True,
 ) -> tuple:
     if not isinstance(obj.get("name"), str) or "name" not in obj:
         raise UnmappedPromptError(f"Missing {side} object name: {obj}")
@@ -623,11 +637,12 @@ def _object_signature(
         if field in obj and not isinstance(obj[field], bool):
             raise UnmappedPromptError(f"Invalid {side} {field}: {obj}")
         signature.append(obj[field] if field in obj else MISSING)
-    signature.append(
-        _attached_signature(
-            obj, side, decision, xmage_state, bindings, player=player
+    if include_attachment:
+        signature.append(
+            _attached_signature(
+                obj, side, decision, xmage_state, bindings, player=player
+            )
         )
-    )
     return tuple(signature)
 
 

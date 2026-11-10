@@ -266,29 +266,26 @@ def test_duplicate_battlefield_collars_bind_and_reuse_ids() -> None:
     )
 
 
-def test_attached_and_unattached_collar_signatures_disambiguate() -> None:
+def test_unbound_attachment_hosts_use_full_signature() -> None:
     fixture = json.loads(DUPLICATE_FIXTURE.read_text())
     decision = fixture["prompts"]["activation"]["phase"]
     xmage = fixture["prompts"]["activation"]["xmage"]
-    decision["objects"]["2"] = {
-        "name": "Dwarven Mauler",
-        "zone": "Battlefield",
-        "controller": 0,
-        "incarnation": 0,
-        "tapped": False,
-        "power": 3,
-        "toughness": 2,
-        "damage": 0,
-        "summoning_sick": False,
-        "attached_to": None,
-    }
-    decision["objects"]["45"]["attached_to"] = 2
+    for host_id, tapped in (("2", False), ("23", True)):
+        decision["objects"][host_id] = {
+            "name": "Dwarven Mauler",
+            "zone": "Battlefield",
+            "controller": 0,
+            "incarnation": 0,
+            "tapped": tapped,
+            "power": 3,
+            "toughness": 2,
+            "damage": 0,
+            "summoning_sick": False,
+            "attached_to": None,
+        }
     _signature_fields(decision)
-    for collar_id in ("27", "45"):
-        decision["objects"][collar_id].update(
-            {"tapped": False, "damage": 0, "attached_to": None}
-        )
-    decision["objects"]["45"]["attached_to"] = 2
+    decision["objects"]["27"]["attached_to"] = 2
+    decision["objects"]["45"]["attached_to"] = 23
     xmage_state = _xmage_signature_state(
         {
             "DiffA": [
@@ -304,9 +301,19 @@ def test_attached_and_unattached_collar_signatures_disambiguate() -> None:
                     "name": "Basilisk Collar",
                     "tapped": False,
                     "damage": 0,
+                    "attached_to": "p28",
                 },
                 {
                     "id": "p5",
+                    "name": "Dwarven Mauler",
+                    "tapped": True,
+                    "power": 3,
+                    "toughness": 2,
+                    "damage": 0,
+                    "summoning_sick": False,
+                },
+                {
+                    "id": "p28",
                     "name": "Dwarven Mauler",
                     "tapped": False,
                     "power": 3,
