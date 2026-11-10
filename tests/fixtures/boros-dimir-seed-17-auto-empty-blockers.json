@@ -1,0 +1,75 @@
+{
+  "source_run": "20261110T130836426985Z",
+  "source_artifact": "runs/20261110T130836426985Z/divergence.json",
+  "phase": {
+    "owner": 0,
+    "waiting_for": {
+      "type": "Priority",
+      "data": {
+        "player": 0
+      }
+    },
+    "state": {
+      "turn": 5,
+      "active_player": 0,
+      "phase": "PreCombatMain"
+    },
+    "candidates": [
+      {
+        "type": "PassPriority",
+        "data": {}
+      },
+      {
+        "type": "PlayLand",
+        "data": {
+          "card_id": 51
+        }
+      }
+    ]
+  },
+  "phase_attack_record": {
+    "turn": 4,
+    "active_player": 1
+  },
+  "xmage": {
+    "action_pending": true,
+    "action_type": "GAME_SELECT",
+    "message": "Select blockers",
+    "response_type": "select",
+    "context": "T2 Combat/Declare Blockers (DiffB)",
+    "combat_phase": "blockers",
+    "stop_reason": "combat",
+    "board": [
+      {
+        "name": "DiffA",
+        "is_you": true,
+        "is_active": false,
+        "life": 20
+      },
+      {
+        "name": "DiffB",
+        "is_you": false,
+        "is_active": true,
+        "life": 20
+      }
+    ],
+    "choices": [
+      {
+        "name": "Dwarven Mauler",
+        "index": 0,
+        "choice_type": "blocker",
+        "id": "p5",
+        "power": "2",
+        "toughness": "1"
+      }
+    ],
+    "incoming_attackers": [
+      {
+        "name": "Dream Beavers",
+        "id": "p24",
+        "power": "1",
+        "toughness": "1"
+      }
+    ]
+  }
+}
