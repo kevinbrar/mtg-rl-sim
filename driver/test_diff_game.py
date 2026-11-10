@@ -1,6 +1,11 @@
+import asyncio
+import builtins
 import json
 import random
+import sys
+from contextlib import AsyncExitStack
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -14,6 +19,7 @@ from diff_game import (
     _xmage_hand_choice,
     _scry_legal_choices,
     _scry_selection_payload,
+    _suppress_broken_resource_after_terminal,
     _xmage_activation_choice,
     _xmage_activation_set,
     _xmage_target_key,
@@ -29,6 +35,12 @@ SCRY_FIXTURE = (
     / "tests"
     / "fixtures"
     / "boros-dimir-seed-17-scry.json"
+)
+SCRY_POLARITY_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "boros-dimir-seed-42-scry-polarity.json"
 )
 DUPLICATE_FIXTURE = (
     Path(__file__).resolve().parents[1]
@@ -90,6 +102,62 @@ def _xmage_signature_state(battlefields: dict[str, list[dict]]) -> dict:
     }
 
 
+def _install_fake_anyio_resource_errors(monkeypatch):
+    broken_resource_error = type("BrokenResourceError", (Exception,), {})
+    closed_resource_error = type("ClosedResourceError", (Exception,), {})
+    anyio = ModuleType("anyio")
+    anyio.__dict__["BrokenResourceError"] = broken_resource_error
+    anyio.__dict__["ClosedResourceError"] = closed_resource_error
+    monkeypatch.setitem(sys.modules, "anyio", anyio)
+    return broken_resource_error, closed_resource_error
+
+
+def _run_resource_error_on_stack_exit(error, terminal_summary_recorded):
+    async def run():
+        stack = AsyncExitStack()
+
+        async def raise_error():
+            raise error
+
+        stack.push_async_callback(raise_error)
+        async with _suppress_broken_resource_after_terminal(
+            stack, lambda: terminal_summary_recorded
+        ):
+            pass
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("grouped", (False, True))
+def test_closed_resource_error_is_suppressed_after_terminal(monkeypatch, grouped):
+    _, closed_resource_error = _install_fake_anyio_resource_errors(monkeypatch)
+    error = closed_resource_error()
+    if grouped:
+        error = builtins.ExceptionGroup("closed resource", [error])
+
+    _run_resource_error_on_stack_exit(error, terminal_summary_recorded=True)
+
+
+@pytest.mark.parametrize("grouped", (False, True))
+def test_broken_resource_error_is_suppressed_after_terminal(monkeypatch, grouped):
+    broken_resource_error, _ = _install_fake_anyio_resource_errors(monkeypatch)
+    error = broken_resource_error()
+    if grouped:
+        error = builtins.ExceptionGroup("broken resource", [error])
+
+    _run_resource_error_on_stack_exit(error, terminal_summary_recorded=True)
+
+
+def test_closed_resource_error_is_raised_before_terminal(monkeypatch):
+    _, closed_resource_error = _install_fake_anyio_resource_errors(monkeypatch)
+
+    with pytest.raises(builtins.ExceptionGroup) as error:
+        _run_resource_error_on_stack_exit(
+            closed_resource_error(), terminal_summary_recorded=False
+        )
+    assert error.value.subgroup(closed_resource_error) is not None
+
+
 @pytest.mark.parametrize(
     "status",
     ("completed", "completed_terminal_projection_unavailable"),
@@ -126,17 +194,78 @@ def test_scry_prompt_maps_phase_library_choice_to_xmage_semantically() -> None:
     bottom = next(
         candidate
         for candidate in decision["candidates"]
-        if candidate.get("data", {}).get("cards")
+        if candidate.get("data", {}).get("cards") == []
     )
     assert _scry_selection_payload(bottom, decision, xmage) == {"choice": "p27"}
 
     keep = next(
         candidate
         for candidate in decision["candidates"]
-        if candidate.get("data", {}).get("cards") == []
+        if candidate.get("data", {}).get("cards") == [96]
     )
     assert ("keep",) in phase_choices
     assert _scry_selection_payload(keep, decision, xmage) == {"choice": "no"}
+
+
+def _diagnostic_scry_inputs() -> tuple[dict, dict, dict, dict]:
+    fixture = json.loads(SCRY_POLARITY_FIXTURE.read_text())
+    looked_at_id = 9001
+    empty_action = fixture["phase_action"]
+    keep_action = {"type": "SelectCards", "data": {"cards": [looked_at_id]}}
+    decision = {
+        "waiting_for": {
+            "type": "ScryChoice",
+            "data": {"player": 1, "cards": [looked_at_id]},
+        },
+        "objects": {str(looked_at_id): fixture["phase_looked_at"]},
+        "candidates": [empty_action, keep_action],
+    }
+    return decision, fixture["xmage_prompt"], empty_action, keep_action
+
+
+# Captured from seed-42 run 20261110T092457080542Z. The Phase action handler
+# treats SelectCards.cards as keep-on-top cards; the complement goes to the
+# bottom (phase/crates/engine/src/game/engine_resolution_choices.rs:2296–2323;
+# CR 701.22a).
+def test_scry_diagnostic_empty_phase_selection_maps_to_xmage_bottom_id() -> None:
+    decision, xmage, empty_action, _ = _diagnostic_scry_inputs()
+
+    assert _scry_selection_payload(empty_action, decision, xmage) == {"choice": "p26"}
+
+
+def test_scry_diagnostic_kept_phase_card_maps_to_xmage_no() -> None:
+    decision, xmage, _, keep_action = _diagnostic_scry_inputs()
+
+    assert _scry_selection_payload(keep_action, decision, xmage) == {"choice": "no"}
+
+
+def test_scry_more_than_one_phase_card_fails_closed() -> None:
+    decision, xmage, _, _ = _diagnostic_scry_inputs()
+    decision["waiting_for"]["data"]["cards"].append(9002)
+
+    with pytest.raises(UnmappedPromptError, match="Unsupported Phase scry prompt"):
+        _scry_legal_choices(decision, xmage)
+
+
+@pytest.mark.parametrize(
+    ("message", "extra_choices"),
+    (
+        ("Select up to two cards to PUT on the BOTTOM of your library (Scry)", []),
+        (
+            "Select up to one card to PUT on the BOTTOM of your library (Scry)",
+            [{"id": "p27", "name": "Dream Beavers", "target_type": "card"}],
+        ),
+    ),
+)
+def test_scry_xmage_multi_selection_prompts_fail_closed(
+    message: str, extra_choices: list[dict]
+) -> None:
+    decision, xmage, _, _ = _diagnostic_scry_inputs()
+    xmage["message"] = message
+    xmage["choices"].extend(extra_choices)
+
+    with pytest.raises(UnmappedPromptError, match="Unsupported XMage scry prompt"):
+        _scry_legal_choices(decision, xmage)
 
 
 def test_scry_legal_set_difference_is_not_normalized_away() -> None:
