@@ -316,6 +316,74 @@ def test_trivial_priority_stop_does_not_pass_activated_ability_prompt() -> None:
     assert _matching_trivial_priority_stop(xmage, decision, skipped_stops) is None
 
 
+def test_blocker_prompt_does_not_match_priority_or_pass(monkeypatch) -> None:
+    decision = {
+        "owner": 1,
+        "state": {"turn": 6, "active_player": 1, "phase": "PostCombatMain"},
+        "candidates": [{"type": "PassPriority"}, {"type": "PlayLand"}],
+    }
+    xmage = {
+        "action_pending": True,
+        "action_type": "GAME_SELECT",
+        "response_type": "select",
+        "stop_reason": "combat",
+        "combat_phase": "blockers",
+        "message": "Select blockers",
+        "context": "T3 Combat/Declare Blockers (DiffB)",
+        "game_seq": 131,
+        "board": [
+            {"name": "DiffA", "is_active": False, "is_you": True},
+            {"name": "DiffB", "is_active": True, "is_you": False},
+        ],
+        "choices": [{"id": "p5", "name": "Dwarven Mauler"}],
+    }
+    skipped_stops = [
+        {
+            "kind": "priority",
+            "turn": 6,
+            "active_player": "DiffB",
+            "step": "declareblockers",
+        }
+    ]
+    calls = []
+
+    async def call(_session, method, _args=None):
+        calls.append(method)
+        return xmage
+
+    monkeypatch.setattr(diff_game, "_call", call)
+
+    assert _matching_trivial_priority_stop(xmage, decision, skipped_stops) is None
+    result, point_diff = asyncio.run(
+        _sync_xmage_to_decision(
+            [object()],
+            decision,
+            {},
+            {},
+            skipped_stops,
+            [],
+            timeout=0.1,
+        )
+    )
+
+    assert result == xmage
+    assert point_diff == {
+        "phase": {
+            "turn": 6,
+            "active_player": "DiffB",
+            "actor": "DiffB",
+            "step": "postcombatmain",
+        },
+        "xmage": {
+            "turn": 6,
+            "active_player": "DiffB",
+            "actor": "DiffA",
+            "step": "declareblockers",
+        },
+    }
+    assert calls == ["get_action_choices"]
+
+
 def test_mage_bench_config_sets_loop_guard_limit_for_both_external_players() -> None:
     players = _mage_bench_external_players([Path("a.dck"), Path("b.dck")])
 

@@ -8,6 +8,8 @@ In Boros Dwarves vs. Dimir Midrange runs, Mage-Bench's interaction guard auto-pa
 
 The loop guard was designed to stop LLM pilots from repeatedly interacting, but differential runs use deterministic policies and need every decision surfaced. The external-player launch path did not expose the existing interaction-limit setting. Separately, `_sync_xmage_to_decision` re-passed on any `action_pending: false` result, including unknown statuses and the loop-guard result.
 
+The default cap also masked a blocker-prompt loop. `_matching_trivial_priority_stop` accepted an actionable `GAME_SELECT` "Select blockers" result because it did not exclude combat selections. The driver repeatedly called `pass_priority` on the unchanged blocker prompt until the 26-interaction guard auto-passed it. Raising the cap exposed the loop as an earlier synchronization timeout.
+
 ## New check
 
-Differential config now sets the existing limit for both external players. The bridge result still fails closed as `xmage_loop_guard`; unknown non-pending result shapes raise `UnmappedPromptError`. Regression tests cover the loop-guard no-repass path and unknown statuses. Mage-Bench's external-player unit tests cover parsing and bridge launch arguments.
+Differential config now sets the existing limit for both external players. The bridge result still fails closed as `xmage_loop_guard`; unknown non-pending result shapes raise `UnmappedPromptError`. Combat selections cannot be normalized as trivial priority stops, so an unmatched blocker prompt produces the normal decision-point mismatch without another `pass_priority` call. Regression tests cover the loop-guard no-repass path, unknown statuses, and the guard-masked blocker loop. Mage-Bench's external-player unit tests cover parsing and bridge launch arguments.

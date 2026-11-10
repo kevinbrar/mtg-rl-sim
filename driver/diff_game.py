@@ -1250,6 +1250,12 @@ def _matching_trivial_combat_stop(result: dict, skipped_stops: list[dict]) -> di
     )
 
 
+def _is_xmage_combat_selection(result: dict) -> bool:
+    return result.get("stop_reason") == "combat" or _normalize_phase(
+        result.get("combat_phase")
+    ) in {"attackers", "declareattackers", "blockers", "declareblockers"}
+
+
 def _parse_tool_result(result) -> dict:
     if result.is_error:
         raise RuntimeError(f"MCP tool error: {result.content}")
@@ -1371,6 +1377,8 @@ async def _phase_advance_to_meaningful(
 def _matching_trivial_priority_stop(
     result: dict, decision: dict, skipped_stops: list[dict]
 ) -> dict | None:
+    if _is_xmage_combat_selection(result):
+        return None
     metadata = _decision_metadata(result)
     cards, can_attack = _xmage_legal_actions(result)
     has_activated_abilities = any(
@@ -1494,6 +1502,13 @@ async def _sync_xmage_to_decision(
                 action_tasks[seat] = asyncio.create_task(
                     _call(session, "choose_action", {"choice": "no"})
                 )
+                continue
+
+            if _is_xmage_combat_selection(result):
+                point_diff = _decision_point_diff(decision, result)
+                if point_diff:
+                    return result, point_diff
+                pending_results[seat] = result
                 continue
 
             stop = _matching_trivial_priority_stop(result, decision, skipped_stops)
