@@ -23,13 +23,14 @@ use engine::game::deck_loading::{
     load_and_hydrate_decks, resolve_deck_list, DeckList, PlayerDeckList,
 };
 use engine::game::engine::start_game_with_starting_player;
+use engine::game::game_object::AttachTarget;
 use engine::types::actions::{GameAction, MulliganChoice};
 use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::player::PlayerId;
 use engine::types::zones::Zone;
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 const MAX_DECISIONS: usize = 20_000;
 
@@ -70,6 +71,7 @@ fn snapshot(state: &GameState) -> Value {
             let obj = state.objects.get(id);
             json!({
                 "id": id.0,
+                "incarnation": obj.map(|o| o.incarnation),
                 "name": obj.map(|o| o.name.clone()).unwrap_or_default(),
                 "controller": obj.map(|o| o.controller.0),
                 "tapped": obj.map(|o| o.tapped),
@@ -193,7 +195,27 @@ fn objects_for_candidates(
     candidates: &[engine::types::actions::GameAction],
 ) -> Value {
     let mut objects = serde_json::Map::new();
+    let mut ids = Vec::new();
+    let mut seen = HashSet::new();
     for id in candidates.iter().flat_map(GameAction::related_object_ids) {
+        if seen.insert(id) {
+            ids.push(id);
+        }
+    }
+    for id in ids.clone() {
+        let object = state
+            .objects
+            .get(&id)
+            .expect("candidate object reference must exist in game state");
+        if object.zone == Zone::Battlefield {
+            if let Some(AttachTarget::Object(attached_to)) = &object.attached_to {
+                if seen.insert(*attached_to) {
+                    ids.push(*attached_to);
+                }
+            }
+        }
+    }
+    for id in ids {
         let object = state
             .objects
             .get(&id)
@@ -221,9 +243,33 @@ fn objects_for_candidates(
             .collect();
         let mut metadata = json!({
             "name": object.name,
+            "incarnation": object.incarnation,
             "zone": format!("{:?}", object.zone),
             "controller": object.controller.0,
         });
+        if object.zone == Zone::Battlefield {
+            metadata["tapped"] = json!(object.tapped);
+            metadata["damage"] = json!(object.damage_marked);
+            metadata["attached_to"] = match &object.attached_to {
+                Some(AttachTarget::Object(attached_to)) => json!(attached_to.0),
+                _ => Value::Null,
+            };
+            if let (Some(power), Some(toughness)) = (object.power, object.toughness) {
+                metadata["power"] = json!(power);
+                metadata["toughness"] = json!(toughness);
+                metadata["summoning_sick"] = json!(object.has_summoning_sickness);
+            }
+            if !object.counters.is_empty() {
+                metadata["counters"] =
+                    serde_json::to_value(&object.counters).expect("game counters must serialize");
+            }
+            if object.is_token {
+                metadata["token"] = json!(true);
+            }
+            if object.face_down {
+                metadata["face_down"] = json!(true);
+            }
+        }
         if !abilities.is_empty() {
             metadata["abilities"] = json!(abilities);
         }

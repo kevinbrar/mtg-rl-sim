@@ -1,0 +1,21 @@
+diff --git a/Mage.Client.Bridge/src/main/java/mage/client/bridge/BridgeGameStateBuilder.java b/Mage.Client.Bridge/src/main/java/mage/client/bridge/BridgeGameStateBuilder.java
+--- a/Mage.Client.Bridge/src/main/java/mage/client/bridge/BridgeGameStateBuilder.java
++++ b/Mage.Client.Bridge/src/main/java/mage/client/bridge/BridgeGameStateBuilder.java
+@@ -75,4 +75,17 @@ public final class BridgeGameStateBuilder {
+                     permInfo.put("id", viewLocator.getStableShortId(perm.getId(), perm, gameView));
+                     permInfo.put("name", cardFormatter.safeDisplayName(perm));
+                     permInfo.put("tapped", perm.isTapped());
++                    permInfo.put("damage", perm.getDamage());
++                    UUID attachedTo = perm.getAttachedTo();
++                    permInfo.put(
++                        "attached_to",
++                        attachedTo == null
++                            ? null
++                            : viewLocator.getStableShortId(
++                                attachedTo,
++                                viewLocator.findCardViewById(attachedTo, gameView),
++                                gameView
++                            )
++                    );
++
+                     if (perm.isCreature()) {
