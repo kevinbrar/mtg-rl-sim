@@ -28,12 +28,12 @@ jobs:
         run: |
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             git fetch origin "$BASE_REF"
-            git diff --name-only "origin/$BASE_REF...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames "origin/$BASE_REF...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
           elif [[ "$EVENT_NAME" == "push" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
-            git diff --name-only "$BEFORE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames "$BEFORE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
           else
             git fetch origin main
-            git diff --name-only origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
           fi
           if grep -q '^phase-patches/' "$RUNNER_TEMP/changed-files.txt"; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -77,12 +77,12 @@ jobs:
         run: |
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             git fetch origin "$BASE_REF"
-            git diff --name-only "origin/$BASE_REF...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames "origin/$BASE_REF...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
           elif [[ "$EVENT_NAME" == "push" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
-            git diff --name-only "$BEFORE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames "$BEFORE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
           else
             git fetch origin main
-            git diff --name-only origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
           fi
           if grep -q '^phase-patches/' "$RUNNER_TEMP/changed-files.txt"; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -133,20 +133,20 @@ jobs:
           diff_ok=true
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             if git fetch origin "$BASE_REF" &&
-              git diff --name-only "origin/$BASE_REF...$HEAD_SHA" > "$changed_files"; then
+              git diff --name-only --no-renames "origin/$BASE_REF...$HEAD_SHA" > "$changed_files"; then
               :
             else
               diff_ok=false
             fi
           elif [[ "$EVENT_NAME" == "push" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
-            if git diff --name-only "$BEFORE_SHA...$HEAD_SHA" > "$changed_files"; then
+            if git diff --name-only --no-renames "$BEFORE_SHA...$HEAD_SHA" > "$changed_files"; then
               :
             else
               diff_ok=false
             fi
           else
             if git fetch origin main &&
-              git diff --name-only origin/main...HEAD > "$changed_files"; then
+              git diff --name-only --no-renames origin/main...HEAD > "$changed_files"; then
               :
             else
               diff_ok=false
@@ -302,12 +302,12 @@ jobs:
         run: |
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             git fetch origin "$BASE_REF"
-            git diff --name-only "origin/$BASE_REF...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames "origin/$BASE_REF...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
           elif [[ "$EVENT_NAME" == "push" && "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]]; then
-            git diff --name-only "$BEFORE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames "$BEFORE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-files.txt"
           else
             git fetch origin main
-            git diff --name-only origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
+            git diff --name-only --no-renames origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
           fi
           if grep -Eiq '^(phase-patches/|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
             echo "mode=fail-closed" >> "$GITHUB_OUTPUT"
@@ -515,7 +515,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           git fetch origin "$BASE_REF"
-          git diff --name-only "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/changed-files.txt"
+          git diff --name-only --no-renames "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/changed-files.txt"
           if grep -q '^phase-patches/' "$RUNNER_TEMP/changed-files.txt"; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
@@ -582,7 +582,7 @@ jobs:
         run: |
           set -o pipefail
           test_filter=()
-          changed_modules="$(git diff --name-only "$BASE_PATCHED" "$HEAD_PATCHED" -- crates/engine/tests/integration)"
+          changed_modules="$(git diff --name-only --no-renames "$BASE_PATCHED" "$HEAD_PATCHED" -- crates/engine/tests/integration)"
           if [[ "$(printf '%s\n' "$changed_modules" | sed '/^$/d' | wc -l)" -eq 1 ]]; then
             module="$(basename "$changed_modules" .rs)"
             if [[ "$module" =~ ^[a-zA-Z0-9_]+$ ]]; then
@@ -646,7 +646,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           git fetch origin "$BASE_REF"
-          git diff --name-only "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/changed-files.txt"
+          git diff --name-only --no-renames "origin/$BASE_REF...HEAD" > "$RUNNER_TEMP/changed-files.txt"
       - name: Lint review packet
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
