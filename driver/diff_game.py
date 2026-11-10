@@ -681,6 +681,20 @@ def _resolve_battlefield_choice(
             f"phase_object={phase_object}"
         )
     phase_identity = (phase_id, incarnation)
+    if (
+        phase_battlefield_incarnations.get(phase_id) != incarnation
+        or xmage_state is None
+    ):
+        raise UnmappedPromptError(
+            f"Battlefield state is missing while resolving {kind}: "
+            f"phase_id={phase_identity}, "
+            f"phase_choices={decision.get('candidates', [])}; "
+            f"xmage_choices={result.get('choices', [])}; xmage_state={xmage_state}"
+        )
+    xmage_battlefield = _xmage_battlefield_by_id(xmage_state)
+    phase_signature = _object_signature(
+        phase_object, "phase", decision, xmage_state, bindings
+    )
     bound_id = bindings.phase_to_xmage.get(phase_identity)
     if bound_id is not None:
         choice = next(
@@ -693,19 +707,29 @@ def _resolve_battlefield_choice(
                 f"phase_choices={decision.get('candidates', [])}; "
                 f"xmage_choices={result.get('choices', [])}"
             )
+        entry = xmage_battlefield.get(bound_id)
+        if entry is None:
+            raise UnmappedPromptError(
+                f"Bound XMage object is absent from get_game_state while resolving "
+                f"{kind}: phase_id={phase_identity}, bound_id={bound_id}; "
+                f"phase_choices={decision.get('candidates', [])}; "
+                f"xmage_choices={result.get('choices', [])}; "
+                f"get_game_state={xmage_state}"
+            )
+        player, permanent = entry
+        xmage_signature = _object_signature(
+            permanent, "xmage", decision, xmage_state, bindings, player=player
+        )
+        if xmage_signature != phase_signature:
+            raise UnmappedPromptError(
+                f"Bound {kind} object signature mismatch for "
+                f"phase_id={phase_identity}: phase_signature={phase_signature}; "
+                f"xmage_signature={xmage_signature}; "
+                f"phase_choices={decision.get('candidates', [])}; "
+                f"xmage_choices={result.get('choices', [])}"
+            )
         return choice
 
-    if (
-        phase_battlefield_incarnations.get(phase_id) != incarnation
-        or xmage_state is None
-    ):
-        raise UnmappedPromptError(
-            f"Battlefield state is missing while resolving {kind}: "
-            f"phase_id={phase_identity}, "
-            f"phase_choices={decision.get('candidates', [])}; "
-            f"xmage_choices={result.get('choices', [])}; xmage_state={xmage_state}"
-        )
-    xmage_battlefield = _xmage_battlefield_by_id(xmage_state)
     for choice in matching:
         choice_id = choice.get("id")
         if choice_id is None or str(choice_id) not in xmage_battlefield:
@@ -720,14 +744,7 @@ def _resolve_battlefield_choice(
         for choice in matching
         if str(choice["id"]) not in bindings.xmage_to_phase
     ]
-    if len(matching) == 1:
-        choice = matching[0]
-        bindings.bind(phase_id, incarnation, str(choice["id"]))
-        return choice
 
-    phase_signature = _object_signature(
-        phase_object, "phase", decision, xmage_state, bindings
-    )
     xmage_signatures = []
     for choice in available:
         player, permanent = xmage_battlefield[str(choice["id"])]

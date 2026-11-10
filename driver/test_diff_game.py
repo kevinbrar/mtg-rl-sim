@@ -433,6 +433,42 @@ def test_no_matching_battlefield_signature_reports_both_sides() -> None:
     assert "xmage_signatures=" in str(error.value)
 
 
+def test_single_battlefield_match_must_match_signature() -> None:
+    fixture = json.loads(DUPLICATE_FIXTURE.read_text())
+    decision = fixture["prompts"]["target"]["phase"]
+    xmage = fixture["prompts"]["target"]["xmage"]
+    _signature_fields(decision)
+    decision["objects"]["2"]["tapped"] = True
+    xmage["choices"] = [xmage["choices"][0]]
+    xmage_state = _xmage_signature_state(
+        {
+            "DiffA": [
+                {
+                    "id": "p5",
+                    "name": "Dwarven Mauler",
+                    "tapped": False,
+                    "power": 3,
+                    "toughness": 2,
+                    "damage": 0,
+                    "summoning_sick": False,
+                    "attached_to": None,
+                }
+            ],
+            "DiffB": [],
+        }
+    )
+    action = next(
+        item
+        for item in decision["candidates"]
+        if item.get("data", {}).get("target", {}).get("Object") == 2
+    )
+
+    with pytest.raises(UnmappedPromptError) as error:
+        _xmage_target_choice(action, decision, xmage, ObjectBindings(), xmage_state)
+    assert "phase_signature=" in str(error.value)
+    assert "xmage_signature=" in str(error.value)
+
+
 def test_bound_battlefield_id_must_remain_a_matching_choice() -> None:
     fixture = json.loads(DUPLICATE_FIXTURE.read_text())
     decision = fixture["prompts"]["target"]["phase"]
