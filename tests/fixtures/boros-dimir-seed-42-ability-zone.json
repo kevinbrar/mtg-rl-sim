@@ -1,0 +1,97 @@
+{
+  "source_artifact": "runs/20261110T044740750318Z/divergence.json",
+  "prompts": {
+    "phase": {
+      "owner": 0,
+      "waiting_for": {
+        "type": "Priority",
+        "data": {"player": 0}
+      },
+      "state": {
+        "players": [
+          {
+            "hand_cards": [
+              {"id": 23, "name": "Inspiring Vantage"},
+              {"id": 28, "name": "Inspiring Vantage"},
+              {"id": 39, "name": "Inspiring Vantage"}
+            ]
+          },
+          {"hand_cards": []}
+        ]
+      },
+      "objects": {
+        "23": {"controller": 0, "name": "Inspiring Vantage", "zone": "Hand"},
+        "28": {"controller": 0, "name": "Inspiring Vantage", "zone": "Hand"},
+        "39": {"controller": 0, "name": "Inspiring Vantage", "zone": "Hand"},
+        "56": {
+          "abilities": [{"index": 0, "kind": "Activated", "text": "Equip {2}"}],
+          "controller": 0,
+          "name": "Basilisk Collar",
+          "zone": "Battlefield"
+        }
+      },
+      "candidates": [
+        {"type": "PassPriority"},
+        {"data": {"card_id": 23, "object_id": 23}, "type": "PlayLand"},
+        {"data": {"card_id": 28, "object_id": 28}, "type": "PlayLand"},
+        {"data": {"card_id": 39, "object_id": 39}, "type": "PlayLand"},
+        {
+          "data": {"ability_index": 0, "source_id": 56},
+          "type": "ActivateAbility"
+        }
+      ]
+    },
+    "xmage": {
+      "action_pending": true,
+      "action_type": "GAME_SELECT",
+      "message": "Play spells and abilities",
+      "board": [
+        {
+          "name": "DiffA",
+          "is_you": true,
+          "hand": [
+            {"name": "Basilisk Collar", "id": "p4"},
+            {"name": "Inspiring Vantage", "id": "p7"},
+            {"name": "Inspiring Vantage", "id": "p8"},
+            {"name": "Inspiring Vantage", "id": "p9"}
+          ],
+          "battlefield": [
+            {"name": "Basilisk Collar", "id": "p3"},
+            {"name": "Dwarven Mauler", "id": "p5"},
+            {"name": "Inspiring Vantage", "id": "p6"}
+          ]
+        },
+        {"name": "DiffB", "is_you": false, "hand": []}
+      ],
+      "choices": [
+        {
+          "name": "Basilisk Collar",
+          "index": 0,
+          "action": "activate",
+          "playable_abilities": [
+            "Equip {2} <i>({2}: Attach to target creature you ..."
+          ],
+          "id": "p3"
+        },
+        {
+          "name": "Inspiring Vantage",
+          "index": 1,
+          "action": "land",
+          "id": "p7"
+        },
+        {
+          "name": "Inspiring Vantage",
+          "index": 2,
+          "action": "land",
+          "id": "p8"
+        },
+        {
+          "name": "Inspiring Vantage",
+          "index": 3,
+          "action": "land",
+          "id": "p9"
+        }
+      ]
+    }
+  }
+}

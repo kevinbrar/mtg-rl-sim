@@ -1,0 +1,87 @@
+{
+  "source_artifact": "runs/20261110T043821774195Z/divergence.json",
+  "prompts": {
+    "phase": {
+      "waiting_for": {
+        "data": {
+          "cards": [67, 91, 63, 118, 108, 112, 83, 69],
+          "count": 1,
+          "player": 1
+        },
+        "type": "DiscardToHandSize"
+      },
+      "objects": {
+        "63": {"controller": 1, "name": "Gigantosaurus", "zone": "Hand"},
+        "67": {"controller": 1, "name": "Forest", "zone": "Hand"},
+        "69": {"controller": 1, "name": "Forest", "zone": "Hand"},
+        "83": {"controller": 1, "name": "Thornweald Archer", "zone": "Hand"},
+        "91": {"controller": 1, "name": "Bear Cub", "zone": "Hand"},
+        "108": {"controller": 1, "name": "Magnigoth Sentry", "zone": "Hand"},
+        "112": {"controller": 1, "name": "Tajuru Pathwarden", "zone": "Hand"},
+        "118": {"controller": 1, "name": "Quakestrider Ceratops", "zone": "Hand"}
+      },
+      "state": {
+        "players": [
+          {"id": 0, "hand_cards": []},
+          {
+            "id": 1,
+            "hand_cards": [
+              {"id": 63, "name": "Gigantosaurus"},
+              {"id": 67, "name": "Forest"},
+              {"id": 69, "name": "Forest"},
+              {"id": 83, "name": "Thornweald Archer"},
+              {"id": 91, "name": "Bear Cub"},
+              {"id": 108, "name": "Magnigoth Sentry"},
+              {"id": 112, "name": "Tajuru Pathwarden"},
+              {"id": 118, "name": "Quakestrider Ceratops"}
+            ]
+          }
+        ]
+      },
+      "candidates": [
+        {"data": {"cards": [63]}, "type": "SelectCards"},
+        {"data": {"cards": [67]}, "type": "SelectCards"},
+        {"data": {"cards": [69]}, "type": "SelectCards"},
+        {"data": {"cards": [83]}, "type": "SelectCards"},
+        {"data": {"cards": [91]}, "type": "SelectCards"},
+        {"data": {"cards": [108]}, "type": "SelectCards"},
+        {"data": {"cards": [112]}, "type": "SelectCards"},
+        {"data": {"cards": [118]}, "type": "SelectCards"}
+      ]
+    },
+    "xmage": {
+      "action_pending": true,
+      "action_type": "GAME_TARGET",
+      "message": "Select a card to discard",
+      "response_type": "index",
+      "context": "T2 End/Cleanup (DiffB)",
+      "board": [
+        {
+          "hand": [
+            {"name": "Bear Cub", "id": "p10"},
+            {"name": "Forest", "id": "p23"},
+            {"name": "Forest", "id": "p25"},
+            {"name": "Gigantosaurus", "id": "p12"},
+            {"name": "Magnigoth Sentry", "id": "p13"},
+            {"name": "Quakestrider Ceratops", "id": "p14"},
+            {"name": "Tajuru Pathwarden", "id": "p15"},
+            {"name": "Thornweald Archer", "id": "p16"}
+          ],
+          "is_you": true,
+          "name": "DiffB"
+        },
+        {"hand": [], "is_you": false, "name": "DiffA"}
+      ],
+      "choices": [
+        {"name": "Bear Cub", "target_type": "card", "index": 0, "id": "p10"},
+        {"name": "Forest", "target_type": "card", "index": 1, "id": "p23"},
+        {"name": "Forest", "target_type": "card", "index": 2, "id": "p25"},
+        {"name": "Gigantosaurus", "target_type": "card", "index": 3, "id": "p12"},
+        {"name": "Magnigoth Sentry", "target_type": "card", "index": 4, "id": "p13"},
+        {"name": "Quakestrider Ceratops", "target_type": "card", "index": 5, "id": "p14"},
+        {"name": "Tajuru Pathwarden", "target_type": "card", "index": 6, "id": "p15"},
+        {"name": "Thornweald Archer", "target_type": "card", "index": 7, "id": "p16"}
+      ]
+    }
+  }
+}

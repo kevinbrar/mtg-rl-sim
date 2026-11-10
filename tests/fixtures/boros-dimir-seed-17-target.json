@@ -1,0 +1,113 @@
+{
+  "prompts": {
+    "phase": {
+      "owner": 0,
+      "state": {
+        "players": []
+      },
+      "waiting_for": {
+        "type": "TargetSelection",
+        "data": {
+          "player": 0
+        }
+      },
+      "objects": {
+        "2": {
+          "name": "Dwarven Mauler",
+          "zone": "Battlefield",
+          "controller": 0
+        },
+        "23": {
+          "name": "Dwarven Mauler",
+          "zone": "Battlefield",
+          "controller": 0
+        },
+        "25": {
+          "name": "Dwarven Mauler",
+          "zone": "Battlefield",
+          "controller": 0
+        }
+      },
+      "candidates": [
+        {
+          "type": "ChooseTarget",
+          "data": {
+            "target": {
+              "Object": 2
+            }
+          }
+        },
+        {
+          "type": "ChooseTarget",
+          "data": {
+            "target": {
+              "Object": 23
+            }
+          }
+        },
+        {
+          "type": "ChooseTarget",
+          "data": {
+            "target": {
+              "Object": 25
+            }
+          }
+        }
+      ]
+    },
+    "xmage": {
+      "action_type": "GAME_TARGET",
+      "context": "T3 Postcombat Main/Postcombat Main (DiffA) YOUR_MAIN",
+      "message": "Select a creature you control",
+      "choices": [
+        {
+          "name": "Dwarven Mauler",
+          "target_type": "permanent",
+          "index": 0,
+          "id": "p5"
+        },
+        {
+          "name": "Dwarven Mauler",
+          "target_type": "permanent",
+          "index": 1,
+          "id": "p28"
+        },
+        {
+          "name": "Dwarven Mauler",
+          "target_type": "permanent",
+          "index": 2,
+          "id": "p43"
+        }
+      ],
+      "board": [
+        {
+          "name": "DiffA",
+          "is_you": true,
+          "battlefield": [
+            {
+              "name": "Dwarven Mauler"
+            },
+            {
+              "name": "Dwarven Mauler"
+            },
+            {
+              "name": "Dwarven Mauler"
+            }
+          ]
+        },
+        {
+          "name": "DiffB",
+          "is_you": false,
+          "battlefield": [
+            {
+              "name": "Dream Beavers"
+            },
+            {
+              "name": "Dream Beavers"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

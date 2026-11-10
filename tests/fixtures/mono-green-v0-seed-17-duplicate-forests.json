@@ -1,0 +1,107 @@
+{
+  "source_artifact": "runs/20261110T042903165466Z/divergence.json",
+  "prompts": {
+    "phase": {
+      "waiting_for": {
+        "data": {
+          "player": 1
+        },
+        "type": "Priority"
+      },
+      "objects": {
+        "75": {
+          "controller": 1,
+          "name": "Forest",
+          "zone": "Hand"
+        },
+        "109": {
+          "controller": 1,
+          "name": "Forest",
+          "zone": "Hand"
+        }
+      },
+      "state": {
+        "players": [
+          {
+            "id": 0,
+            "hand_cards": []
+          },
+          {
+            "id": 1,
+            "hand_cards": [
+              {
+                "id": 109,
+                "name": "Forest"
+              },
+              {
+                "id": 75,
+                "name": "Forest"
+              }
+            ]
+          }
+        ]
+      },
+      "candidates": [
+        {
+          "type": "PassPriority"
+        },
+        {
+          "data": {
+            "card_id": 75,
+            "object_id": 75
+          },
+          "type": "PlayLand"
+        },
+        {
+          "data": {
+            "card_id": 109,
+            "object_id": 109
+          },
+          "type": "PlayLand"
+        }
+      ]
+    },
+    "xmage": {
+      "action_type": "GAME_SELECT",
+      "board": [
+        {
+          "hand": [
+            {
+              "name": "Bear Cub",
+              "id": "p10"
+            },
+            {
+              "name": "Forest",
+              "id": "p11"
+            },
+            {
+              "name": "Forest",
+              "id": "p23"
+            }
+          ],
+          "is_you": true,
+          "name": "DiffB"
+        },
+        {
+          "hand": [],
+          "is_you": false,
+          "name": "DiffA"
+        }
+      ],
+      "choices": [
+        {
+          "name": "Forest",
+          "index": 0,
+          "action": "land",
+          "id": "p11"
+        },
+        {
+          "name": "Forest",
+          "index": 1,
+          "action": "land",
+          "id": "p23"
+        }
+      ]
+    }
+  }
+}

@@ -5,8 +5,8 @@
 //! Protocol (stdin/stdout, one JSON object per line):
 //!   <- {"type":"new_game","seed":N,"player":{"main_deck":["4 Island",...]},
 //!        "opponent":{"main_deck":[...]}}
-//!   -> {"type":"decision","turn":N,"waiting_for":"Priority","owner":0,"actor":0,
-//!        "candidates":[<serde GameAction>, ...], "state":{...}}
+//!   -> {"type":"decision","turn":N,"waiting_for":<serde WaitingFor>,"owner":0,"actor":0,
+//!        "candidates":[<serde GameAction>, ...],"objects":{...},"state":{...}}
 //!   <- {"type":"choose","index":K}
 //!   -> {"type":"applied","ok":true,"reason":"action"}  (then next "decision")
 //!   -> {"type":"game_over","winner":0|"draw"|null,"turns":N}
@@ -188,13 +188,48 @@ fn keep_opening_hands(state: &mut GameState) {
     );
 }
 
-fn waiting_for_label(state: &GameState) -> String {
-    // Debug-print the discriminant only (drop payloads for a stable label).
-    let dbg = format!("{:?}", state.waiting_for);
-    dbg.split([' ', '{', '('])
-        .next()
-        .unwrap_or(&dbg)
-        .to_string()
+fn objects_for_candidates(
+    state: &GameState,
+    candidates: &[engine::types::actions::GameAction],
+) -> Value {
+    let mut objects = serde_json::Map::new();
+    for id in candidates.iter().flat_map(GameAction::related_object_ids) {
+        let object = state
+            .objects
+            .get(&id)
+            .expect("candidate object reference must exist in game state");
+        let abilities: Vec<Value> = candidates
+            .iter()
+            .filter_map(|candidate| match candidate {
+                GameAction::ActivateAbility {
+                    source_id,
+                    ability_index,
+                    ..
+                } if *source_id == id => {
+                    let ability = object
+                        .abilities
+                        .get(*ability_index)
+                        .expect("candidate ability index must exist on its source");
+                    Some(json!({
+                        "index": ability_index,
+                        "kind": format!("{:?}", ability.kind),
+                        "text": ability.description.as_deref(),
+                    }))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut metadata = json!({
+            "name": object.name,
+            "zone": format!("{:?}", object.zone),
+            "controller": object.controller.0,
+        });
+        if !abilities.is_empty() {
+            metadata["abilities"] = json!(abilities);
+        }
+        objects.insert(id.0.to_string(), metadata);
+    }
+    Value::Object(objects)
 }
 
 fn emit(out: &mut impl Write, v: Value) {
@@ -260,7 +295,7 @@ fn run_game(out: &mut impl Write, inp: &mut impl BufRead, db: &CardDatabase, spe
                 json!({
                     "type": "blocked",
                     "reason": "no acting players",
-                    "waiting_for": waiting_for_label(&state),
+                    "waiting_for": serde_json::to_value(&state.waiting_for).unwrap(),
                     "state": snapshot(&state),
                 }),
             );
@@ -268,6 +303,11 @@ fn run_game(out: &mut impl Write, inp: &mut impl BufRead, db: &CardDatabase, spe
         }
         let owner = actors[0];
         let contract = AiDecisionContract::issue(&state, owner);
+        let actions: Vec<GameAction> = contract
+            .candidates
+            .iter()
+            .map(|candidate| candidate.action.clone())
+            .collect();
         let candidates: Vec<Value> = contract
             .candidates
             .iter()
@@ -278,10 +318,11 @@ fn run_game(out: &mut impl Write, inp: &mut impl BufRead, db: &CardDatabase, spe
             json!({
                 "type": "decision",
                 "turn": state.turn_number,
-                "waiting_for": waiting_for_label(&state),
+                "waiting_for": serde_json::to_value(&state.waiting_for).unwrap(),
                 "owner": contract.semantic_owner.0,
                 "actor": contract.authorized_actor.0,
                 "candidates": candidates,
+                "objects": objects_for_candidates(&state, &actions),
                 "state": snapshot(&state),
             }),
         );

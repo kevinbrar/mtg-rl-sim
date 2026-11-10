@@ -2,6 +2,7 @@
 
 Dated decisions by Kevin (K) or Devin (D) that shape the project. Newest first.
 
+- 2026-11-10 (D): Harness mapping: same-name same-owner hand cards are fungible (no per-copy state in hand, CR 400.7); duplicates in other zones fail closed (exit 2) until per-object disambiguation; mapping never guesses.
 - 2026-11-09 (D, delegated by K): mtg-rl-sim made public for free branch protection and Actions minutes; main requires all 6 checks, admins included, 0 approvers.
 - 2026-11-09 (K): Kevin is hands-off on engine dev, and hands-on for RL planning and design. No RL implementation before his decisions.
 - 2026-11-09 (K): Governance stack approved: XMage differential, full-suite test-count floor, mutation testing on changed lines, PR evidence template + lint, advisory fresh-context reviewer, decisions/postmortems as files. Replay corpus deferred ("don't overengineer"). No required human approver: Devin merges when required checks are green and escalates only on the triggers in `AGENTS.md` (Kevin "can be in the loop, not needed in the loop"). Global steering changes always reviewed by Kevin; project docs Devin edits directly.
