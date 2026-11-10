@@ -8,9 +8,12 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+import diff_game
 
 from diff_game import (
     ObjectBindings,
+    DIFF_MAX_INTERACTIONS_PER_TURN,
+    _mage_bench_external_players,
     _legal_action_diff,
     _matching_trivial_priority_stop,
     _phase_activation_set,
@@ -27,6 +30,7 @@ from diff_game import (
     _policy_candidate_v0,
     policy_candidate,
     summary_exit_code,
+    _sync_xmage_to_decision,
     UnmappedPromptError,
 )
 
@@ -310,6 +314,144 @@ def test_trivial_priority_stop_does_not_pass_activated_ability_prompt() -> None:
     ]
 
     assert _matching_trivial_priority_stop(xmage, decision, skipped_stops) is None
+
+
+def test_blocker_prompt_does_not_match_priority_or_pass(monkeypatch) -> None:
+    decision = {
+        "owner": 1,
+        "state": {"turn": 6, "active_player": 1, "phase": "PostCombatMain"},
+        "candidates": [{"type": "PassPriority"}, {"type": "PlayLand"}],
+    }
+    xmage = {
+        "action_pending": True,
+        "action_type": "GAME_SELECT",
+        "response_type": "select",
+        "stop_reason": "combat",
+        "combat_phase": "blockers",
+        "message": "Select blockers",
+        "context": "T3 Combat/Declare Blockers (DiffB)",
+        "game_seq": 131,
+        "board": [
+            {"name": "DiffA", "is_active": False, "is_you": True},
+            {"name": "DiffB", "is_active": True, "is_you": False},
+        ],
+        "choices": [{"id": "p5", "name": "Dwarven Mauler"}],
+    }
+    skipped_stops = [
+        {
+            "kind": "priority",
+            "turn": 6,
+            "active_player": "DiffB",
+            "step": "declareblockers",
+        }
+    ]
+    calls = []
+
+    async def call(_session, method, _args=None):
+        calls.append(method)
+        return xmage
+
+    monkeypatch.setattr(diff_game, "_call", call)
+
+    assert _matching_trivial_priority_stop(xmage, decision, skipped_stops) is None
+    result, point_diff = asyncio.run(
+        _sync_xmage_to_decision(
+            [object()],
+            decision,
+            {},
+            {},
+            skipped_stops,
+            [],
+            timeout=0.1,
+        )
+    )
+
+    assert result == xmage
+    assert point_diff == {
+        "phase": {
+            "turn": 6,
+            "active_player": "DiffB",
+            "actor": "DiffB",
+            "step": "postcombatmain",
+        },
+        "xmage": {
+            "turn": 6,
+            "active_player": "DiffB",
+            "actor": "DiffA",
+            "step": "declareblockers",
+        },
+    }
+    assert calls == ["get_action_choices"]
+
+
+def test_mage_bench_config_sets_loop_guard_limit_for_both_external_players() -> None:
+    players = _mage_bench_external_players([Path("a.dck"), Path("b.dck")])
+
+    assert [player["name"] for player in players] == ["DiffA", "DiffB"]
+    assert all(
+        player["max_interactions_per_turn"] == DIFF_MAX_INTERACTIONS_PER_TURN
+        for player in players
+    )
+
+
+@pytest.mark.parametrize(
+    "guard_result",
+    [
+        {
+            "success": True,
+            "action_pending": False,
+            "action_taken": "auto_passed_loop_detected",
+            "warning": "Too many interactions this turn. Auto-passing.",
+        },
+        {
+            "success": True,
+            "action_pending": False,
+            "warning": "Loop detected; auto-passing.",
+        },
+    ],
+)
+def test_xmage_loop_guard_result_diverges_without_another_pass(
+    monkeypatch, guard_result
+) -> None:
+    calls = []
+
+    async def call(_session, method, _args=None):
+        calls.append(method)
+        return guard_result
+
+    monkeypatch.setattr(diff_game, "_call", call)
+    result, diff = asyncio.run(
+        _sync_xmage_to_decision(
+            [object(), object()],
+            {"owner": 0},
+            {},
+            {},
+            [],
+            [],
+        )
+    )
+
+    assert result == guard_result
+    assert diff["kind"] == "xmage_loop_guard"
+    assert calls == ["get_action_choices"]
+
+
+def test_unknown_non_pending_xmage_status_raises(monkeypatch) -> None:
+    async def call(_session, _method, _args=None):
+        return {"action_pending": False, "action_taken": "unexpected"}
+
+    monkeypatch.setattr(diff_game, "_call", call)
+    with pytest.raises(UnmappedPromptError, match="non-pending result"):
+        asyncio.run(
+            _sync_xmage_to_decision(
+                [object(), object()],
+                {"owner": 0},
+                {},
+                {},
+                [],
+                [],
+            )
+        )
 
 
 def test_duplicate_activation_matches_are_unmapped_with_both_choice_lists() -> None:

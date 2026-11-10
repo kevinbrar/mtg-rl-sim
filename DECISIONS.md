@@ -2,6 +2,7 @@
 
 Dated decisions by Kevin (K) or Devin (D) that shape the project. Newest first.
 
+- 2026-11-10 (D): Differential runs set Mage-Bench's per-player interaction limit to 100,000; deterministic oracle play must not be auto-passed by an LLM-pilot loop guard.
 - 2026-11-10 (D): Phase `ScryChoice` `SelectCards.cards` is the keep-on-top set (engine_resolution_choices.rs:2296–2323; CR 701.22a); the driver maps its complement to XMage bottom selections and fails closed outside scry 1.
 - 2026-11-10 (D): Battlefield object mappings are bijective between `(Phase ObjectId, incarnation)` and XMage short IDs. Phase reuses an ObjectId as storage identity across zone changes, so the incarnation counter must be serialized and checked when pruning/rebinding (CR 400.7). Unbound duplicates are matched only when their observable per-object signatures agree; exact state ties are rules-equivalent for this mapping. XMage damage/attachment serialization is bridge-only and uses the shared stable-short-ID locator. Residual risk: unobserved per-object effects, such as temporary effects not reflected in current power/toughness, can differ despite equal signatures; bindings preserve later identity and projected state comparison can catch downstream divergence.
 - 2026-11-10 (K): Harness-only pull requests may skip the 29k phase-engine suite within `test-full`; Python compilation and tests always run, the required check remains required, and non-pull-request events or failed/empty scope detection run the full suite.

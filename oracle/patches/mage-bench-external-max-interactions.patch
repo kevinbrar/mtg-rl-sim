@@ -1,0 +1,107 @@
+diff --git a/src/magebench/orchestration/batch_coordination.py b/src/magebench/orchestration/batch_coordination.py
+index 62a94c01..19313afc 100644
+--- a/src/magebench/orchestration/batch_coordination.py
++++ b/src/magebench/orchestration/batch_coordination.py
+@@ -215,2 +215,3 @@ def setup_game(
+                     game_dir,
++                    max_interactions_per_turn=external_player.max_interactions_per_turn,
+                 )
+diff --git a/src/magebench/orchestration/config.py b/src/magebench/orchestration/config.py
+index 366af5ad..b30b81b8 100644
+--- a/src/magebench/orchestration/config.py
++++ b/src/magebench/orchestration/config.py
+@@ -76,2 +76,3 @@ class ExternalPlayer:
+     deck_strategy: str | None = None
++    max_interactions_per_turn: int | None = None
+ 
+@@ -694,3 +695,11 @@ class Config:
+                 elif player_type == "external":
+-                    self.external_players.append(ExternalPlayer(name=name, deck=deck))
++                    self.external_players.append(
++                        ExternalPlayer(
++                            name=name,
++                            deck=deck,
++                            max_interactions_per_turn=player.get(
++                                "max_interactions_per_turn"
++                            ),
++                        )
++                    )
+                 elif player_type == "cpu":
+diff --git a/src/magebench/orchestration/game_processes.py b/src/magebench/orchestration/game_processes.py
+index 012e578b..4ba1f09f 100644
+--- a/src/magebench/orchestration/game_processes.py
++++ b/src/magebench/orchestration/game_processes.py
+@@ -261,2 +261,3 @@ def start_external_client(
+     game_dir: Path,
++    max_interactions_per_turn: int | None = None,
+ ) -> subprocess.Popen:
+@@ -280,2 +281,4 @@ def start_external_client(
+         args.extend(["--deck", str(project_root / deck_path)])
++    if max_interactions_per_turn is not None:
++        args.extend(["--max-interactions-per-turn", str(max_interactions_per_turn)])
+ 
+diff --git a/src/magebench/pilot/external.py b/src/magebench/pilot/external.py
+index 3263fc44..1f215ab2 100644
+--- a/src/magebench/pilot/external.py
++++ b/src/magebench/pilot/external.py
+@@ -20,2 +20,3 @@ async def run_external(
+     deck_path: Path | None,
++    max_interactions_per_turn: int | None = None,
+ ) -> None:
+@@ -27,2 +28,3 @@ async def run_external(
+         error_log_path=game_dir / f"{username}_errors.log",
++        max_interactions_per_turn=max_interactions_per_turn,
+     )
+@@ -50,2 +52,3 @@ def main() -> int:
+     parser.add_argument("--deck", type=Path)
++    parser.add_argument("--max-interactions-per-turn", type=int)
+     args = parser.parse_args()
+@@ -59,2 +62,3 @@ def main() -> int:
+             deck_path=args.deck.resolve() if args.deck else None,
++            max_interactions_per_turn=args.max_interactions_per_turn,
+         )
+diff --git a/tests/test_bridge_transport.py b/tests/test_bridge_transport.py
+index e1f9fa5b..d0a1a312 100644
+--- a/tests/test_bridge_transport.py
++++ b/tests/test_bridge_transport.py
+@@ -59,2 +59,13 @@ def test_build_bridge_launch_args_for_pilot_with_logs() -> None:
+ 
++def test_build_bridge_launch_args_for_external_max_interactions() -> None:
++    launch_args = bridge_transport.build_bridge_launch_args(
++        server="localhost",
++        port=17171,
++        username="DiffA",
++        max_interactions_per_turn=100000,
++    )
++
++    assert "-Dxmage.bridge.maxInteractionsPerTurn=100000" in launch_args.mvn_args
++
++
+ def test_build_bridge_launch_args_for_replay_with_table_id() -> None:
+diff --git a/tests/test_external_pilot.py b/tests/test_external_pilot.py
+index f7eb793d..01db4a59 100644
+--- a/tests/test_external_pilot.py
++++ b/tests/test_external_pilot.py
+@@ -16,3 +16,10 @@ def test_external_player_reserves_bridge_seat(tmp_path: Path) -> None:
+                 "logDir": str(log_dir),
+-                "players": [{"type": "external", "name": "DiffA", "deck": "decks/green.dck"}],
++                "players": [
++                    {
++                        "type": "external",
++                        "name": "DiffA",
++                        "deck": "decks/green.dck",
++                        "max_interactions_per_turn": 100000,
++                    }
++                ],
+             }
+@@ -26,3 +33,9 @@ def test_external_player_reserves_bridge_seat(tmp_path: Path) -> None:
+     assert players == [{"type": "bridge", "name": "DiffA", "deck": "decks/green.dck"}]
+-    assert config.external_players == [ExternalPlayer(name="DiffA", deck="decks/green.dck")]
++    assert config.external_players == [
++        ExternalPlayer(
++            name="DiffA",
++            deck="decks/green.dck",
++            max_interactions_per_turn=100000,
++        )
++    ]
+     assert config.log_dir == log_dir
