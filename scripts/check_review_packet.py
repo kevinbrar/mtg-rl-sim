@@ -25,6 +25,10 @@ ENGINE_PATHS = (
     "driver/diff_game.py",
 )
 REQUIRED_EVIDENCE_COLUMNS = ("claim", "check", "result", "artifact", "independent")
+CARDS_NONE_PATCH_OR_DATA_ERROR = (
+    "phase-patches/card-data changes need per-card XMage diffs (harness v1); "
+    "cards: none is not accepted for them"
+)
 
 
 def _section_lines(body: str, heading: str) -> list[str] | None:
@@ -66,29 +70,38 @@ def _header_name(cell: str) -> str:
 
 
 def _is_engine_path(path: str) -> bool:
+    return path == "phase" or path.startswith(ENGINE_PATHS) or _is_card_data_path(path)
+
+
+def _is_card_data_path(path: str) -> bool:
     return (
-        path == "phase"
-        or path.startswith(ENGINE_PATHS)
-        or bool(re.search(r"(?:^|/)card-data(?:-[^/]*)?\.json$", path, re.IGNORECASE))
+        re.fullmatch(r"(?:[^/]+/)*card-data[^/]*\.json", path, re.IGNORECASE)
+        is not None
     )
 
 
-def _result_is_verified(result: str) -> bool:
-    positive = re.search(r"\b(?:verified|pass(?:ed)?)\b", result, re.IGNORECASE)
-    negative = re.search(
-        r"\b(?:not|never|un)\s+(?:verified|pass(?:ed)?)\b",
-        result,
+def _is_per_card_xmage_path(path: str) -> bool:
+    return path.startswith("phase-patches/") or _is_card_data_path(path)
+
+
+def _result_has_evidence(result: str) -> bool:
+    value = result.strip()
+    if not value:
+        return False
+    not_run = re.fullmatch(
+        r"(?:not[\s_-]*run|skipped|skip|n\s*/\s*a|not applicable)"
+        r"(?:\s*[:(\-—–](?P<reason>.*))?",
+        value,
         re.IGNORECASE,
     )
-    return positive is not None and negative is None
+    return not_run is None or bool(re.search(r"\d", not_run.group("reason") or ""))
 
 
 def _has_artifact_reference(artifact: str) -> bool:
     return bool(
         re.search(r"https?://\S+|\[[^\]]+\]\([^)]+\)", artifact, re.IGNORECASE)
         or re.search(
-            r"(?:^|[\s`])(?:/|\.{1,2}/)?(?:[\w.@+-]+/)*[\w.@+-]+\."
-            r"(?:log|txt|out|json|md|csv|png|html|xml|patch|zip|pdf|diff)\b",
+            r"(?:^|[\s`])(?:/|\.{1,2}/)?(?:[\w.@+-]+/)*[\w.@+-]+\.[A-Za-z][\w+-]*\b",
             artifact,
             re.IGNORECASE,
         )
@@ -123,6 +136,14 @@ def _evidence_table(
     return None
 
 
+def parse_cards_line(body: str) -> str | None:
+    for line in body.splitlines():
+        match = re.match(r"^\s*cards:\s*(.*)$", line, re.IGNORECASE)
+        if match is not None:
+            return match.group(1).strip()
+    return None
+
+
 def validate_review_packet(body: str, changed_files: Sequence[str]) -> list[str]:
     errors: list[str] = []
     for heading in REQUIRED_SECTIONS:
@@ -147,12 +168,16 @@ def validate_review_packet(body: str, changed_files: Sequence[str]) -> list[str]
                 continue
             result = row[indexes["result"]].strip()
             artifact = row[indexes["artifact"]].strip()
-            if _result_is_verified(result) and not _has_artifact_reference(artifact):
+            if _result_has_evidence(result) and not _has_artifact_reference(artifact):
                 errors.append(
-                    f"Evidence table row {row_number} has a verified/pass result but "
+                    f"Evidence table row {row_number} has a result but "
                     "Artifact must contain a link or path"
                 )
-            if row[indexes["independent"]].strip().casefold().startswith("y"):
+            if (
+                row[indexes["independent"]].strip().casefold().startswith("y")
+                and _result_has_evidence(result)
+                and _has_artifact_reference(artifact)
+            ):
                 independent_yes = True
 
         needs_independent = any(_is_engine_path(path) for path in changed_files)
@@ -163,15 +188,10 @@ def validate_review_packet(body: str, changed_files: Sequence[str]) -> list[str]
             )
 
     if any(_is_engine_path(path) for path in changed_files):
-        cards_lines = [
-            re.match(r"^\s*cards:\s*(.*)$", line, re.IGNORECASE)
-            for line in body.splitlines()
-        ]
-        cards_lines = [match for match in cards_lines if match is not None]
-        if not cards_lines:
+        cards = parse_cards_line(body)
+        if cards is None:
             errors.append("Engine-path changes require a cards: line")
         else:
-            cards = cards_lines[0].group(1).strip()
             entries = [entry.strip() for entry in cards.split(",")]
             if not cards or (
                 cards.casefold() != "none"
@@ -183,6 +203,10 @@ def validate_review_packet(body: str, changed_files: Sequence[str]) -> list[str]
                 errors.append(
                     "cards: must be `none` or a comma-separated list of card names"
                 )
+            if cards.casefold() == "none" and any(
+                _is_per_card_xmage_path(path) for path in changed_files
+            ):
+                errors.append(CARDS_NONE_PATCH_OR_DATA_ERROR)
 
     return errors
 

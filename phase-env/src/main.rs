@@ -28,17 +28,10 @@ use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::player::PlayerId;
 use engine::types::zones::Zone;
-use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 
 const MAX_DECISIONS: usize = 20_000;
-
-#[derive(Serialize)]
-struct Out {
-    #[serde(flatten)]
-    v: Value,
-}
 
 fn name_of(state: &GameState, id: &engine::types::identifiers::ObjectId) -> String {
     state

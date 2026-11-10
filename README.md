@@ -45,7 +45,8 @@ GitHub Actions checks enforce the repository contract in `AGENTS.md`:
 - `clippy` denies Rust warnings, runs Ruff lint, and builds the release
   `phase-env` binary.
 - `test-full` applies the local phase patches, runs the full engine suite and
-  Python tests, and enforces the floor in `ci/test-floor.txt`.
+  Python tests, enforces the floor in `ci/test-floor.txt`, and downloads and
+  SHA-256 verifies the pinned patched card-data release asset.
 - `xmage-diff` fails closed on engine/card changes until the differential
   harness v1 is ready.
 - `mutants` tests changed engine lines on pull requests; its allowed survivor
@@ -53,8 +54,7 @@ GitHub Actions checks enforce the repository contract in `AGENTS.md`:
   artifact.
 - `packet-lint` validates the PR template sections and evidence table.
 
-CI warns when the generated patched card-data export is absent; export-wide
-census tests that need it can otherwise return early.
+When card data is regenerated, publish a new release and update `ci/card-data.txt`.
 
 ## Build & run
 

@@ -13,7 +13,10 @@ cards: none
 <!--
 | Claim | Check (exact command) | Result (exact count/value) | Artifact | Independent (Y/N, producer) |
 | --- | --- | --- | --- | --- |
-| Example claim | python -m pytest tests -q | passed: 3 | artifacts/test-results.log | N, author test |
+| Example claim | python -m pytest tests -q | 38 passed | artifacts/test-results.log | N, author test |
+
+Every non-empty Result except not run/skipped/n/a needs an Artifact path or link.
+For engine changes, an Independent: Y row only counts with a real Result and Artifact.
 -->
 
 ## Not verified

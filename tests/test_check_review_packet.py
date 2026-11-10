@@ -1,6 +1,10 @@
 import pytest
 
-from scripts.check_review_packet import REQUIRED_SECTIONS, validate_review_packet
+from scripts.check_review_packet import (
+    REQUIRED_SECTIONS,
+    parse_cards_line,
+    validate_review_packet,
+)
 
 
 DEFAULT_ROW = (
@@ -86,45 +90,87 @@ def test_evidence_table_requires_each_header(header: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "result", ("verified", "pass", "passed", "Passed with warnings")
+    "result",
+    (
+        "verified",
+        "pass",
+        "passed",
+        "Passed with warnings",
+        "success: 29417",
+        "needs follow-up",
+        "skipped 2, passed 38",
+        "skipped: 2, passed 38",
+    ),
 )
 @pytest.mark.parametrize("artifact", ("", "ran focused test"))
-def test_verified_results_require_an_artifact_path_or_link(
+def test_results_require_an_artifact_path_or_link(
     result: str,
     artifact: str,
 ) -> None:
     row = f"Parser behavior | focused test | {result} | {artifact} | N"
     errors = validate_review_packet(packet(evidence_rows=(row,)), ["README.md"])
     assert (
-        "Evidence table row 1 has a verified/pass result but Artifact must contain a link or path"
+        "Evidence table row 1 has a result but Artifact must contain a link or path"
         in errors
     )
 
 
 @pytest.mark.parametrize(
     "artifact",
-    ("artifacts/engine-tests.log", "[test log](https://example.test/engine.log)"),
+    (
+        "artifacts/engine-tests.log",
+        "artifacts/run@v1.log",
+        "/home/ubuntu/x.log",
+        "phase-patches/0017-foo.patch",
+        "tests/test_check_review_packet.py",
+        ".github/workflows/ci.yml",
+        "[test log](https://example.test/engine.log)",
+    ),
 )
-def test_verified_results_accept_artifact_paths_and_links(artifact: str) -> None:
+def test_results_accept_artifact_paths_and_links(artifact: str) -> None:
     row = f"Parser behavior | focused test | passed | {artifact} | N"
     assert validate_review_packet(packet(evidence_rows=(row,)), ["README.md"]) == []
 
 
-def test_unverified_result_does_not_require_an_artifact() -> None:
-    row = "Parser behavior | focused test | not run |  | N"
+def test_version_like_text_is_not_an_artifact_path() -> None:
+    row = "Parser behavior | focused test | passed | v1.0 pending | N"
+    errors = validate_review_packet(packet(evidence_rows=(row,)), ["README.md"])
+    assert (
+        "Evidence table row 1 has a result but Artifact must contain a link or path"
+        in errors
+    )
+
+
+@pytest.mark.parametrize(
+    "result",
+    (
+        "not run",
+        "not run: needs runner",
+        "Skipped",
+        "skipped (no XMage)",
+        "n/a",
+        "N/A",
+        "not applicable",
+    ),
+)
+def test_not_run_results_do_not_require_an_artifact(result: str) -> None:
+    row = f"Parser behavior | focused test | {result} |  | N"
+    assert validate_review_packet(packet(evidence_rows=(row,)), ["README.md"]) == []
+
+
+def test_nonpositive_result_with_artifact_is_valid() -> None:
+    row = "Parser behavior | focused test | needs follow-up | artifacts/review.md | N"
     assert validate_review_packet(packet(evidence_rows=(row,)), ["README.md"]) == []
 
 
 @pytest.mark.parametrize(
     "path",
     (
-        "phase-patches/0001-example.patch",
         "phase",
         "phase/crates/engine/src/lib.rs",
         "phase-env/src/main.rs",
         "driver/diff_game.py",
         "oracle/README.md",
-        "card-data.json",
     ),
 )
 def test_engine_paths_require_cards_and_independent_evidence(path: str) -> None:
@@ -147,6 +193,41 @@ def test_engine_path_without_independent_row_fails() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("result", "artifact"),
+    (
+        ("not run", "artifacts/test-results.log"),
+        ("SKIPPED", "artifacts/test-results.log"),
+        ("n/a", "artifacts/test-results.log"),
+        ("passed", ""),
+        ("", "artifacts/test-results.log"),
+    ),
+)
+def test_independent_row_requires_result_and_artifact(
+    result: str,
+    artifact: str,
+) -> None:
+    row = f"Parser behavior | focused test | {result} | {artifact} | Y, reviewer"
+    errors = validate_review_packet(
+        packet(evidence_rows=(row,)), ["phase-env/src/main.rs"]
+    )
+    assert (
+        "Engine-path changes require an Evidence row whose Independent value starts with Y"
+        in errors
+    )
+
+
+def test_independent_row_with_result_and_artifact_counts() -> None:
+    row = (
+        "Parser behavior | fresh-context review | behavior checked "
+        "| artifacts/review.md | Y, reviewer"
+    )
+    assert (
+        validate_review_packet(packet(evidence_rows=(row,)), ["phase-env/src/main.rs"])
+        == []
+    )
+
+
 def test_engine_path_without_cards_line_fails() -> None:
     body = packet(cards="")
     errors = validate_review_packet(body, ["phase-patches/0001-example.patch"])
@@ -162,7 +243,43 @@ def test_cards_line_accepts_names_or_none_case_insensitively(cards: str) -> None
         cards=cards,
         evidence_rows=(DEFAULT_ROW.replace(" | N", " | Y, mutants"),),
     )
-    assert validate_review_packet(body, ["phase-patches/0001-example.patch"]) == []
+    assert validate_review_packet(body, ["phase-env/src/main.rs"]) == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "phase-patches/0031-x.patch",
+        "phase/client/public/card-data.json",
+        "phase/client/public/Card-Data.json",
+    ),
+)
+def test_cards_none_is_rejected_for_patches_and_card_data(path: str) -> None:
+    body = packet(
+        cards="cards: none",
+        evidence_rows=(DEFAULT_ROW.replace(" | N", " | Y, mutants"),),
+    )
+    errors = validate_review_packet(body, [path])
+    assert (
+        "phase-patches/card-data changes need per-card XMage diffs (harness v1); "
+        "cards: none is not accepted for them"
+    ) in errors
+
+
+def test_cards_none_is_allowed_for_phase_env_changes() -> None:
+    body = packet(
+        cards="cards: none",
+        evidence_rows=(DEFAULT_ROW.replace(" | N", " | Y, mutants"),),
+    )
+    assert validate_review_packet(body, ["phase-env/src/main.rs"]) == []
+
+
+def test_card_names_are_allowed_for_phase_patch_changes() -> None:
+    body = packet(
+        cards="cards: Lost in the Maze",
+        evidence_rows=(DEFAULT_ROW.replace(" | N", " | Y, mutants"),),
+    )
+    assert validate_review_packet(body, ["phase-patches/0031-x.patch"]) == []
 
 
 @pytest.mark.parametrize(
@@ -180,3 +297,18 @@ def test_cards_line_must_be_none_or_comma_separated_names(cards: str) -> None:
     )
     errors = validate_review_packet(body, ["phase-patches/0001-example.patch"])
     assert "cards: must be `none` or a comma-separated list of card names" in errors
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    (
+        ("cards: none", "none"),
+        ("## Surfaces\nCards: Forest", "Forest"),
+        ("cards: Forest\ncards: none", "Forest"),
+        ("## Surfaces\nNo card claim", None),
+    ),
+)
+def test_parse_cards_line_returns_the_first_case_insensitive_line(
+    body: str, expected: str | None
+) -> None:
+    assert parse_cards_line(body) == expected
