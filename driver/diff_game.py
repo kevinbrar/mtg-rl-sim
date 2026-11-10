@@ -52,6 +52,8 @@ def normalize_name(value: str) -> str:
 
 
 def summary_exit_code(summary: dict) -> int:
+    if summary.get("status") == "unmapped_prompt":
+        return 2
     winner = summary.get("winner")
     if (
         summary.get("status") not in TERMINAL_STATUSES
@@ -61,6 +63,50 @@ def summary_exit_code(summary: dict) -> int:
     ):
         return 1
     return 0
+
+
+class UnmappedPromptError(RuntimeError):
+    pass
+
+
+def _unmapped_prompt_result(
+    run_dir: Path,
+    run_id: str,
+    seed: int,
+    step: int,
+    reason: str,
+    decision: dict,
+    xmage_result: dict,
+    phase_projection: dict,
+    xmage_projection: dict,
+) -> dict:
+    report = {
+        "run_id": run_id,
+        "seed": seed,
+        "status": "unmapped_prompt",
+        "kind": "unmapped_prompt",
+        "step": step,
+        "reason": reason,
+        "prompts": {
+            "phase": {
+                "state": decision.get("state"),
+                "candidates": decision.get("candidates"),
+            },
+            "xmage": xmage_result,
+        },
+        "last_state": {
+            "phase": phase_projection,
+            "xmage": xmage_projection,
+        },
+    }
+    (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
+    return {
+        "type": "unmapped_prompt",
+        "status": "unmapped_prompt",
+        "run_dir": run_dir,
+        "step": step,
+        "reason": reason,
+    }
 
 
 def expand_deck(path: Path) -> list[str]:
@@ -243,7 +289,7 @@ def policy_candidate(decision: dict, rng: random.Random) -> tuple[int, dict]:
             and not action.get("data", {}).get("assignments")
         ]
         if not empty:
-            raise RuntimeError(f"No no-blockers action in phase candidates: {decision}")
+            raise UnmappedPromptError(f"No no-blockers action in phase candidates: {decision}")
         return empty[0]
 
     supported: list[tuple[int, dict]] = []
@@ -252,7 +298,7 @@ def policy_candidate(decision: dict, rng: random.Random) -> tuple[int, dict]:
         if kind in {"PlayLand", "CastSpell", "PassPriority", "SelectCards"}:
             supported.append((index, action))
     if not supported:
-        raise RuntimeError(f"No supported phase action at decision: {decision}")
+        raise UnmappedPromptError(f"No supported phase action at decision: {decision}")
     return rng.choice(supported)
 
 
@@ -280,7 +326,7 @@ def _trivial_action_index(decision: dict) -> tuple[int, dict]:
             return index, action
         if action.get("type") == "DeclareBlockers" and not action.get("data", {}).get("assignments"):
             return index, action
-    raise RuntimeError(f"Trivial phase decision has no pass or empty combat action: {decision}")
+    raise UnmappedPromptError(f"Trivial phase decision has no pass or empty combat action: {decision}")
 
 
 def _card_action_set(decision: dict) -> Counter:
@@ -298,7 +344,7 @@ def _card_action_set(decision: dict) -> Counter:
         object_id = data.get("object_id", data.get("card_id"))
         name = names_by_id.get(object_id)
         if name is None:
-            raise RuntimeError(f"Could not map phase candidate to hand card: {action}, {decision['state']}")
+            raise UnmappedPromptError(f"Could not map phase candidate to hand card: {action}, {decision['state']}")
         actions.append(("land" if kind == "PlayLand" else "cast", normalize_name(name)))
     return Counter(actions)
 
@@ -772,7 +818,7 @@ async def _apply_xmage_action(
             None,
         )
         if card_name is None:
-            raise RuntimeError(f"Could not map phase object {object_id} to a hand card: {decision['state']}")
+            raise UnmappedPromptError(f"Could not map phase object {object_id} to a hand card: {decision['state']}")
         desired_action = "land" if kind == "PlayLand" else "cast"
         matching = [
             choice
@@ -781,24 +827,24 @@ async def _apply_xmage_action(
             and choice.get("action") == desired_action
         ]
         if not matching:
-            raise RuntimeError(f"No XMage {desired_action} choice for {card_name}: {xmage_result}")
+            raise UnmappedPromptError(f"No XMage {desired_action} choice for {card_name}: {xmage_result}")
         choice = matching[0]
         return asyncio.create_task(_call(session, "choose_action", {"choice": str(choice["index"])}))
     if kind == "SelectCards":
         card_ids = data.get("cards", [])
         if len(card_ids) != 1:
-            raise RuntimeError(f"v0 policy expected a single-card selection: {action}")
+            raise UnmappedPromptError(f"Policy cannot map multi-card selection: {action}")
         hand_cards = decision["state"]["players"][decision["owner"]]["hand_cards"]
         card = next((card for card in hand_cards if card["id"] == card_ids[0]), None)
         if card is None:
-            raise RuntimeError(f"Could not map phase selection to a hand card: {action}")
+            raise UnmappedPromptError(f"Could not map phase selection to a hand card: {action}")
         matching = [
             choice
             for choice in xmage_result.get("choices", [])
             if normalize_name(choice.get("name", "")) == normalize_name(card["name"])
         ]
         if not matching:
-            raise RuntimeError(f"XMage has no matching card choice for {card['name']}: {xmage_result}")
+            raise UnmappedPromptError(f"XMage has no matching card choice for {card['name']}: {xmage_result}")
         return asyncio.create_task(
             _call(session, "choose_action", {"choice": str(matching[0]["index"])})
         )
@@ -809,9 +855,9 @@ async def _apply_xmage_action(
         return asyncio.create_task(_call(session, "choose_action", {"choice": "no"}))
     if kind == "DeclareBlockers":
         if data.get("assignments"):
-            raise RuntimeError("v0 policy must not declare blockers")
+            raise UnmappedPromptError("Policy does not map blocker assignments")
         return asyncio.create_task(_call(session, "choose_action", {"choice": "no"}))
-    raise RuntimeError(f"Unsupported phase action: {action}")
+    raise UnmappedPromptError(f"Unsupported phase action: {action}")
 
 
 async def _start_mage_bench(
@@ -959,8 +1005,9 @@ async def run_game(args: argparse.Namespace) -> dict:
     decks = [args.player_deck.resolve(), args.opponent_deck.resolve()]
     phase_decks = [expand_deck(path) for path in decks]
     printings = read_printings()
-    for cards, path in zip(phase_decks, decks):
-        validate_v0_deck(cards, printings, path)
+    if args.v0:
+        for cards, path in zip(phase_decks, decks):
+            validate_v0_deck(cards, printings, path)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     run_dir = ROOT / "runs" / run_id
     run_dir.mkdir(parents=True)
@@ -1161,7 +1208,20 @@ async def run_game(args: argparse.Namespace) -> dict:
                     (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
                     return {"type": "divergence", "run_dir": run_dir, "step": steps, "kind": "state"}
 
-                legal_diff = _legal_action_diff(decision, xmage_result)
+                try:
+                    legal_diff = _legal_action_diff(decision, xmage_result)
+                except UnmappedPromptError as exc:
+                    return _unmapped_prompt_result(
+                        run_dir,
+                        run_id,
+                        args.seed,
+                        steps,
+                        str(exc),
+                        decision,
+                        xmage_result,
+                        phase_projection,
+                        xmage_projection,
+                    )
                 if legal_diff:
                     report = {
                         "run_id": run_id,
@@ -1200,9 +1260,25 @@ async def run_game(args: argparse.Namespace) -> dict:
                     game_completed = True
                     return {"type": "summary", "run_dir": run_dir, **summary}
 
-                index, action = policy_candidate(decision, rng)
+                try:
+                    index, action = policy_candidate(decision, rng)
+                    action_task = await _apply_xmage_action(
+                        sessions[owner], action, decision, xmage_result
+                    )
+                except UnmappedPromptError as exc:
+                    return _unmapped_prompt_result(
+                        run_dir,
+                        run_id,
+                        args.seed,
+                        steps,
+                        str(exc),
+                        decision,
+                        xmage_result,
+                        phase_projection,
+                        xmage_projection,
+                    )
                 pending_results.pop(owner, None)
-                action_tasks[owner] = await _apply_xmage_action(sessions[owner], action, decision, xmage_result)
+                action_tasks[owner] = action_task
                 last_action = action
                 last_xmage_pending = xmage_result
                 applied = await asyncio.to_thread(phase.choose, index)
@@ -1321,6 +1397,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-root", type=Path, default=Path.home() / "repos" / "eng" / "pdata" / "v")
     parser.add_argument("--mage-bench", type=Path, default=Path(os.environ.get("MAGE_BENCH_ROOT", DEFAULT_MAGE_BENCH)))
     parser.add_argument("--xmage-library-top", choices=("first", "last"), default="first")
+    parser.add_argument("--v0", action="store_true")
     return parser.parse_args()
 
 

@@ -1,0 +1,717 @@
+diff --git a/Mage.Sets/src/mage/cards/e/EssenceBurn.java b/Mage.Sets/src/mage/cards/e/EssenceBurn.java
+new file mode 100644
+index 00000000..c30bcc17
+--- /dev/null
++++ b/Mage.Sets/src/mage/cards/e/EssenceBurn.java
+@@ -0,0 +1,52 @@
++package mage.cards.e;
++
++import java.util.UUID;
++
++import mage.ObjectColor;
++import mage.abilities.effects.common.DamageTargetEffect;
++import mage.abilities.effects.common.ExileTargetIfDiesEffect;
++import mage.cards.CardImpl;
++import mage.cards.CardSetInfo;
++import mage.constants.CardType;
++import mage.filter.FilterPermanent;
++import mage.filter.predicate.Predicates;
++import mage.filter.predicate.mageobject.ColorPredicate;
++import mage.target.TargetPermanent;
++
++/**
++ *
++ * @author muz
++ */
++public final class EssenceBurn extends CardImpl {
++
++    private static final FilterPermanent filter = new FilterPermanent("black or green creature or planeswalker");
++
++    static {
++        filter.add(Predicates.or(
++            new ColorPredicate(ObjectColor.BLACK),
++            new ColorPredicate(ObjectColor.GREEN)
++        ));
++        filter.add(Predicates.or(
++            CardType.CREATURE.getPredicate(),
++            CardType.PLANESWALKER.getPredicate()
++        ));
++    }
++
++    public EssenceBurn(UUID ownerId, CardSetInfo setInfo) {
++        super(ownerId, setInfo, new CardType[]{CardType.INSTANT}, "{1}{R}");
++
++        // Essence Burn deals 5 damage to target black or green creature or planeswalker. If that permanent would die this turn, exile it instead.
++        this.getSpellAbility().addEffect(new DamageTargetEffect(5));
++        this.getSpellAbility().addTarget(new TargetPermanent(filter));
++        this.getSpellAbility().addEffect(new ExileTargetIfDiesEffect("permanent"));
++    }
++
++    private EssenceBurn(final EssenceBurn card) {
++        super(card);
++    }
++
++    @Override
++    public EssenceBurn copy() {
++        return new EssenceBurn(this);
++    }
++}
+diff --git a/Mage.Sets/src/mage/cards/k/KiliTheResourceful.java b/Mage.Sets/src/mage/cards/k/KiliTheResourceful.java
+new file mode 100644
+index 00000000..46291df3
+--- /dev/null
++++ b/Mage.Sets/src/mage/cards/k/KiliTheResourceful.java
+@@ -0,0 +1,148 @@
++package mage.cards.k;
++
++import mage.MageInt;
++import mage.abilities.Ability;
++import mage.abilities.common.EntersBattlefieldAllTriggeredAbility;
++import mage.abilities.common.SimpleStaticAbility;
++import mage.abilities.condition.common.EnduringStoryCondition;
++import mage.abilities.effects.common.DrawCardSourceControllerEffect;
++import mage.abilities.effects.common.cost.CostModificationEffectImpl;
++import mage.abilities.hint.common.EnduringStoryHint;
++import mage.abilities.keyword.EquipAbility;
++import mage.abilities.keyword.StoriedAbility;
++import mage.cards.CardImpl;
++import mage.cards.CardSetInfo;
++import mage.constants.*;
++import mage.filter.common.FilterControlledPermanent;
++import mage.filter.predicate.Predicates;
++import mage.filter.predicate.mageobject.AnotherPredicate;
++import mage.game.Game;
++import mage.game.events.GameEvent;
++import mage.game.stack.StackObject;
++import mage.players.Player;
++import mage.watchers.Watcher;
++
++import java.util.HashSet;
++import java.util.Set;
++import java.util.UUID;
++
++/**
++ *
++ * @author nandmp
++ */
++public final class KiliTheResourceful extends CardImpl {
++
++    private static final FilterControlledPermanent filter
++            = new FilterControlledPermanent("another Dwarf or Equipment you control");
++
++    static {
++        filter.add(AnotherPredicate.instance);
++        filter.add(Predicates.or(
++                SubType.DWARF.getPredicate(),
++                SubType.EQUIPMENT.getPredicate()
++        ));
++    }
++
++    public KiliTheResourceful(UUID ownerId, CardSetInfo setInfo) {
++        super(ownerId, setInfo, new CardType[]{CardType.CREATURE}, "{1}{W}");
++
++        this.supertype.add(SuperType.LEGENDARY);
++        this.subtype.add(SubType.DWARF);
++        this.subtype.add(SubType.SCOUT);
++        this.power = new MageInt(1);
++        this.toughness = new MageInt(2);
++
++        // Storied
++        this.addAbility(new StoriedAbility());
++
++        // As long as you have an enduring story, you may pay {0} rather than pay the equip cost of the first equip ability you activate each turn.
++        this.addAbility(new SimpleStaticAbility(new KiliTheResourcefulCostEffect())
++                .addHint(EnduringStoryHint.instance), new KiliTheResourcefulWatcher());
++
++        // Whenever another Dwarf or Equipment you control enters, draw a card. This ability triggers only once each turn.
++        this.addAbility(new EntersBattlefieldAllTriggeredAbility(
++                new DrawCardSourceControllerEffect(1), filter
++        ).setTriggersLimitEachTurn(1));
++    }
++
++    private KiliTheResourceful(final KiliTheResourceful card) {
++        super(card);
++    }
++
++    @Override
++    public KiliTheResourceful copy() {
++        return new KiliTheResourceful(this);
++    }
++}
++
++class KiliTheResourcefulCostEffect extends CostModificationEffectImpl {
++
++    KiliTheResourcefulCostEffect() {
++        super(Duration.WhileOnBattlefield, Outcome.Benefit, CostModificationType.SET_COST);
++        staticText = "as long as you have an enduring story, you may pay {0} rather than pay the equip cost of the first equip ability you activate each turn";
++    }
++
++    private KiliTheResourcefulCostEffect(final KiliTheResourcefulCostEffect effect) {
++        super(effect);
++    }
++
++    @Override
++    public boolean applies(Ability abilityToModify, Ability source, Game game) {
++        return abilityToModify instanceof EquipAbility
++                && source.isControlledBy(abilityToModify.getControllerId())
++                && EnduringStoryCondition.instance.apply(game, source)
++                && !KiliTheResourcefulWatcher.checkPlayer(abilityToModify.getControllerId(), game);
++    }
++
++    @Override
++    public boolean apply(Game game, Ability source, Ability abilityToModify) {
++        Player controller = game.getPlayer(abilityToModify.getControllerId());
++        if (controller == null || (!game.inCheckPlayableState() && !controller.chooseUse(
++                Outcome.PlayForFree,
++                String.format("Pay {0} to equip instead of %s?", abilityToModify.getManaCostsToPay().getText()),
++                source,
++                game
++        ))) {
++            return false;
++        }
++        abilityToModify.clearCosts();
++        abilityToModify.clearManaCostsToPay();
++        return true;
++    }
++
++    @Override
++    public KiliTheResourcefulCostEffect copy() {
++        return new KiliTheResourcefulCostEffect(this);
++    }
++}
++
++class KiliTheResourcefulWatcher extends Watcher {
++
++    private final Set<UUID> playersThatEquippedThisTurn = new HashSet<>();
++
++    KiliTheResourcefulWatcher() {
++        super(WatcherScope.GAME);
++    }
++
++    @Override
++    public void watch(GameEvent event, Game game) {
++        if (event.getType() != GameEvent.EventType.ACTIVATED_ABILITY) {
++            return;
++        }
++        StackObject stackObject = game.getStack().getStackObject(event.getSourceId());
++        if (stackObject != null && stackObject.getStackAbility() instanceof EquipAbility) {
++            playersThatEquippedThisTurn.add(event.getPlayerId());
++        }
++    }
++
++    @Override
++    public void reset() {
++        super.reset();
++        playersThatEquippedThisTurn.clear();
++    }
++
++    static boolean checkPlayer(UUID playerId, Game game) {
++        KiliTheResourcefulWatcher watcher = game.getState().getWatcher(KiliTheResourcefulWatcher.class);
++        return watcher != null && watcher.playersThatEquippedThisTurn.contains(playerId);
++    }
++}
+diff --git a/Mage.Sets/src/mage/cards/t/TheoristsSanctum.java b/Mage.Sets/src/mage/cards/t/TheoristsSanctum.java
+new file mode 100644
+index 00000000..9dd1f4aa
+--- /dev/null
++++ b/Mage.Sets/src/mage/cards/t/TheoristsSanctum.java
+@@ -0,0 +1,49 @@
++package mage.cards.t;
++
++import java.util.UUID;
++import mage.constants.SubType;
++import mage.abilities.common.AsEntersBattlefieldAbility;
++import mage.abilities.common.SimpleActivatedAbility;
++import mage.abilities.costs.common.TapSourceCost;
++import mage.abilities.Ability;
++import mage.abilities.costs.mana.ManaCostsImpl;
++import mage.abilities.effects.keyword.EmpowerJaceEffect;
++import mage.abilities.costs.common.BeholdCost;
++import mage.abilities.effects.common.TapSourceUnlessPaysEffect;
++import mage.abilities.mana.BlueManaAbility;
++import mage.cards.CardImpl;
++import mage.cards.CardSetInfo;
++import mage.constants.CardType;
++
++/**
++ *
++ * @author muz
++ */
++public final class TheoristsSanctum extends CardImpl {
++
++    public TheoristsSanctum(UUID ownerId, CardSetInfo setInfo) {
++        super(ownerId, setInfo, new CardType[]{CardType.LAND}, "");
++
++        this.subtype.add(SubType.ISLAND);
++
++        // ({T}: Add {U}.)
++        this.addAbility(new BlueManaAbility());
++
++        // As this land enters, you may behold a Jace. If you don't, this land enters tapped.
++        this.addAbility(new AsEntersBattlefieldAbility(new TapSourceUnlessPaysEffect(new BeholdCost(SubType.JACE)), "you may behold a Jace. If you don't, this land enters tapped"));
++
++        // {2}{U}, {T}: Empower Jace 2.
++        Ability ability = new SimpleActivatedAbility(new EmpowerJaceEffect(2), new ManaCostsImpl<>("{2}{U}"));
++        ability.addCost(new TapSourceCost());
++        this.addAbility(ability);
++    }
++
++    private TheoristsSanctum(final TheoristsSanctum card) {
++        super(card);
++    }
++
++    @Override
++    public TheoristsSanctum copy() {
++        return new TheoristsSanctum(this);
++    }
++}
+diff --git a/Mage.Sets/src/mage/sets/RealityFracture.java b/Mage.Sets/src/mage/sets/RealityFracture.java
+index 50ef4c3e..96e89805 100644
+--- a/Mage.Sets/src/mage/sets/RealityFracture.java
++++ b/Mage.Sets/src/mage/sets/RealityFracture.java
+@@ -26,6 +26,14 @@ public final class RealityFracture extends ExpansionSet {
+ 
+         // this.enablePlayBooster(305); TODO: Enable later
+ 
++        cards.add(new SetCardInfo("Essence Burn", 369, Rarity.UNCOMMON, mage.cards.e.EssenceBurn.class, NON_FULL_USE_VARIOUS));
++        cards.add(new SetCardInfo("Essence Burn", 82, Rarity.UNCOMMON, mage.cards.e.EssenceBurn.class, NON_FULL_USE_VARIOUS));
++        cards.add(new SetCardInfo("Countersculpt", 25, Rarity.UNCOMMON, mage.cards.c.Countersculpt.class));
++        cards.add(new SetCardInfo("Theorist's Sanctum", 191, Rarity.RARE, mage.cards.t.TheoristsSanctum.class, NON_FULL_USE_VARIOUS));
++        cards.add(new SetCardInfo("Theorist's Sanctum", 381, Rarity.RARE, mage.cards.t.TheoristsSanctum.class, NON_FULL_USE_VARIOUS));
++        cards.add(new SetCardInfo("Theorist's Proxy", 339, Rarity.RARE, mage.cards.t.TheoristsProxy.class, NON_FULL_USE_VARIOUS));
++        cards.add(new SetCardInfo("Theorist's Proxy", 44, Rarity.RARE, mage.cards.t.TheoristsProxy.class, NON_FULL_USE_VARIOUS));
++
+         cards.add(new SetCardInfo("Ajani Resolute", 195, Rarity.MYTHIC, mage.cards.a.AjaniResolute.class, NON_FULL_USE_VARIOUS));
+         cards.add(new SetCardInfo("Ajani Resolute", 291, Rarity.MYTHIC, mage.cards.a.AjaniResolute.class, NON_FULL_USE_VARIOUS));
+         cards.add(new SetCardInfo("Ajani Unrelenting", 242, Rarity.MYTHIC, mage.cards.a.AjaniUnrelenting.class, NON_FULL_USE_VARIOUS));
+diff --git a/Mage.Sets/src/mage/sets/TheHobbit.java b/Mage.Sets/src/mage/sets/TheHobbit.java
+index ebd16bc0..cab52191 100644
+--- a/Mage.Sets/src/mage/sets/TheHobbit.java
++++ b/Mage.Sets/src/mage/sets/TheHobbit.java
+@@ -22,6 +22,9 @@ public final class TheHobbit extends ExpansionSet {
+ 
+         this.enablePlayBooster(198);
+ 
++        cards.add(new SetCardInfo("Kili the Resourceful", 17, Rarity.RARE, mage.cards.k.KiliTheResourceful.class, NON_FULL_USE_VARIOUS));
++        cards.add(new SetCardInfo("Kili the Resourceful", 287, Rarity.RARE, mage.cards.k.KiliTheResourceful.class, NON_FULL_USE_VARIOUS));
++
+         cards.add(new SetCardInfo("Along the Crooked Way", 295, Rarity.RARE, mage.cards.a.AlongTheCrookedWay.class, NON_FULL_USE_VARIOUS));
+         cards.add(new SetCardInfo("Along the Crooked Way", 60, Rarity.RARE, mage.cards.a.AlongTheCrookedWay.class, NON_FULL_USE_VARIOUS));
+         cards.add(new SetCardInfo("An Unexpected Party", 29, Rarity.RARE, mage.cards.a.AnUnexpectedParty.class, NON_FULL_USE_VARIOUS));
+diff --git a/Mage.Tests/src/test/java/org/mage/test/cards/single/fra/MissingMetaCardsTest.java b/Mage.Tests/src/test/java/org/mage/test/cards/single/fra/MissingMetaCardsTest.java
+new file mode 100644
+index 00000000..07c5b7fe
+--- /dev/null
++++ b/Mage.Tests/src/test/java/org/mage/test/cards/single/fra/MissingMetaCardsTest.java
+@@ -0,0 +1,64 @@
++package org.mage.test.cards.single.fra;
++
++import mage.constants.PhaseStep;
++import mage.constants.Zone;
++import mage.counters.CounterType;
++import org.junit.Test;
++import org.mage.test.serverside.base.CardTestPlayerBase;
++
++public class MissingMetaCardsTest extends CardTestPlayerBase {
++
++    @Test
++    public void essenceBurnExilesCreatureThatWouldDie() {
++        addCard(Zone.BATTLEFIELD, playerA, "Mountain", 2);
++        addCard(Zone.BATTLEFIELD, playerB, "Grizzly Bears");
++        addCard(Zone.HAND, playerA, "Essence Burn");
++
++        castSpell(1, PhaseStep.PRECOMBAT_MAIN, playerA, "Essence Burn", "Grizzly Bears");
++
++        setStrictChooseMode(true);
++        setStopAt(1, PhaseStep.END_TURN);
++        execute();
++
++        assertPermanentCount(playerB, "Grizzly Bears", 0);
++        assertExileCount(playerB, "Grizzly Bears", 1);
++    }
++
++    @Test
++    public void theoristsSanctumEmpowersJaceWithTwoLoyaltyCounters() {
++        addCard(Zone.BATTLEFIELD, playerA, "Island", 3);
++        addCard(Zone.BATTLEFIELD, playerA, "Theorist's Sanctum");
++        addCard(Zone.HAND, playerA, "Jace Beleren");
++        setChoice(playerA, true);
++        setChoice(playerA, "Jace Beleren");
++
++        activateAbility(1, PhaseStep.PRECOMBAT_MAIN, playerA, "{2}{U}, {T}: Empower Jace 2");
++
++        setStrictChooseMode(true);
++        setStopAt(1, PhaseStep.END_TURN);
++        execute();
++
++        assertPermanentCount(playerA, "Jace", 1);
++        assertCounterCount(playerA, "Jace", CounterType.LOYALTY, 2);
++    }
++
++    @Test
++    public void kiliDrawsWhenAnEquipmentEnters() {
++        removeAllCardsFromLibrary(playerA);
++        skipInitShuffling();
++        addCard(Zone.BATTLEFIELD, playerA, "Plains", 3);
++        addCard(Zone.HAND, playerA, "Kili the Resourceful");
++        addCard(Zone.HAND, playerA, "Bonesplitter");
++        addCard(Zone.LIBRARY, playerA, "Island");
++
++        castSpell(1, PhaseStep.PRECOMBAT_MAIN, playerA, "Kili the Resourceful");
++        waitStackResolved(1, PhaseStep.PRECOMBAT_MAIN);
++        castSpell(1, PhaseStep.POSTCOMBAT_MAIN, playerA, "Bonesplitter");
++
++        setStrictChooseMode(true);
++        setStopAt(1, PhaseStep.END_TURN);
++        execute();
++
++        assertHandCount(playerA, "Island", 1);
++    }
++}
+diff --git a/Mage/src/main/java/mage/abilities/effects/keyword/EmpowerJaceEffect.java b/Mage/src/main/java/mage/abilities/effects/keyword/EmpowerJaceEffect.java
+new file mode 100644
+index 00000000..e13ada58
+--- /dev/null
++++ b/Mage/src/main/java/mage/abilities/effects/keyword/EmpowerJaceEffect.java
+@@ -0,0 +1,127 @@
++package mage.abilities.effects.keyword;
++
++import mage.abilities.Ability;
++import mage.abilities.dynamicvalue.DynamicValue;
++import mage.abilities.dynamicvalue.common.StaticValue;
++import mage.abilities.effects.OneShotEffect;
++import mage.constants.CardType;
++import mage.constants.Outcome;
++import mage.constants.SubType;
++import mage.counters.CounterType;
++import mage.filter.FilterPermanent;
++import mage.filter.common.FilterControlledPermanent;
++import mage.filter.predicate.permanent.TokenPredicate;
++import mage.game.Game;
++import mage.game.permanent.Permanent;
++import mage.game.permanent.token.JacePlaneswalkerToken;
++import mage.players.Player;
++import mage.target.TargetPermanent;
++import mage.util.CardUtil;
++
++import java.util.List;
++
++/**
++ * @author muz
++ */
++
++// Put X loyalty counters on a Jace token you control. If you don’t control one, first create a blue Jace planeswalker token with "[−1]: Surveil 1" and "[−3]: Draw a card."
++public class EmpowerJaceEffect extends OneShotEffect {
++
++    private static final FilterPermanent FILTER_JACE = new FilterControlledPermanent("a Jace token you control");
++
++    static {
++        FILTER_JACE.add(CardType.PLANESWALKER.getPredicate());
++        FILTER_JACE.add(SubType.JACE.getPredicate());
++        FILTER_JACE.add(TokenPredicate.TRUE);
++        FILTER_JACE.setLockedFilter(true);
++    }
++
++    protected final DynamicValue empowerNumber;
++    private final String empowerText;
++    private final boolean dynamic;
++
++    public EmpowerJaceEffect(int empowerNumber) {
++        this(StaticValue.get(empowerNumber), Integer.toString(empowerNumber), false);
++    }
++
++    public EmpowerJaceEffect(DynamicValue empowerNumber) {
++        this(empowerNumber, "X", true);
++    }
++
++    private EmpowerJaceEffect(DynamicValue empowerNumber, String empowerText, boolean dynamic) {
++        super(Outcome.Benefit);
++        this.empowerNumber = empowerNumber;
++        this.empowerText = empowerText;
++        this.dynamic = dynamic;
++        this.setText();
++    }
++
++    protected EmpowerJaceEffect(final EmpowerJaceEffect effect) {
++        super(effect);
++        this.empowerNumber = effect.empowerNumber.copy();
++        this.empowerText = effect.empowerText;
++        this.dynamic = effect.dynamic;
++    }
++
++    @Override
++    public boolean apply(Game game, Ability source) {
++        Player player = game.getPlayer(source.getControllerId());
++        if (player == null) {
++            return false;
++        }
++
++        List<Permanent> jaceTokens = game.getBattlefield().getActivePermanents(FILTER_JACE, source.getControllerId(), source, game);
++        if (jaceTokens.isEmpty()) {
++            new JacePlaneswalkerToken().putOntoBattlefield(1, game, source, player.getId());
++            jaceTokens = game.getBattlefield().getActivePermanents(FILTER_JACE, source.getControllerId(), source, game);
++            if (jaceTokens.isEmpty()) {
++                return false;
++            }
++        }
++
++        Permanent chosenJace = null;
++        if (jaceTokens.size() == 1) {
++            chosenJace = jaceTokens.get(0);
++        } else {
++            TargetPermanent target = new TargetPermanent(FILTER_JACE);
++            target.withNotTarget(true);
++            if (player.choose(Outcome.Benefit, target, source, game)) {
++                chosenJace = game.getPermanent(target.getFirstTarget());
++            }
++        }
++
++        if (chosenJace == null) {
++            return false;
++        }
++
++        int amount = empowerNumber.calculate(game, source, this);
++        chosenJace.addCounters(CounterType.LOYALTY.createInstance(amount), source.getControllerId(), source, game);
++        return true;
++    }
++
++    @Override
++    public EmpowerJaceEffect copy() {
++        return new EmpowerJaceEffect(this);
++    }
++
++    private void setText() {
++        StringBuilder sb = new StringBuilder("empower Jace ").append(empowerText);
++        if (dynamic) {
++            sb.append(", where X is the number of ").append(empowerNumber.getMessage());
++        }
++        sb.append(". <i>(Put ");
++
++        if (dynamic) {
++            sb.append("that many loyalty counters");
++        } else if (empowerText.equals("1")) {
++            sb.append("a loyalty counter");
++        } else {
++            sb.append(CardUtil.numberToText(Integer.parseInt(empowerText))).append(" loyalty counters");
++        }
++        sb.append(" on a Jace token you control. If you don't control one, first create");
++        sb.append(" a blue Jace planeswalker token with");
++        sb.append(" \"-1: Surveil 1\" and \"-3: Draw a card.\".)</i>");
++
++        staticText = sb.toString();
++    }
++}
+diff --git a/Mage/src/main/java/mage/game/permanent/token/JacePlaneswalkerToken.java b/Mage/src/main/java/mage/game/permanent/token/JacePlaneswalkerToken.java
+new file mode 100644
+index 00000000..f896da9f
+--- /dev/null
++++ b/Mage/src/main/java/mage/game/permanent/token/JacePlaneswalkerToken.java
+@@ -0,0 +1,32 @@
++package mage.game.permanent.token;
++
++import mage.abilities.LoyaltyAbility;
++import mage.abilities.effects.common.DrawCardSourceControllerEffect;
++import mage.abilities.effects.keyword.SurveilEffect;
++import mage.constants.CardType;
++import mage.constants.SubType;
++
++/**
++ * @author muz
++ */
++public final class JacePlaneswalkerToken extends TokenImpl {
++
++    public JacePlaneswalkerToken() {
++        super("Jace", "blue Jace planeswalker token with \"-1: Surveil 1\" and \"-3: Draw a card.\"");
++        this.cardType.add(CardType.PLANESWALKER);
++        this.subtype.add(SubType.JACE);
++        this.color.setBlue(true);
++        this.startingLoyalty = 0;
++
++        this.addAbility(new LoyaltyAbility(new SurveilEffect(1), -1));
++        this.addAbility(new LoyaltyAbility(new DrawCardSourceControllerEffect(1), -3));
++    }
++
++    private JacePlaneswalkerToken(final JacePlaneswalkerToken token) {
++        super(token);
++    }
++
++    public JacePlaneswalkerToken copy() {
++        return new JacePlaneswalkerToken(this);
++    }
++}
+diff --git a/Mage.Sets/src/mage/cards/c/Countersculpt.java b/Mage.Sets/src/mage/cards/c/Countersculpt.java
+new file mode 100644
+index 00000000..00000000
+--- /dev/null
++++ b/Mage.Sets/src/mage/cards/c/Countersculpt.java
+@@ -0,0 +1,44 @@
++package mage.cards.c;
++
++import java.util.UUID;
++
++import mage.abilities.costs.OrCost;
++import mage.abilities.costs.common.BeholdCost;
++import mage.abilities.costs.mana.GenericManaCost;
++import mage.abilities.effects.common.CounterTargetEffect;
++import mage.abilities.effects.keyword.EmpowerJaceEffect;
++import mage.cards.CardImpl;
++import mage.cards.CardSetInfo;
++import mage.constants.CardType;
++import mage.constants.SubType;
++import mage.target.TargetSpell;
++
++/**
++ *
++ * @author muz
++ */
++public final class Countersculpt extends CardImpl {
++
++    public Countersculpt(UUID ownerId, CardSetInfo setInfo) {
++        super(ownerId, setInfo, new CardType[]{CardType.INSTANT}, "{U}{U}");
++
++        // As an additional cost to cast this spell, behold a Jace or pay {1}.
++        this.getSpellAbility().addCost(new OrCost(
++            "behold a Jace or pay {1}", new BeholdCost(SubType.JACE), new GenericManaCost(1)
++        ));
++
++        // Counter target spell. Empower Jace 1.
++        this.getSpellAbility().addEffect(new CounterTargetEffect());
++        this.getSpellAbility().addTarget(new TargetSpell());
++        this.getSpellAbility().addEffect(new EmpowerJaceEffect(1));
++    }
++
++    private Countersculpt(final Countersculpt card) {
++        super(card);
++    }
++
++    @Override
++    public Countersculpt copy() {
++        return new Countersculpt(this);
++    }
++}
+diff --git a/Mage.Sets/src/mage/cards/t/TheoristsProxy.java b/Mage.Sets/src/mage/cards/t/TheoristsProxy.java
+new file mode 100644
+index 00000000..00000000
+--- /dev/null
++++ b/Mage.Sets/src/mage/cards/t/TheoristsProxy.java
+@@ -0,0 +1,120 @@
++package mage.cards.t;
++
++import java.util.List;
++import java.util.UUID;
++import mage.MageInt;
++import mage.constants.SubType;
++import mage.game.Game;
++import mage.game.stack.Spell;
++import mage.game.stack.StackObject;
++import mage.watchers.common.SpellsCastWatcher;
++import mage.abilities.Ability;
++import mage.abilities.common.CantBeCounteredSourceAbility;
++import mage.abilities.common.EntersBattlefieldTriggeredAbility;
++import mage.abilities.common.SimpleActivatedAbility;
++import mage.abilities.costs.common.SacrificeSourceCost;
++import mage.abilities.costs.mana.ManaCostsImpl;
++import mage.abilities.effects.ContinuousEffectImpl;
++import mage.abilities.effects.Effect;
++import mage.abilities.effects.common.AddContinuousEffectToGame;
++import mage.abilities.effects.keyword.EmpowerJaceEffect;
++import mage.abilities.keyword.FlashAbility;
++import mage.cards.CardImpl;
++import mage.cards.CardSetInfo;
++import mage.constants.CardType;
++import mage.constants.Duration;
++import mage.constants.Layer;
++import mage.constants.Outcome;
++import mage.constants.SubLayer;
++
++/**
++ *
++ * @author muz
++ */
++public final class TheoristsProxy extends CardImpl {
++
++    public TheoristsProxy(UUID ownerId, CardSetInfo setInfo) {
++        super(ownerId, setInfo, new CardType[]{CardType.CREATURE}, "{1}{U}");
++
++        this.subtype.add(SubType.ILLUSION);
++        this.power = new MageInt(0);
++        this.toughness = new MageInt(3);
++
++        // Flash
++        this.addAbility(FlashAbility.getInstance());
++
++        // When this creature enters, empower Jace 3.
++        this.addAbility(new EntersBattlefieldTriggeredAbility(new EmpowerJaceEffect(3)));
++
++        // {U}, Sacrifice this creature: The next spell you cast this turn can't be countered.
++        Effect effect = new AddContinuousEffectToGame(new TheoristsProxyEffect());
++        Ability ability = new SimpleActivatedAbility(effect, new ManaCostsImpl<>("{U}"));
++        ability.addCost(new SacrificeSourceCost());
++        this.addAbility(ability);
++    }
++
++    private TheoristsProxy(final TheoristsProxy card) {
++        super(card);
++    }
++
++    @Override
++    public TheoristsProxy copy() {
++        return new TheoristsProxy(this);
++    }
++}
++
++class TheoristsProxyEffect extends ContinuousEffectImpl {
++
++    private int spellsCastThisTurn;
++
++    public TheoristsProxyEffect() {
++        super(Duration.EndOfTurn, Layer.RulesEffects, SubLayer.NA, Outcome.Benefit);
++        staticText = "the next spell you cast this turn can't be countered";
++    }
++
++    protected TheoristsProxyEffect(final TheoristsProxyEffect effect) {
++        super(effect);
++        this.spellsCastThisTurn = effect.spellsCastThisTurn;
++    }
++
++    @Override
++    public TheoristsProxyEffect copy() {
++        return new TheoristsProxyEffect(this);
++    }
++
++    @Override
++    public void init(Ability source, Game game) {
++        super.init(source, game);
++        SpellsCastWatcher watcher = game.getState().getWatcher(SpellsCastWatcher.class);
++        if (watcher != null) {
++            spellsCastThisTurn = watcher.getSpellsCastThisTurn(source.getControllerId()).size();
++        }
++    }
++
++    @Override
++    public boolean apply(Game game, Ability source) {
++        SpellsCastWatcher watcher = game.getState().getWatcher(SpellsCastWatcher.class);
++        if (watcher == null) {
++            return false;
++        }
++        if (game.getStack().isEmpty() && watcher.getSpellsCastThisTurn(source.getControllerId()).size() >= spellsCastThisTurn + 1) {
++            discard();
++            return false;
++        }
++        for (StackObject stackObject : game.getStack()) {
++            if (!(stackObject instanceof Spell) || !stackObject.isControlledBy(source.getControllerId())) {
++                continue;
++            }
++            Spell spell = (Spell) stackObject;
++
++            List<Spell> spellsCast = watcher.getSpellsCastThisTurn(source.getControllerId());
++            for (int i = 0; i < spellsCast.size(); i++) {
++                if (i == spellsCastThisTurn && spellsCast.get(i).getId().equals(spell.getId())) {
++                    game.getState().addOtherAbility(spell.getCard(), new CantBeCounteredSourceAbility());
++                    return true;
++                }
++            }
++        }
++        return false;
++    }
++}

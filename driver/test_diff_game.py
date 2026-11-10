@@ -17,9 +17,24 @@ def test_terminal_summary_with_matching_winner_exits_successfully(status: str) -
     assert summary_exit_code(summary) == 0
 
 
+def test_unmapped_prompt_summary_exits_with_distinct_status() -> None:
+    summary = {
+        "status": "unmapped_prompt",
+        "divergences": 0,
+        "winner": {"phase": None, "xmage": None},
+    }
+
+    assert summary_exit_code(summary) == 2
+
+
 @pytest.mark.parametrize(
     "summary",
     (
+        {
+            "status": "divergence",
+            "divergences": 1,
+            "winner": {"phase": 1, "xmage": 0},
+        },
         {
             "status": "turn_cap",
             "divergences": 0,

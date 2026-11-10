@@ -1,58 +1,802 @@
 {
-  "forest": {
-    "name": "Forest",
-    "set": "FDN",
-    "collector_number": "280",
-    "type_line": "Basic Land — Forest",
-    "oracle_text": "({T}: Add {G}.)",
-    "standard": "legal"
-  },
-  "bear cub": {
-    "name": "Bear Cub",
-    "set": "FDN",
-    "collector_number": "552",
-    "type_line": "Creature — Bear",
-    "oracle_text": "",
-    "standard": "legal"
-  },
-  "gigantosaurus": {
-    "name": "Gigantosaurus",
-    "set": "FDN",
-    "collector_number": "718",
-    "type_line": "Creature — Dinosaur",
-    "oracle_text": "",
-    "standard": "legal"
-  },
-  "quakestrider ceratops": {
-    "name": "Quakestrider Ceratops",
-    "set": "FDN",
-    "collector_number": "110",
-    "type_line": "Creature — Dinosaur",
-    "oracle_text": "",
-    "standard": "legal"
-  },
-  "magnigoth sentry": {
-    "name": "Magnigoth Sentry",
-    "set": "FDN",
-    "collector_number": "556",
-    "type_line": "Creature — Treefolk",
-    "oracle_text": "Reach (This creature can block creatures with flying.)",
-    "standard": "legal"
-  },
-  "tajuru pathwarden": {
-    "name": "Tajuru Pathwarden",
-    "set": "FDN",
-    "collector_number": "558",
-    "type_line": "Creature — Elf Warrior Ally",
-    "oracle_text": "Vigilance (Attacking doesn't cause this creature to tap.)\nTrample (This creature can deal excess combat damage to the player or planeswalker it's attacking.)",
-    "standard": "legal"
-  },
-  "thornweald archer": {
-    "name": "Thornweald Archer",
-    "set": "FDN",
-    "collector_number": "559",
-    "type_line": "Creature — Elf Archer",
-    "oracle_text": "Reach (This creature can block creatures with flying.)\nDeathtouch (Any amount of damage this deals to a creature is enough to destroy it.)",
-    "standard": "legal"
-  }
+ "amalia benavides aguirre": {
+  "collector_number": "299",
+  "name": "Amalia Benavides Aguirre",
+  "oracle_text": "Ward\u2014Pay 3 life.\nWhenever you gain life, Amalia Benavides Aguirre explores. Then destroy all other creatures if its power is exactly 20. (To have this creature explore, reveal the top card of your library. Put that card into your hand if it's a land. Otherwise, put a +1/+1 counter on this creature, then put the card back or put it into your graveyard.)",
+  "set": "LCI",
+  "standard": "legal",
+  "type_line": "Legendary Creature \u2014 Vampire Scout"
+ },
+ "aunt may": {
+  "collector_number": "768",
+  "name": "Aunt May",
+  "oracle_text": "Whenever another creature you control enters, you gain 1 life. If it's a Spider, put a +1/+1 counter on it.",
+  "set": "MSC",
+  "standard": "legal",
+  "type_line": "Legendary Creature \u2014 Human Citizen"
+ },
+ "basilisk collar": {
+  "collector_number": "1925",
+  "name": "Basilisk Collar",
+  "oracle_text": "Equipped creature has deathtouch and lifelink. (Any amount of damage it deals to a creature is enough to destroy it. Damage dealt by this creature also causes you to gain that much life.)\nEquip {2} ({2}: Attach to target creature you control. Equip only as a sorcery.)",
+  "set": "SLD",
+  "standard": "legal",
+  "type_line": "Artifact \u2014 Equipment"
+ },
+ "bear cub": {
+  "collector_number": "552",
+  "name": "Bear Cub",
+  "oracle_text": "",
+  "set": "FDN",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Bear"
+ },
+ "bitter triumph": {
+  "collector_number": "156",
+  "name": "Bitter Triumph",
+  "oracle_text": "As an additional cost to cast this spell, discard a card or pay 3 life.\nDestroy target creature or planeswalker.",
+  "set": "SOA",
+  "standard": "legal",
+  "type_line": "Instant"
+ },
+ "bleachbone verge": {
+  "collector_number": "501",
+  "name": "Bleachbone Verge",
+  "oracle_text": "{T}: Add {B}.\n{T}: Add {W}. Activate only if you control a Plains or a Swamp.",
+  "set": "DFT",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "blood crypt": {
+  "collector_number": "489",
+  "name": "Blood Crypt",
+  "oracle_text": "({T}: Add {B} or {R}.)\nAs this land enters, you may pay 2 life. If you don't, it enters tapped.",
+  "set": "TRK",
+  "standard": "legal",
+  "type_line": "Land \u2014 Swamp Mountain"
+ },
+ "case of the uneaten feast": {
+  "collector_number": "10",
+  "name": "Case of the Uneaten Feast",
+  "oracle_text": "Whenever a creature you control enters, you gain 1 life.\nTo solve \u2014 You've gained 5 or more life this turn. (If unsolved, solve at the beginning of your end step.)\nSolved \u2014 Sacrifice this Case: Creature cards in your graveyard gain \"You may cast this card from your graveyard\" until end of turn.",
+  "set": "MKM",
+  "standard": "legal",
+  "type_line": "Enchantment \u2014 Case"
+ },
+ "cavern of souls": {
+  "collector_number": "410f",
+  "name": "Cavern of Souls",
+  "oracle_text": "As this land enters, choose a creature type.\n{T}: Add {C}.\n{T}: Add one mana of any color. Spend this mana only to cast a creature spell of the chosen type, and that spell can't be countered.",
+  "set": "LCI",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "chainsaw": {
+  "collector_number": "314",
+  "name": "Chainsaw",
+  "oracle_text": "When this Equipment enters, it deals 3 damage to up to one target creature.\nWhenever one or more creatures die, put a rev counter on this Equipment.\nEquipped creature gets +X/+0, where X is the number of rev counters on this Equipment.\nEquip {3}",
+  "set": "DSK",
+  "standard": "legal",
+  "type_line": "Artifact \u2014 Equipment"
+ },
+ "concealed courtyard": {
+  "collector_number": "302",
+  "name": "Concealed Courtyard",
+  "oracle_text": "This land enters tapped unless you control two or fewer other lands.\n{T}: Add {W} or {B}.",
+  "set": "OTJ",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "consult the star charts": {
+  "collector_number": "325",
+  "name": "Consult the Star Charts",
+  "oracle_text": "Kicker {1}{U} (You may pay an additional {1}{U} as you cast this spell.)\nLook at the top X cards of your library, where X is the number of lands you control. Put one of those cards into your hand. If this spell was kicked, put two of those cards into your hand instead. Put the rest on the bottom of your library in a random order.",
+  "set": "EOE",
+  "standard": "legal",
+  "type_line": "Instant"
+ },
+ "cori mountain monastery": {
+  "collector_number": "393",
+  "name": "Cori Mountain Monastery",
+  "oracle_text": "This land enters tapped unless you control a Plains or an Island.\n{T}: Add {R}.\n{3}{R}, {T}: Exile the top card of your library. Until the end of your next turn, you may play that card.",
+  "set": "TDM",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "countersculpt": {
+  "collector_number": "25",
+  "name": "Countersculpt",
+  "oracle_text": "As an additional cost to cast this spell, behold a Jace or pay {1}. (To behold a Jace, choose a Jace you control or reveal a Jace card from your hand.)\nCounter target spell. Empower Jace 1. (Put a loyalty counter on a Jace token you control. If you don't control one, first create a blue Jace planeswalker token with \"[\u22121]: Surveil 1\" and \"[\u22123]: Draw a card.\")",
+  "set": "FRA",
+  "standard": "legal",
+  "type_line": "Instant"
+ },
+ "dain's company": {
+  "collector_number": "212",
+  "name": "D\u00e1in's Company",
+  "oracle_text": "This creature has lifelink as long as you control another Dwarf.\nWhen this creature enters, look at the top four cards of your library. You may reveal a Dwarf or Equipment card from among them and put it into your hand. Put the rest on the bottom of your library in a random order.",
+  "set": "HOB",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Dwarf Warrior"
+ },
+ "dalkovan encampment": {
+  "collector_number": "394",
+  "name": "Dalkovan Encampment",
+  "oracle_text": "This land enters tapped unless you control a Swamp or a Mountain.\n{T}: Add {W}.\n{2}{W}, {T}: Whenever you attack this turn, create two 1/1 red Warrior creature tokens that are tapped and attacking. Sacrifice them at the beginning of the next end step.",
+  "set": "TDM",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "day of judgment": {
+  "collector_number": "1858",
+  "name": "Day of Judgment",
+  "oracle_text": "Destroy all creatures.",
+  "set": "SLD",
+  "standard": "legal",
+  "type_line": "Sorcery"
+ },
+ "deadly cover-up": {
+  "collector_number": "399",
+  "name": "Deadly Cover-Up",
+  "oracle_text": "As an additional cost to cast this spell, you may collect evidence 6.\nDestroy all creatures. If evidence was collected, exile a card from an opponent's graveyard. Then search its owner's graveyard, hand, and library for any number of cards with that name and exile them. That player shuffles, then draws a card for each card exiled from their hand this way.",
+  "set": "MKM",
+  "standard": "legal",
+  "type_line": "Sorcery"
+ },
+ "deep-cavern bat": {
+  "collector_number": "33",
+  "name": "Deep-Cavern Bat",
+  "oracle_text": "Flying, lifelink\nWhen this creature enters, look at target opponent's hand. You may exile a nonland card from it until this creature leaves the battlefield.",
+  "set": "SCH",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Bat"
+ },
+ "deserted beach": {
+  "collector_number": "94090",
+  "name": "Deserted Beach",
+  "oracle_text": "This land enters tapped unless you control two or more other lands.\n{T}: Add {W} or {U}.",
+  "set": "PRM",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "dragonfire blade": {
+  "collector_number": "324",
+  "name": "Dragonfire Blade",
+  "oracle_text": "Equipped creature gets +2/+2 and has hexproof from monocolored.\nEquip {4}. This ability costs {1} less to activate for each color of the creature it targets.",
+  "set": "TDM",
+  "standard": "legal",
+  "type_line": "Artifact \u2014 Equipment"
+ },
+ "dream beavers": {
+  "collector_number": "62",
+  "name": "Dream Beavers",
+  "oracle_text": "Flying\nWhen this creature enters, each opponent loses 1 life and you gain 1 life. Scry 1. (Look at the top card of your library. You may put that card on the bottom.)",
+  "set": "TMT",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Beaver Nightmare"
+ },
+ "dwalin, weaponmaster": {
+  "collector_number": "154",
+  "name": "Dwalin, Weaponmaster",
+  "oracle_text": "First strike\nWhenever Dwalin enters or attacks, put a hone counter on each Equipment you control. (Each hone counter on an Equipment grants +1/+0 to equipped creature.)",
+  "set": "HOB",
+  "standard": "legal",
+  "type_line": "Legendary Creature \u2014 Dwarf Warrior"
+ },
+ "dwarven mauler": {
+  "collector_number": "95",
+  "name": "Dwarven Mauler",
+  "oracle_text": "Equip abilities you activate that target this creature cost {2} less to activate.",
+  "set": "HOB",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Dwarf Warrior"
+ },
+ "enduring curiosity": {
+  "collector_number": "398",
+  "name": "Enduring Curiosity",
+  "oracle_text": "Flash\nWhenever a creature you control deals combat damage to a player, draw a card.\nWhen Enduring Curiosity dies, if it was a creature, return it to the battlefield under its owner's control. It's an enchantment. (It's not a creature.)",
+  "set": "DSK",
+  "standard": "legal",
+  "type_line": "Enchantment Creature \u2014 Cat Glimmer"
+ },
+ "enlightened confidant": {
+  "collector_number": null,
+  "name": "Enlightened Confidant",
+  "oracle_text": "Lifelink\nAt the beginning of your end step, if you gained life this turn, surveil 1. If you put a card with mana value less than or equal to the amount of life you gained this turn into your graveyard this way, put that card into your hand.",
+  "set": null,
+  "standard": "legal",
+  "type_line": "Creature \u2014 Kor Cleric"
+ },
+ "erode": {
+  "collector_number": "310",
+  "name": "Erode",
+  "oracle_text": "Destroy target creature or planeswalker. Its controller may search their library for a basic land card, put it onto the battlefield tapped, then shuffle.",
+  "set": "SOS",
+  "standard": "legal",
+  "type_line": "Instant"
+ },
+ "extrapolate the impossible": {
+  "collector_number": null,
+  "name": "Extrapolate the Impossible",
+  "oracle_text": "You may reveal exactly two cards you own with different names from outside the game. An opponent chooses one of them. You put that card into your hand.",
+  "set": null,
+  "standard": "legal",
+  "type_line": "Sorcery"
+ },
+ "fire magic": {
+  "collector_number": "136",
+  "name": "Fire Magic",
+  "oracle_text": "Tiered (Choose one additional cost.)\n\u2022 Fire \u2014 {0} \u2014 Fire Magic deals 1 damage to each creature.\n\u2022 Fira \u2014 {2} \u2014 Fire Magic deals 2 damage to each creature.\n\u2022 Firaga \u2014 {5} \u2014 Fire Magic deals 3 damage to each creature.",
+  "set": "FIN",
+  "standard": "legal",
+  "type_line": "Instant"
+ },
+ "firebending lesson": {
+  "collector_number": "138",
+  "name": "Firebending Lesson",
+  "oracle_text": "Kicker {4} (You may pay an additional {4} as you cast this spell.)\nFirebending Lesson deals 2 damage to target creature. If this spell was kicked, it deals 5 damage to that creature instead.",
+  "set": "TLA",
+  "standard": "legal",
+  "type_line": "Instant \u2014 Lesson"
+ },
+ "flashback": {
+  "collector_number": "333",
+  "name": "Flashback",
+  "oracle_text": "Target instant or sorcery card in your graveyard gains flashback until end of turn. The flashback cost is equal to its mana cost. (You may cast that card from your graveyard for its flashback cost. Then exile it.)",
+  "set": "SOS",
+  "standard": "legal",
+  "type_line": "Instant"
+ },
+ "floodfarm verge": {
+  "collector_number": "330",
+  "name": "Floodfarm Verge",
+  "oracle_text": "{T}: Add {W}.\n{T}: Add {U}. Activate only if you control a Plains or an Island.",
+  "set": "DSK",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "floodpits drowner": {
+  "collector_number": "59",
+  "name": "Floodpits Drowner",
+  "oracle_text": "Flash\nVigilance\nWhen this creature enters, tap target creature an opponent controls and put a stun counter on it.\n{1}{U}, {T}: Shuffle this creature and target creature with a stun counter on it into their owners' libraries.",
+  "set": "DSK",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Merfolk"
+ },
+ "forest": {
+  "collector_number": "326",
+  "name": "Forest",
+  "oracle_text": "({T}: Add {G}.)",
+  "set": "TRK",
+  "standard": "legal",
+  "type_line": "Basic Land \u2014 Forest"
+ },
+ "get lost": {
+  "collector_number": "5",
+  "name": "Get Lost",
+  "oracle_text": "Destroy target creature, enchantment, or planeswalker. Its controller creates two Map tokens. (They're artifacts with \"{1}, {T}, Sacrifice this token: Target creature you control explores. Activate only as a sorcery.\")",
+  "set": "PSPL",
+  "standard": "legal",
+  "type_line": "Instant"
+ },
+ "gigantosaurus": {
+  "collector_number": "718",
+  "name": "Gigantosaurus",
+  "oracle_text": "",
+  "set": "FDN",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Dinosaur"
+ },
+ "gloomlake verge": {
+  "collector_number": "331",
+  "name": "Gloomlake Verge",
+  "oracle_text": "{T}: Add {U}.\n{T}: Add {B}. Activate only if you control an Island or a Swamp.",
+  "set": "DSK",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "godless shrine": {
+  "collector_number": "492",
+  "name": "Godless Shrine",
+  "oracle_text": "({T}: Add {W} or {B}.)\nAs this land enters, you may pay 2 life. If you don't, it enters tapped.",
+  "set": "TRK",
+  "standard": "legal",
+  "type_line": "Land \u2014 Plains Swamp"
+ },
+ "great arashin city": {
+  "collector_number": "395",
+  "name": "Great Arashin City",
+  "oracle_text": "This land enters tapped unless you control a Forest or a Plains.\n{T}: Add {B}.\n{1}{B}, {T}, Exile a creature card from your graveyard: Create a 1/1 white Spirit creature token.",
+  "set": "TDM",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "great hall of the biblioplex": {
+  "collector_number": "361",
+  "name": "Great Hall of the Biblioplex",
+  "oracle_text": "{T}: Add {C}.\n{T}, Pay 1 life: Add one mana of any color. Spend this mana only to cast an instant or sorcery spell.\n{5}: If this land isn't a creature, it becomes a 2/4 Wizard creature with \"Whenever you cast an instant or sorcery spell, this creature gets +1/+0 until end of turn.\" It's still a land.",
+  "set": "SOS",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "haliya, guided by light": {
+  "collector_number": "289",
+  "name": "Haliya, Guided by Light",
+  "oracle_text": "Whenever Haliya or another creature or artifact you control enters, you gain 1 life.\nAt the beginning of your end step, draw a card if you've gained 3 or more life this turn.\nWarp {W} (You may cast this card from your hand for its warp cost. Exile this creature at the beginning of the next end step, then you may cast it from exile on a later turn.)",
+  "set": "EOE",
+  "standard": "legal",
+  "type_line": "Legendary Creature \u2014 Human Soldier"
+ },
+ "hallowed fountain": {
+  "collector_number": "487",
+  "name": "Hallowed Fountain",
+  "oracle_text": "({T}: Add {W} or {U}.)\nAs this land enters, you may pay 2 life. If you don't, it enters tapped.",
+  "set": "TRK",
+  "standard": "legal",
+  "type_line": "Land \u2014 Plains Island"
+ },
+ "hidden lair": {
+  "collector_number": "383",
+  "name": "Hidden Lair",
+  "oracle_text": "{T}: Add {C}.\n{T}: Add {U} or {B}. Activate only if this land entered this turn or if you control a basic land.",
+  "set": "MSH",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "hinterland sanctifier": {
+  "collector_number": "5",
+  "name": "Hinterland Sanctifier",
+  "oracle_text": "Whenever another creature you control enters, you gain 1 life.",
+  "set": "J25",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Rabbit Cleric"
+ },
+ "inevitable defeat": {
+  "collector_number": "360",
+  "name": "Inevitable Defeat",
+  "oracle_text": "This spell can't be countered.\nExile target nonland permanent. Its controller loses 3 life and you gain 3 life.",
+  "set": "TDM",
+  "standard": "legal",
+  "type_line": "Instant"
+ },
+ "inspiring vantage": {
+  "collector_number": "1605*",
+  "name": "Inspiring Vantage",
+  "oracle_text": "This land enters tapped unless you control two or fewer other lands.\n{T}: Add {R} or {W}.",
+  "set": "SLD",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "island": {
+  "collector_number": "320",
+  "name": "Island",
+  "oracle_text": "({T}: Add {U}.)",
+  "set": "TRK",
+  "standard": "legal",
+  "type_line": "Basic Land \u2014 Island"
+ },
+ "jace's machinations": {
+  "collector_number": null,
+  "name": "Jace's Machinations",
+  "oracle_text": "Until end of turn, you may activate loyalty abilities of Jace planeswalkers you control on any player's turn any time you could cast an instant.\nEmpower Jace 8. (Put eight loyalty counters on a Jace token you control. If you don't control one, first create a blue Jace planeswalker token with \"[\u22121]: Surveil 1\" and \"[\u22123]: Draw a card.\")",
+  "set": null,
+  "standard": "legal",
+  "type_line": "Instant"
+ },
+ "jeskai revelation": {
+  "collector_number": "361",
+  "name": "Jeskai Revelation",
+  "oracle_text": "Return target spell or permanent to its owner's hand. Jeskai Revelation deals 4 damage to any target. Create two 1/1 white Monk creature tokens with prowess. Draw two cards. You gain 4 life.",
+  "set": "TDM",
+  "standard": "legal",
+  "type_line": "Instant"
+ },
+ "kaito, bane of nightmares": {
+  "collector_number": "409",
+  "name": "Kaito, Bane of Nightmares",
+  "oracle_text": "Ninjutsu {1}{U}{B} ({1}{U}{B}, Return an unblocked attacker you control to hand: Put this card onto the battlefield from your hand tapped and attacking.)\nDuring your turn, as long as Kaito has one or more loyalty counters on him, he's a 3/4 Ninja creature and has hexproof.\n+1: You get an emblem with \"Ninjas you control get +1/+1.\"\n0: Surveil 2. Then draw a card for each opponent who lost life this turn.\n\u22122: Tap target creature. Put two stun counters on it.",
+  "set": "DSK",
+  "standard": "legal",
+  "type_line": "Legendary Planeswalker \u2014 Kaito"
+ },
+ "kili the resourceful": {
+  "collector_number": "287",
+  "name": "K\u00edli the Resourceful",
+  "oracle_text": "Storied (If you control three or more artifacts, legendaries, and/or Sagas, you have an enduring story for the rest of the game.)\nAs long as you have an enduring story, you may pay {0} rather than pay the equip cost of the first equip ability you activate each turn.\nWhenever another Dwarf or Equipment you control enters, draw a card. This ability triggers only once each turn.",
+  "set": "HOB",
+  "standard": "legal",
+  "type_line": "Legendary Creature \u2014 Dwarf Scout"
+ },
+ "lavaspur boots": {
+  "collector_number": "243",
+  "name": "Lavaspur Boots",
+  "oracle_text": "Equipped creature gets +1/+0 and has haste and ward {1}. (Whenever it becomes the target of a spell or ability an opponent controls, counter it unless that player pays {1}.)\nEquip {1}",
+  "set": "OTJ",
+  "standard": "legal",
+  "type_line": "Artifact \u2014 Equipment"
+ },
+ "leyline axe": {
+  "collector_number": "485",
+  "name": "Leyline Axe",
+  "oracle_text": "If this card is in your opening hand, you may begin the game with it on the battlefield.\nEquipped creature gets +1/+1 and has double strike and trample.\nEquip {3} ({3}: Attach to target creature you control. Equip only as a sorcery.)",
+  "set": "FDN",
+  "standard": "legal",
+  "type_line": "Artifact \u2014 Equipment"
+ },
+ "liliana the faultless": {
+  "collector_number": "293",
+  "name": "Liliana the Faultless",
+  "oracle_text": "Whenever another creature or planeswalker you control enters, you gain 1 life.\n{1}, {T}, Discard a card: Another target creature or planeswalker you control gains hexproof until end of turn.",
+  "set": "FRA",
+  "standard": "legal",
+  "type_line": "Legendary Creature \u2014 Human Cleric"
+ },
+ "lunar convocation": {
+  "collector_number": "366",
+  "name": "Lunar Convocation",
+  "oracle_text": "At the beginning of your end step, if you gained life this turn, each opponent loses 1 life.\nAt the beginning of your end step, if you gained and lost life this turn, create a 1/1 black Bat creature token with flying.\n{1}{B}, Pay 2 life: Draw a card.",
+  "set": "BLB",
+  "standard": "legal",
+  "type_line": "Enchantment"
+ },
+ "magnigoth sentry": {
+  "collector_number": "556",
+  "name": "Magnigoth Sentry",
+  "oracle_text": "Reach (This creature can block creatures with flying.)",
+  "set": "FDN",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Treefolk"
+ },
+ "mathemagics": {
+  "collector_number": "320",
+  "name": "Mathemagics",
+  "oracle_text": "Target player draws 2\u02e3 cards. (2\u2070 = 1, 2\u00b9 = 2, 2\u00b2 = 4, 2\u00b3 = 8, 2\u2074 = 16, 2\u2075 = 32, and so on.)",
+  "set": "SOS",
+  "standard": "legal",
+  "type_line": "Sorcery"
+ },
+ "meticulous archive": {
+  "collector_number": "328",
+  "name": "Meticulous Archive",
+  "oracle_text": "({T}: Add {W} or {U}.)\nThis land enters tapped.\nWhen this land enters, surveil 1. (Look at the top card of your library. You may put it into your graveyard.)",
+  "set": "MKM",
+  "standard": "legal",
+  "type_line": "Land \u2014 Plains Island"
+ },
+ "moseo, vein's new dean": {
+  "collector_number": "326",
+  "name": "Moseo, Vein's New Dean",
+  "oracle_text": "Flying\nWhen Moseo enters, create a 1/1 black and green Pest creature token with \"Whenever this token attacks, you gain 1 life.\"\nInfusion \u2014 At the beginning of your end step, if you gained life this turn, return up to one target creature card with mana value X or less from your graveyard to the battlefield, where X is the amount of life you gained this turn.",
+  "set": "SOS",
+  "standard": "legal",
+  "type_line": "Legendary Creature \u2014 Bird Skeleton Warlock"
+ },
+ "mountain": {
+  "collector_number": "324",
+  "name": "Mountain",
+  "oracle_text": "({T}: Add {R}.)",
+  "set": "TRK",
+  "standard": "legal",
+  "type_line": "Basic Land \u2014 Mountain"
+ },
+ "multiversal passage": {
+  "collector_number": "206",
+  "name": "Multiversal Passage",
+  "oracle_text": "As this land enters, choose a basic land type. Then you may pay 2 life. If you don't, it enters tapped.\nThis land is the chosen type.",
+  "set": "SPM",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "no more lies": {
+  "collector_number": "427",
+  "name": "No More Lies",
+  "oracle_text": "Counter target spell unless its controller pays {3}. If that spell is countered this way, exile it instead of putting it into its owner's graveyard.",
+  "set": "MKM",
+  "standard": "legal",
+  "type_line": "Instant"
+ },
+ "petrified hamlet": {
+  "collector_number": "362",
+  "name": "Petrified Hamlet",
+  "oracle_text": "When this land enters, choose a land card name.\nActivated abilities of sources with the chosen name can't be activated unless they're mana abilities.\nLands with the chosen name have \"{T}: Add {C}.\"\n{T}: Add {C}.",
+  "set": "SOS",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "plains": {
+  "collector_number": "318",
+  "name": "Plains",
+  "oracle_text": "({T}: Add {W}.)",
+  "set": "TRK",
+  "standard": "legal",
+  "type_line": "Basic Land \u2014 Plains"
+ },
+ "quakestrider ceratops": {
+  "collector_number": "110",
+  "name": "Quakestrider Ceratops",
+  "oracle_text": "",
+  "set": "FDN",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Dinosaur"
+ },
+ "requiting hex": {
+  "collector_number": "116",
+  "name": "Requiting Hex",
+  "oracle_text": "As an additional cost to cast this spell, you may blight 1. (You may put a -1/-1 counter on a creature you control.)\nDestroy target creature with mana value 2 or less. If this spell's additional cost was paid, you gain 2 life.",
+  "set": "ECL",
+  "standard": "legal",
+  "type_line": "Instant"
+ },
+ "rest in peace": {
+  "collector_number": "6",
+  "name": "Rest in Peace",
+  "oracle_text": "When this enchantment enters, exile all graveyards.\nIf a card or token would be put into a graveyard from anywhere, exile it instead.",
+  "set": "MAR",
+  "standard": "legal",
+  "type_line": "Enchantment"
+ },
+ "restless reef": {
+  "collector_number": "349",
+  "name": "Restless Reef",
+  "oracle_text": "This land enters tapped.\n{T}: Add {U} or {B}.\n{2}{U}{B}: Until end of turn, this land becomes a 4/4 blue and black Shark creature with deathtouch. It's still a land.\nWhenever this land attacks, target player mills four cards.",
+  "set": "LCI",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "riverpyre verge": {
+  "collector_number": "503",
+  "name": "Riverpyre Verge",
+  "oracle_text": "{T}: Add {R}.\n{T}: Add {U}. Activate only if you control an Island or a Mountain.",
+  "set": "DFT",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "sacred foundry": {
+  "collector_number": "495",
+  "name": "Sacred Foundry",
+  "oracle_text": "({T}: Add {R} or {W}.)\nAs this land enters, you may pay 2 life. If you don't, it enters tapped.",
+  "set": "TRK",
+  "standard": "legal",
+  "type_line": "Land \u2014 Mountain Plains"
+ },
+ "seam rip": {
+  "collector_number": "34",
+  "name": "Seam Rip",
+  "oracle_text": "When this enchantment enters, exile target nonland permanent an opponent controls with mana value 2 or less until this enchantment leaves the battlefield.",
+  "set": "EOE",
+  "standard": "legal",
+  "type_line": "Enchantment"
+ },
+ "sear": {
+  "collector_number": "405",
+  "name": "Sear",
+  "oracle_text": "Sear deals 4 damage to target creature or planeswalker.",
+  "set": "ECL",
+  "standard": "legal",
+  "type_line": "Instant"
+ },
+ "shattered sanctum": {
+  "collector_number": "303",
+  "name": "Shattered Sanctum",
+  "oracle_text": "This land enters tapped unless you control two or more other lands.\n{T}: Add {W} or {B}.",
+  "set": "SOS",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "shipwreck marsh": {
+  "collector_number": "284",
+  "name": "Shipwreck Marsh",
+  "oracle_text": "This land enters tapped unless you control two or more other lands.\n{T}: Add {U} or {B}.",
+  "set": "INR",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "shoot the sheriff": {
+  "collector_number": "7166",
+  "name": "Shoot the Sheriff",
+  "oracle_text": "Destroy target non-outlaw creature. (Assassins, Mercenaries, Pirates, Rogues, and Warlocks are outlaws. Everyone else is fair game.)",
+  "set": "SLD",
+  "standard": "legal",
+  "type_line": "Instant"
+ },
+ "skateboard": {
+  "collector_number": "178",
+  "name": "Skateboard",
+  "oracle_text": "When this Equipment enters, tap target permanent.\nEquipped creature gets +1/+0 and has haste.\nEquip {1} ({1}: Attach to target creature you control. Equip only as a sorcery.)",
+  "set": "TMT",
+  "standard": "legal",
+  "type_line": "Artifact \u2014 Equipment"
+ },
+ "soulstone sanctuary": {
+  "collector_number": "487",
+  "name": "Soulstone Sanctuary",
+  "oracle_text": "{T}: Add {C}.\n{4}: This land becomes a 3/3 creature with vigilance and all creature types. It's still a land.",
+  "set": "FDN",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "spell snare": {
+  "collector_number": "71",
+  "name": "Spell Snare",
+  "oracle_text": "Counter target spell with mana value 2.",
+  "set": "ECL",
+  "standard": "legal",
+  "type_line": "Instant"
+ },
+ "spyglass siren": {
+  "collector_number": "405",
+  "name": "Spyglass Siren",
+  "oracle_text": "Flying\nWhen this creature enters, create a Map token. (It's an artifact with \"{1}, {T}, Sacrifice this token: Target creature you control explores. Activate only as a sorcery.\")",
+  "set": "LCI",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Siren Pirate"
+ },
+ "starscape cleric": {
+  "collector_number": "116",
+  "name": "Starscape Cleric",
+  "oracle_text": "Offspring {2}{B} (You may pay an additional {2}{B} as you cast this spell. If you do, when this creature enters, create a 1/1 token copy of it.)\nFlying\nThis creature can't block.\nWhenever you gain life, each opponent loses 1 life.",
+  "set": "BLB",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Bat Cleric"
+ },
+ "starting town": {
+  "collector_number": "289",
+  "name": "Starting Town",
+  "oracle_text": "This land enters tapped unless it's your first, second, or third turn of the game.\n{T}: Add {C}.\n{T}, Pay 1 life: Add one mana of any color.",
+  "set": "FIN",
+  "standard": "legal",
+  "type_line": "Land \u2014 Town"
+ },
+ "steam vents": {
+  "collector_number": "493",
+  "name": "Steam Vents",
+  "oracle_text": "({T}: Add {U} or {R}.)\nAs this land enters, you may pay 2 life. If you don't, it enters tapped.",
+  "set": "TRK",
+  "standard": "legal",
+  "type_line": "Land \u2014 Island Mountain"
+ },
+ "stock up": {
+  "collector_number": "154",
+  "name": "Stock Up",
+  "oracle_text": "Look at the top five cards of your library. Put two of them into your hand and the rest on the bottom of your library in any order.",
+  "set": "SOA",
+  "standard": "legal",
+  "type_line": "Sorcery"
+ },
+ "strategic betrayal": {
+  "collector_number": "422",
+  "name": "Strategic Betrayal",
+  "oracle_text": "Target opponent exiles a creature they control and their graveyard.",
+  "set": "TDM",
+  "standard": "legal",
+  "type_line": "Sorcery"
+ },
+ "sunbillow verge": {
+  "collector_number": "504",
+  "name": "Sunbillow Verge",
+  "oracle_text": "{T}: Add {W}.\n{T}: Add {R}. Activate only if you control a Mountain or a Plains.",
+  "set": "DFT",
+  "standard": "legal",
+  "type_line": "Land"
+ },
+ "swamp": {
+  "collector_number": "322",
+  "name": "Swamp",
+  "oracle_text": "({T}: Add {B}.)",
+  "set": "TRK",
+  "standard": "legal",
+  "type_line": "Basic Land \u2014 Swamp"
+ },
+ "tablet of discovery": {
+  "collector_number": "132",
+  "name": "Tablet of Discovery",
+  "oracle_text": "When this artifact enters, mill a card. You may play that card this turn. (To mill a card, put the top card of your library into your graveyard.)\n{T}: Add {R}.\n{T}: Add {R}{R}. Spend this mana only to cast instant and sorcery spells.",
+  "set": "SOS",
+  "standard": "legal",
+  "type_line": "Artifact"
+ },
+ "tajuru pathwarden": {
+  "collector_number": "722",
+  "name": "Tajuru Pathwarden",
+  "oracle_text": "Vigilance (Attacking doesn't cause this creature to tap.)\nTrample (This creature can deal excess combat damage to the player or planeswalker it's attacking.)",
+  "set": "J25",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Elf Warrior Ally"
+ },
+ "the lonely mountain": {
+  "collector_number": "284",
+  "name": "The Lonely Mountain",
+  "oracle_text": "({T}: Add {R}.)\nThis land enters tapped unless you control an Equipment.\n{4}{R}, {T}: Create a 2/2 red Dwarf creature token. This ability costs {1} less to activate for each Equipment you control. Activate only as a sorcery.",
+  "set": "HOB",
+  "standard": "legal",
+  "type_line": "Land \u2014 Mountain"
+ },
+ "the theorist, jace beleren": {
+  "collector_number": "443",
+  "name": "The Theorist, Jace Beleren",
+  "oracle_text": "At the beginning of each opponent's draw step, you draw a card.\n+1: Create a 1/1 blue Illusion creature token.\n\u22122: For each opponent, return up to one target artifact or creature that player controls to its owner's hand.\n\u22126: Draw three cards. Then put X +1/+1 counters on each creature you control, where X is the number of cards in your hand.",
+  "set": "FRA",
+  "standard": "legal",
+  "type_line": "Legendary Planeswalker \u2014 Jace"
+ },
+ "the wondrous wasp": {
+  "collector_number": "84",
+  "name": "The Wondrous Wasp",
+  "oracle_text": "Flash\nFlying\nWasp's Sting \u2014 When The Wondrous Wasp enters, tap up to one target creature. It loses all abilities for as long as The Wondrous Wasp remains on the battlefield.",
+  "set": "MSH",
+  "standard": "legal",
+  "type_line": "Legendary Creature \u2014 Human Hero"
+ },
+ "theorist's proxy": {
+  "collector_number": "339",
+  "name": "Theorist's Proxy",
+  "oracle_text": "Flash\nWhen this creature enters, empower Jace 3. (Put three loyalty counters on a Jace token you control. If you don't control one, first create a blue Jace planeswalker token with \"[\u22121]: Surveil 1\" and \"[\u22123]: Draw a card.\")\n{U}, Sacrifice this creature: The next spell you cast this turn can't be countered.",
+  "set": "FRA",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Illusion"
+ },
+ "theorist's sanctum": {
+  "collector_number": "381",
+  "name": "Theorist's Sanctum",
+  "oracle_text": "({T}: Add {U}.)\nAs this land enters, you may behold a Jace. If you don't, this land enters tapped. (To behold a Jace, choose a Jace you control or reveal a Jace card from your hand.)\n{2}{U}, {T}: Empower Jace 2.",
+  "set": "FRA",
+  "standard": "legal",
+  "type_line": "Land \u2014 Island"
+ },
+ "thorin, mountain-king": {
+  "collector_number": "279",
+  "name": "Thorin, Mountain-king",
+  "oracle_text": "Trample\nWhen Thorin enters, attach any number of target Equipment you control to target creature you control. When one or more Equipment become attached to that creature this way, that creature deals damage equal to its power to up to one target creature.",
+  "set": "HOB",
+  "standard": "legal",
+  "type_line": "Legendary Creature \u2014 Dwarf Noble"
+ },
+ "thornweald archer": {
+  "collector_number": "724",
+  "name": "Thornweald Archer",
+  "oracle_text": "Reach (This creature can block creatures with flying.)\nDeathtouch (Any amount of damage this deals to a creature is enough to destroy it.)",
+  "set": "J25",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Elf Archer"
+ },
+ "tishana's tidebinder": {
+  "collector_number": "335",
+  "name": "Tishana's Tidebinder",
+  "oracle_text": "Flash\nWhen this creature enters, counter up to one target activated or triggered ability. If an ability of an artifact, creature, or planeswalker is countered this way, that permanent loses all abilities for as long as this creature remains on the battlefield. (Mana abilities can't be targeted.)",
+  "set": "LCI",
+  "standard": "legal",
+  "type_line": "Creature \u2014 Merfolk Wizard"
+ },
+ "together as one": {
+  "collector_number": "307",
+  "name": "Together as One",
+  "oracle_text": "Converge \u2014 Target player draws X cards, Together as One deals X damage to any target, and you gain X life, where X is the number of colors of mana spent to cast this spell.",
+  "set": "SOS",
+  "standard": "legal",
+  "type_line": "Sorcery"
+ },
+ "wan shi tong, librarian": {
+  "collector_number": "320",
+  "name": "Wan Shi Tong, Librarian",
+  "oracle_text": "Flash\nFlying, vigilance\nWhen Wan Shi Tong enters, put X +1/+1 counters on him. Then draw half X cards, rounded down.\nWhenever an opponent searches their library, put a +1/+1 counter on Wan Shi Tong and draw a card.",
+  "set": "TLA",
+  "standard": "legal",
+  "type_line": "Legendary Creature \u2014 Bird Spirit"
+ },
+ "watery grave": {
+  "collector_number": "488",
+  "name": "Watery Grave",
+  "oracle_text": "({T}: Add {U} or {B}.)\nAs this land enters, you may pay 2 life. If you don't, it enters tapped.",
+  "set": "TRK",
+  "standard": "legal",
+  "type_line": "Land \u2014 Island Swamp"
+ },
+ "we say thee nay!": {
+  "collector_number": "82",
+  "name": "We Say Thee Nay!",
+  "oracle_text": "Teamwork 2 (As an additional cost to cast this spell, you may tap any number of creatures you control with total power 2 or more.)\nCounter target spell unless its controller pays {2}. Counter that spell unless its controller pays {4} instead if this spell was cast using teamwork.",
+  "set": "MSH",
+  "standard": "legal",
+  "type_line": "Instant \u2014 Arcane"
+ }
 }

@@ -1,6 +1,6 @@
 # XMage oracle (mage-bench)
 
-Working recipe (verified 2026-11-07, mage-bench master):
+Working recipe (verified 2026-11-10, pinned mage-bench revision):
 
 1. `mvn install package -DskipTests` in a mage-bench clone (Java 21 + Maven; ~25 min).
 2. Config `diff-smoke.json`: players `{"type":"sleepwalker","name":"SleepA","deck":"tmp/decks/islands.dck"}` —
@@ -23,19 +23,34 @@ files in the `N Card Name` format:
 
 ```bash
 python driver/diff_game.py oracle/decks/mono-green-v0.txt \
-  oracle/decks/mono-green-v0.txt --seed 17
+  oracle/decks/mono-green-v0.txt --seed 17 --v0
 ```
 
-Before running, apply the local-only external-pilot patch in the mage-bench
-clone. From `/home/ubuntu/repos/eng/mage-bench`:
+Before running, apply all local mage-bench patches in sorted filename order
+from the `mtg-rl-sim` repository root:
 
 ```bash
-git apply /home/ubuntu/repos/eng/mtg-rl-sim/oracle/patches/mage-bench-external-pilot.patch
+MAGE_BENCH_ROOT=/home/ubuntu/repos/eng/mage-bench
+mapfile -t patches < <(find oracle/patches -maxdepth 1 -type f -name 'mage-bench-*.patch' -print | LC_ALL=C sort)
+for patch in "${patches[@]}"; do
+  git -C "$MAGE_BENCH_ROOT" apply "$PWD/$patch"
+done
 ```
 
-The patch adds a bridge-only `external` pilot. Its process reserves the XMage
-seat, starts the existing HTTP bridge, writes `<game_dir>/<name>_mcp_url.txt`,
-and stays alive while the game runs. Do not push this patch to mage-bench.
+`driver/meta_decks.py --refresh-printings` refreshes the deck cache by selecting
+the newest Scryfall printing whose set and collector number are registered in
+`MAGE_BENCH_ROOT`, then canonicalizes deck names from Scryfall. `oracle/xmage-missing.txt`
+lists cards that are absent from the pinned upstream source and any decks that
+cannot load because of them.
+
+The external-pilot patch adds a bridge-only `external` pilot. Its process
+reserves the XMage seat, starts the existing HTTP bridge, writes
+`<game_dir>/<name>_mcp_url.txt`, and stays alive while the game runs. The
+upstream-cards patch adds five upstream card implementations and the three
+requested card tests. Enlightened Confidant remains unpatched because its
+upstream class needs a missing pinned-core accessor; it and its deck are listed
+in `oracle/xmage-missing.txt`. These patches are applied locally; do not push
+them to mage-bench.
 The driver launches both seats and sets
 `XMAGE_AI_PUPPETEER_CHOOSING_PLAYER=DiffA`; it answers XMage's starting-player
 target by selecting `DiffA`, matching phase-rs `PlayerId(0)`.
