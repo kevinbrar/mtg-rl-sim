@@ -176,6 +176,50 @@ def test_duplicate_activation_matches_are_unmapped_with_both_choice_lists() -> N
     assert _legal_action_diff(decision, xmage)
 
 
+def test_activation_with_multiple_playable_abilities_is_unmapped() -> None:
+    action = {
+        "type": "ActivateAbility",
+        "data": {"ability_index": 0, "source_id": 27},
+    }
+    decision = {
+        "waiting_for": {"type": "Priority"},
+        "objects": {
+            "27": {
+                "name": "Basilisk Collar",
+                "controller": 0,
+                "zone": "Battlefield",
+                "abilities": [{"index": 0, "text": "Equip {2}"}],
+            }
+        },
+        "candidates": [action],
+    }
+    xmage = {
+        "action_type": "GAME_SELECT",
+        "board": [
+            {
+                "name": "DiffA",
+                "is_you": True,
+                "battlefield": [{"id": "p3", "name": "Basilisk Collar"}],
+            },
+            {"name": "DiffB", "is_you": False, "battlefield": []},
+        ],
+        "choices": [
+            {
+                "id": "p3",
+                "name": "Basilisk Collar",
+                "action": "activate",
+                "playable_abilities": [
+                    "Equip {2} <i>({2}: Attach to target creature you control)</i>",
+                    "Other ability",
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(UnmappedPromptError, match="requires an ability choice"):
+        _xmage_activation_choice(action, decision, xmage)
+
+
 def test_duplicate_hand_land_choices_are_fungible() -> None:
     fixture = json.loads(HAND_DUPLICATE_FIXTURE.read_text())
     decision = fixture["prompts"]["phase"]

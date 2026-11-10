@@ -648,7 +648,14 @@ def _xmage_activation_choice(action: dict, decision: dict, result: dict) -> dict
             for ability_text in choice.get("playable_abilities", [])
         )
     ]
-    return _unique_semantic_choice("activation", key, decision, result, matching)
+    choice = _unique_semantic_choice("activation", key, decision, result, matching)
+    if len(choice.get("playable_abilities", [])) > 1:
+        raise UnmappedPromptError(
+            f"XMage activation requires an ability choice for {key}: "
+            f"phase_choices={decision.get('candidates', [])}; "
+            f"xmage_choices={result.get('choices', [])}"
+        )
+    return choice
 
 
 def _xmage_target_choice(action: dict, decision: dict, result: dict) -> dict:
