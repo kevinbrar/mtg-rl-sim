@@ -85,11 +85,7 @@ def _reexec_with_mage_bench_python() -> None:
         return
     env = os.environ.copy()
     env["DIFF_GAME_MCP_REEXEC"] = "1"
-    os.execve(
-        interpreter,
-        [str(interpreter), str(Path(__file__).resolve()), *sys.argv[1:]],
-        env,
-    )
+    os.execve(interpreter, [str(interpreter), str(Path(__file__).resolve()), *sys.argv[1:]], env)
 
 
 def normalize_name(value: str) -> str:
@@ -239,16 +235,12 @@ def expand_deck(path: Path) -> list[str]:
         entries.append(stripped)
     cards = PhaseEnv._expand(entries)
     if len(cards) != 60:
-        raise ValueError(
-            f"{path} contains {len(cards)} cards; the v0 deck must contain 60"
-        )
+        raise ValueError(f"{path} contains {len(cards)} cards; the v0 deck must contain 60")
     return cards
 
 
 def read_printings() -> dict[str, dict]:
-    return json.loads(
-        (ROOT / "oracle" / "decks" / "scryfall-printings.json").read_text()
-    )
+    return json.loads((ROOT / "oracle" / "decks" / "scryfall-printings.json").read_text())
 
 
 def validate_v0_deck(cards: list[str], printings: dict[str, dict], path: Path) -> None:
@@ -272,26 +264,17 @@ def validate_v0_deck(cards: list[str], printings: dict[str, dict], path: Path) -
             printing["oracle_text"],
             re.IGNORECASE,
         ):
-            raise ValueError(
-                f"{printing['name']} has unsupported triggered or choice text"
-            )
+            raise ValueError(f"{printing['name']} has unsupported triggered or choice text")
         creatures.add(name)
     basic_count = sum(counts[name] for name in basics)
     creature_count = sum(counts[name] for name in creatures)
-    if (
-        basic_count != 24
-        or creature_count != 36
-        or not 4 <= len(creatures) <= 6
-        or len(basics) != 1
-    ):
+    if basic_count != 24 or creature_count != 36 or not 4 <= len(creatures) <= 6 or len(basics) != 1:
         raise ValueError(
             f"{path} must contain 24 of one basic land and 36 copies across 4–6 creatures"
         )
 
 
-def write_xmage_deck(
-    cards: list[str], printings: dict[str, dict], path: Path, *, reverse: bool
-) -> None:
+def write_xmage_deck(cards: list[str], printings: dict[str, dict], path: Path, *, reverse: bool) -> None:
     sequence = list(reversed(cards)) if reverse else cards
     lines = []
     for card in sequence:
@@ -309,9 +292,7 @@ def projection_from_phase(state: dict) -> dict:
                 "life": player["life"],
                 "hand": sorted(normalize_name(name) for name in player["hand"]),
                 "library_count": player["library_count"],
-                "graveyard": sorted(
-                    normalize_name(name) for name in player["graveyard"]
-                ),
+                "graveyard": sorted(normalize_name(name) for name in player["graveyard"]),
             }
             for player in state["players"]
         ],
@@ -425,9 +406,7 @@ def _policy_candidate_v0(decision: dict, rng: random.Random) -> tuple[int, dict]
             and not action.get("data", {}).get("assignments")
         ]
         if not empty:
-            raise UnmappedPromptError(
-                f"No no-blockers action in phase candidates: {decision}"
-            )
+            raise UnmappedPromptError(f"No no-blockers action in phase candidates: {decision}")
         return empty[0]
 
     supported: list[tuple[int, dict]] = []
@@ -477,17 +456,11 @@ def _trivial_action_index(decision: dict) -> tuple[int, dict]:
         if action.get("type") == "PassPriority":
             return index, action
     for index, action in enumerate(decision["candidates"]):
-        if action.get("type") == "DeclareAttackers" and not action.get("data", {}).get(
-            "attacks"
-        ):
+        if action.get("type") == "DeclareAttackers" and not action.get("data", {}).get("attacks"):
             return index, action
-        if action.get("type") == "DeclareBlockers" and not action.get("data", {}).get(
-            "assignments"
-        ):
+        if action.get("type") == "DeclareBlockers" and not action.get("data", {}).get("assignments"):
             return index, action
-    raise UnmappedPromptError(
-        f"Trivial phase decision has no pass or empty combat action: {decision}"
-    )
+    raise UnmappedPromptError(f"Trivial phase decision has no pass or empty combat action: {decision}")
 
 
 def _card_action_set(decision: dict) -> Counter:
@@ -505,9 +478,7 @@ def _card_action_set(decision: dict) -> Counter:
         object_id = data.get("object_id", data.get("card_id"))
         name = names_by_id.get(object_id)
         if name is None:
-            raise UnmappedPromptError(
-                f"Could not map phase candidate to hand card: {action}, {decision['state']}"
-            )
+            raise UnmappedPromptError(f"Could not map phase candidate to hand card: {action}, {decision['state']}")
         actions.append(("land" if kind == "PlayLand" else "cast", normalize_name(name)))
     return Counter(actions)
 
@@ -660,7 +631,9 @@ def _object_signature(
             try:
                 signature.append(int(value))
             except (TypeError, ValueError):
-                signature.append(None if value is None else normalize_name(str(value)))
+                signature.append(
+                    None if value is None else normalize_name(str(value))
+                )
         elif field in {"tapped", "summoning_sick"}:
             if not isinstance(obj[field], bool):
                 raise UnmappedPromptError(f"Invalid {side} {field}: {obj}")
@@ -670,7 +643,9 @@ def _object_signature(
                 raise UnmappedPromptError(f"Invalid {side} damage: {obj}")
             signature.append(obj[field])
     signature.append(
-        _counter_signature(obj["counters"], side) if "counters" in obj else MISSING
+        _counter_signature(obj["counters"], side)
+        if "counters" in obj
+        else MISSING
     )
     for field in ("token", "face_down"):
         if field in obj and not isinstance(obj[field], bool):
@@ -804,7 +779,9 @@ def _resolve_battlefield_choice(
             f"phase_choices={decision.get('candidates', [])}; "
             f"xmage_choices={result.get('choices', [])}"
         )
-    choice, _ = min(equivalent, key=lambda item: _short_id_sequence(str(item[0]["id"])))
+    choice, _ = min(
+        equivalent, key=lambda item: _short_id_sequence(str(item[0]["id"]))
+    )
     bindings.bind(phase_id, incarnation, str(choice["id"]))
     return choice
 
@@ -905,7 +882,11 @@ def _phase_hand_card(object_id: int, decision: dict) -> tuple[dict, int]:
 
 
 def _xmage_hand_owner(result: dict) -> tuple[int, dict]:
-    players = [player for player in result.get("board", []) if player.get("is_you")]
+    players = [
+        player
+        for player in result.get("board", [])
+        if player.get("is_you")
+    ]
     if len(players) != 1 or players[0].get("name") not in PLAYER_NAMES:
         raise UnmappedPromptError(f"Could not identify XMage hand owner: {result}")
     player = players[0]
@@ -1043,7 +1024,10 @@ def _xmage_target_key(
             for player, card in battlefield
             if normalize_name(card.get("name", "")) == name
         ]
-    if len(matches) != 1 or matches[0][0].get("name") not in PLAYER_NAMES:
+    if (
+        len(matches) != 1
+        or matches[0][0].get("name") not in PLAYER_NAMES
+    ):
         raise UnmappedPromptError(
             f"Could not identify XMage permanent source for {choice}: "
             f"xmage_choices={result.get('choices', [])}"
@@ -1056,14 +1040,13 @@ def _phase_target_set(decision: dict) -> Counter:
     return Counter(
         _phase_target_key(action, decision)
         for action in decision["candidates"]
-        if action.get("type") in {"ChooseTarget", "SelectTargets", "SelectCards"}
+        if action.get("type")
+        in {"ChooseTarget", "SelectTargets", "SelectCards"}
     )
 
 
 def _xmage_target_set(result: dict, xmage_state: dict | None = None) -> Counter:
-    if result.get("action_type") != "GAME_TARGET" or "(Scry)" in result.get(
-        "message", ""
-    ):
+    if result.get("action_type") != "GAME_TARGET" or "(Scry)" in result.get("message", ""):
         return Counter()
     return Counter(
         _xmage_target_key(choice, result, xmage_state)
@@ -1206,9 +1189,7 @@ def _decision_metadata(result: dict) -> dict:
     context = result.get("context") or ""
     turn_match = re.match(r"T(\d+)\s+(.+)", context)
     board = result.get("board") or []
-    active = next(
-        (player.get("name") for player in board if player.get("is_active")), None
-    )
+    active = next((player.get("name") for player in board if player.get("is_active")), None)
     actor = next((player.get("name") for player in board if player.get("is_you")), None)
     turn = int(turn_match.group(1)) if turn_match else None
     if turn is not None and active in PLAYER_NAMES:
@@ -1241,19 +1222,13 @@ def _decision_point_diff(decision: dict, result: dict) -> dict:
         "actor": metadata["actor"],
         "step": metadata["step"],
     }
-    return (
-        {
-            "phase": expected,
-            "xmage": actual,
-        }
-        if expected != actual
-        else {}
-    )
+    return {
+        "phase": expected,
+        "xmage": actual,
+    } if expected != actual else {}
 
 
-def _matching_trivial_combat_stop(
-    result: dict, skipped_stops: list[dict]
-) -> dict | None:
+def _matching_trivial_combat_stop(result: dict, skipped_stops: list[dict]) -> dict | None:
     metadata = _decision_metadata(result)
     combat_phase = _normalize_phase(result.get("combat_phase"))
     if combat_phase == "attackers":
@@ -1379,9 +1354,7 @@ async def _connect_xmage(urls: list[str]):
     for url in urls:
         http_client = create_mcp_http_client(timeout=httpx2.Timeout(30.0, read=None))
         await stack.enter_async_context(http_client)
-        read, write = await stack.enter_async_context(
-            streamable_http_client(url, http_client=http_client)
-        )
+        read, write = await stack.enter_async_context(streamable_http_client(url, http_client=http_client))
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         sessions.append(session)
@@ -1507,9 +1480,7 @@ async def _phase_advance_to_meaningful(
             )
         elif kind in {"DeclareAttackers", "DeclareBlockers"}:
             stop = {
-                "kind": "declareattackers"
-                if kind == "DeclareAttackers"
-                else "declareblockers",
+                "kind": "declareattackers" if kind == "DeclareAttackers" else "declareblockers",
                 "turn": state["turn"],
                 "active_player": PLAYER_NAMES[state["active_player"]],
                 "step": _normalize_phase(state["phase"]),
@@ -1555,9 +1526,7 @@ def _matching_trivial_priority_stop(
     )
     if matching is not None:
         return matching
-    if result.get("response_type") == "boolean" and _decision_point_diff(
-        decision, result
-    ):
+    if result.get("response_type") == "boolean" and _decision_point_diff(decision, result):
         return {
             "kind": "priority",
             "turn": metadata["turn"],
@@ -1569,9 +1538,7 @@ def _matching_trivial_priority_stop(
 
 def _xmage_loop_guard(result: dict) -> bool:
     warning = result.get("warning")
-    normalized_warning = (
-        warning.casefold().replace("-", " ") if isinstance(warning, str) else ""
-    )
+    normalized_warning = warning.casefold().replace("-", " ") if isinstance(warning, str) else ""
     return result.get("action_taken") == "auto_passed_loop_detected" or (
         "loop detected" in normalized_warning
         or "too many interactions" in normalized_warning
@@ -1727,9 +1694,7 @@ async def _sync_xmage_to_decision(
                     }
                 )
                 pending_results.pop(seat, None)
-                action_tasks[seat] = asyncio.create_task(
-                    _call(session, "pass_priority")
-                )
+                action_tasks[seat] = asyncio.create_task(_call(session, "pass_priority"))
                 continue
 
             point_diff = _decision_point_diff(decision, result)
@@ -1764,16 +1729,14 @@ def _legal_action_diff(
     phase_scry = (
         isinstance(waiting_for, dict) and waiting_for.get("type") == "ScryChoice"
     )
-    xmage_scry = xmage_result.get(
-        "action_type"
-    ) == "GAME_TARGET" and "(Scry)" in xmage_result.get("message", "")
+    xmage_scry = (
+        xmage_result.get("action_type") == "GAME_TARGET"
+        and "(Scry)" in xmage_result.get("message", "")
+    )
     if phase_scry or xmage_scry:
         if not phase_scry or not xmage_scry:
             return {
-                "phase": {
-                    "waiting_for": waiting_for,
-                    "candidates": decision["candidates"],
-                },
+                "phase": {"waiting_for": waiting_for, "candidates": decision["candidates"]},
                 "xmage": xmage_result,
             }
         waiting_player = waiting_for.get("data", {}).get("player")
@@ -1786,10 +1749,7 @@ def _legal_action_diff(
         if phase_choices != xmage_choices:
             return {
                 "phase": {"scry_choices": sorted(phase_choices)},
-                "xmage": {
-                    "scry_choices": sorted(xmage_choices),
-                    "prompt": xmage_result,
-                },
+                "xmage": {"scry_choices": sorted(xmage_choices), "prompt": xmage_result},
             }
         return {}
     phase_cards = _card_action_set(decision)
@@ -1808,13 +1768,8 @@ def _legal_action_diff(
         return {}
     return {
         "phase": {
-            "cards": sorted(
-                [
-                    {"action": action, "name": name, "count": count}
-                    for (action, name), count in phase_cards.items()
-                ],
-                key=lambda item: (item["action"], item["name"]),
-            ),
+            "cards": sorted([{"action": action, "name": name, "count": count} for (action, name), count in phase_cards.items()],
+                            key=lambda item: (item["action"], item["name"])),
             "attacking_possible": phase_can_attack,
             "abilities": sorted(
                 [
@@ -1830,13 +1785,8 @@ def _legal_action_diff(
             "candidates": decision["candidates"],
         },
         "xmage": {
-            "cards": sorted(
-                [
-                    {"action": action, "name": name, "count": count}
-                    for (action, name), count in xmage_cards.items()
-                ],
-                key=lambda item: (item["action"], item["name"]),
-            ),
+            "cards": sorted([{"action": action, "name": name, "count": count} for (action, name), count in xmage_cards.items()],
+                            key=lambda item: (item["action"], item["name"])),
             "attacking_possible": xmage_can_attack,
             "abilities": sorted(
                 [
@@ -1881,9 +1831,7 @@ def _scry_legal_choices(decision: dict, xmage_result: dict) -> tuple[set, set]:
         else:
             raise UnmappedPromptError(f"Unsupported Phase scry candidate: {action}")
     if not phase_choices:
-        raise UnmappedPromptError(
-            f"Phase scry prompt has no SelectCards candidates: {decision}"
-        )
+        raise UnmappedPromptError(f"Phase scry prompt has no SelectCards candidates: {decision}")
     message = xmage_result.get("message")
     if not isinstance(message, str) or "up to one card" not in message.casefold():
         raise UnmappedPromptError(f"Unsupported XMage scry prompt: {xmage_result}")
@@ -1898,11 +1846,10 @@ def _scry_legal_choices(decision: dict, xmage_result: dict) -> tuple[set, set]:
         raise UnmappedPromptError(f"Unsupported XMage scry prompt: {xmage_result}")
     board = xmage_result.get("board", [])
     if not any(
-        item.get("is_you") and item.get("name") == PLAYER_NAMES[owner] for item in board
+        item.get("is_you") and item.get("name") == PLAYER_NAMES[owner]
+        for item in board
     ):
-        raise UnmappedPromptError(
-            f"XMage scry prompt is not for {PLAYER_NAMES[owner]}: {xmage_result}"
-        )
+        raise UnmappedPromptError(f"XMage scry prompt is not for {PLAYER_NAMES[owner]}: {xmage_result}")
     xmage_choices = {
         ("bottom", normalize_name(choice["name"]), owner, "Library", "Scry")
         for choice in xmage_card_choices
@@ -2014,24 +1961,16 @@ async def _keep_opening_hands(sessions: list) -> dict[int, asyncio.Task]:
                 )
             ):
                 return action_tasks
-            if (
-                result.get("action_type") == "GAME_TARGET"
-                and "starting player" in message
-            ):
+            if result.get("action_type") == "GAME_TARGET" and "starting player" in message:
                 choices = [
                     choice
                     for choice in result.get("choices", [])
-                    if normalize_name(choice.get("name", ""))
-                    == normalize_name(PLAYER_NAMES[0])
+                    if normalize_name(choice.get("name", "")) == normalize_name(PLAYER_NAMES[0])
                 ]
                 if len(choices) != 1:
-                    raise RuntimeError(
-                        f"XMage did not offer {PLAYER_NAMES[0]} as starting player: {result}"
-                    )
+                    raise RuntimeError(f"XMage did not offer {PLAYER_NAMES[0]} as starting player: {result}")
                 action_tasks[index] = asyncio.create_task(
-                    _call(
-                        session, "choose_action", {"choice": str(choices[0]["index"])}
-                    )
+                    _call(session, "choose_action", {"choice": str(choices[0]["index"])})
                 )
                 progressed = True
                 continue
@@ -2218,9 +2157,7 @@ async def _apply_xmage_action(
         choice = _xmage_hand_choice(
             card["name"], owner, desired_action, decision, xmage_result
         )
-        return asyncio.create_task(
-            _call(session, "choose_action", {"choice": str(choice["index"])})
-        )
+        return asyncio.create_task(_call(session, "choose_action", {"choice": str(choice["index"])}))
     if kind == "ActivateAbility":
         xmage_state = await _get_state(session)
         if bindings is not None:
@@ -2245,16 +2182,10 @@ async def _apply_xmage_action(
         card_ids = data.get("cards", [])
         if decision.get("waiting_for", {}).get("type") == "ScryChoice":
             return asyncio.create_task(
-                _call(
-                    session,
-                    "choose_action",
-                    _scry_selection_payload(action, decision, xmage_result),
-                )
+                _call(session, "choose_action", _scry_selection_payload(action, decision, xmage_result))
             )
         if len(card_ids) != 1:
-            raise UnmappedPromptError(
-                f"Policy cannot map multi-card selection: {action}"
-            )
+            raise UnmappedPromptError(f"Policy cannot map multi-card selection: {action}")
         card, owner = _phase_hand_card(card_ids[0], decision)
         choice = _xmage_hand_choice(card["name"], owner, None, decision, xmage_result)
         return asyncio.create_task(
@@ -2318,16 +2249,7 @@ async def _start_mage_bench(
     env["XMAGE_AI_PUPPETEER_CHOOSING_PLAYER"] = chooser
     log_file = log_path.open("w")
     proc = subprocess.Popen(
-        [
-            "uv",
-            "run",
-            "python",
-            "-m",
-            "magebench.cli",
-            "--config",
-            str(config_path),
-            "--skip-compile",
-        ],
+        ["uv", "run", "python", "-m", "magebench.cli", "--config", str(config_path), "--skip-compile"],
         cwd=mage_bench,
         env=env,
         stdout=log_file,
@@ -2338,17 +2260,12 @@ async def _start_mage_bench(
         while time.monotonic() < deadline:
             urls = sorted(game_logs.glob("game_*/Diff?_mcp_url.txt"))
             if len(urls) >= 2:
-                by_name = {
-                    path.name.split("_", 1)[0]: path.read_text().strip()
-                    for path in urls
-                }
+                by_name = {path.name.split("_", 1)[0]: path.read_text().strip() for path in urls}
                 if all(name in by_name for name in PLAYER_NAMES):
                     return proc, log_file
             if proc.poll() is not None:
                 log_file.flush()
-                raise RuntimeError(
-                    f"mage-bench exited ({proc.returncode}); see {log_path}"
-                )
+                raise RuntimeError(f"mage-bench exited ({proc.returncode}); see {log_path}")
             await asyncio.sleep(0.5)
         raise TimeoutError(f"Timed out waiting for external MCP URLs under {game_logs}")
     except BaseException:
@@ -2397,16 +2314,10 @@ async def _advance_xmage_to_terminal(
             try:
                 result = task.result()
             except Exception as exc:
-                return _result_states(last_result), {
-                    "seat": PLAYER_NAMES[seat],
-                    "error": str(exc),
-                }
+                return _result_states(last_result), {"seat": PLAYER_NAMES[seat], "error": str(exc)}
             last_result = result
             if result.get("success") is False:
-                return _result_states(result), {
-                    "seat": PLAYER_NAMES[seat],
-                    "result": result,
-                }
+                return _result_states(result), {"seat": PLAYER_NAMES[seat], "result": result}
             if result.get("game_over"):
                 if not result.get("board"):
                     return fallback_states, {"terminal_projection_unavailable": result}
@@ -2414,26 +2325,16 @@ async def _advance_xmage_to_terminal(
             if result.get("action_pending"):
                 combat_phase = _normalize_phase(result.get("combat_phase"))
                 cards, can_attack = _xmage_legal_actions(result)
-                if (
-                    combat_phase
-                    in {
-                        "attackers",
-                        "declareattackers",
-                        "blockers",
-                        "declareblockers",
-                    }
-                    or cards
-                    or can_attack
-                ):
-                    return _result_states(result), {
-                        "seat": PLAYER_NAMES[seat],
-                        "result": result,
-                    }
+                if combat_phase in {
+                    "attackers",
+                    "declareattackers",
+                    "blockers",
+                    "declareblockers",
+                } or cards or can_attack:
+                    return _result_states(result), {"seat": PLAYER_NAMES[seat], "result": result}
             action_tasks[seat] = asyncio.create_task(_call(session, "pass_priority"))
         try:
-            states = await asyncio.gather(
-                *(_get_state(session) for session in sessions)
-            )
+            states = await asyncio.gather(*(_get_state(session) for session in sessions))
         except Exception as exc:
             if last_result is None:
                 raise
@@ -2445,9 +2346,7 @@ async def _advance_xmage_to_terminal(
         for seat, session in enumerate(sessions):
             task = action_tasks.get(seat)
             if task is None:
-                action_tasks[seat] = asyncio.create_task(
-                    _call(session, "pass_priority")
-                )
+                action_tasks[seat] = asyncio.create_task(_call(session, "pass_priority"))
         await asyncio.sleep(0.05)
     return states, {"timeout": timeout}
 
@@ -2490,9 +2389,7 @@ async def run_game(args: argparse.Namespace) -> dict:
     game_logs.mkdir()
     xmage_decks = [run_dir / f"player-{index}.dck" for index in range(2)]
     for cards, path in zip(phase_decks, xmage_decks):
-        write_xmage_deck(
-            cards, printings, path, reverse=args.xmage_library_top == "last"
-        )
+        write_xmage_deck(cards, printings, path, reverse=args.xmage_library_top == "last")
 
     config_path = run_dir / "mage-bench.json"
     config_path.write_text(
@@ -2524,9 +2421,7 @@ async def run_game(args: argparse.Namespace) -> dict:
             chooser=PLAYER_NAMES[0],
         )
         url_paths = sorted(game_logs.glob("game_*/Diff?_mcp_url.txt"))
-        urls_by_name = {
-            path.name.split("_", 1)[0]: path.read_text().strip() for path in url_paths
-        }
+        urls_by_name = {path.name.split("_", 1)[0]: path.read_text().strip() for path in url_paths}
         urls = [urls_by_name[name] for name in PLAYER_NAMES]
         stack, sessions = await _connect_xmage(urls)
         async with _suppress_broken_resource_after_terminal(
@@ -2535,18 +2430,14 @@ async def run_game(args: argparse.Namespace) -> dict:
             action_tasks = await _keep_opening_hands(sessions)
             phase = PhaseEnv(str(args.data_root.resolve()))
             rng = random.Random(args.seed)
-            decision = phase.new_game(
-                phase_decks[0], phase_decks[1], seed=args.seed, ordered_library=True
-            )
+            decision = phase.new_game(phase_decks[0], phase_decks[1], seed=args.seed, ordered_library=True)
             for player, deck in zip(phase.started["state"]["players"], phase_decks):
                 if len(player["hand"]) != 7:
                     raise RuntimeError(f"phase-rs did not keep seven cards: {player}")
                 if Counter(map(normalize_name, player["hand"])) != Counter(
                     map(normalize_name, deck[:7])
                 ):
-                    raise RuntimeError(
-                        f"phase-rs opening hand is not the first seven deck entries: {player}"
-                    )
+                    raise RuntimeError(f"phase-rs opening hand is not the first seven deck entries: {player}")
 
             normalization_events: list[dict] = []
             skipped_stops: list[dict] = []
@@ -2556,14 +2447,10 @@ async def run_game(args: argparse.Namespace) -> dict:
             phase_blocker_decisions: set[tuple[int, int]] = set()
             expected_combat_batches: dict[int, tuple[str, int]] = {}
             phase_projection = projection_from_phase(phase.started["state"])
-            xmage_states = await asyncio.gather(
-                *(_get_state(session) for session in sessions)
-            )
+            xmage_states = await asyncio.gather(*(_get_state(session) for session in sessions))
             xmage_projection = projection_from_xmage(xmage_states)
             if any(len(player["hand"]) != 7 for player in xmage_projection["players"]):
-                raise RuntimeError(
-                    f"XMage did not keep seven cards: {xmage_projection['players']}"
-                )
+                raise RuntimeError(f"XMage did not keep seven cards: {xmage_projection['players']}")
             diff = compare_projection(phase_projection, xmage_projection)
             if diff:
                 report = {
@@ -2579,16 +2466,8 @@ async def run_game(args: argparse.Namespace) -> dict:
                     "phase_candidates": [],
                     "xmage_choices": [],
                 }
-                (run_dir / "divergence.json").write_text(
-                    json.dumps(report, indent=2) + "\n"
-                )
-                return {
-                    "type": "divergence",
-                    "run_dir": run_dir,
-                    "step": 0,
-                    "kind": "state",
-                    "diff": diff,
-                }
+                (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
+                return {"type": "divergence", "run_dir": run_dir, "step": 0, "kind": "state", "diff": diff}
 
             decision = await _phase_advance_to_meaningful(
                 phase,
@@ -2604,9 +2483,7 @@ async def run_game(args: argparse.Namespace) -> dict:
             last_xmage_pending = None
             while decision["type"] == "decision":
                 if not _is_meaningful_decision(decision):
-                    raise RuntimeError(
-                        f"phase trivial-stop normalization failed: {decision}"
-                    )
+                    raise RuntimeError(f"phase trivial-stop normalization failed: {decision}")
                 owner = decision["owner"]
                 blocker_key = _phase_blocker_key(decision)
                 if blocker_key is not None:
@@ -2630,23 +2507,14 @@ async def run_game(args: argparse.Namespace) -> dict:
                         "step": steps,
                         "state": {
                             "phase": decision["state"],
-                            "xmage": await asyncio.gather(
-                                *(_get_state(session) for session in sessions)
-                            ),
+                            "xmage": await asyncio.gather(*(_get_state(session) for session in sessions)),
                         },
                         "phase_candidates": decision["candidates"],
                         "xmage_choices": None,
                         "reason": point_diff,
                     }
-                    (run_dir / "divergence.json").write_text(
-                        json.dumps(report, indent=2) + "\n"
-                    )
-                    return {
-                        "type": "divergence",
-                        "run_dir": run_dir,
-                        "step": steps,
-                        "kind": "decision_point",
-                    }
+                    (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
+                    return {"type": "divergence", "run_dir": run_dir, "step": steps, "kind": "decision_point"}
                 if point_diff.get("kind") == "xmage_loop_guard":
                     report = {
                         "run_id": run_id,
@@ -2661,9 +2529,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                         "xmage_choices": xmage_result.get("choices", []),
                         "reason": point_diff,
                     }
-                    (run_dir / "divergence.json").write_text(
-                        json.dumps(report, indent=2) + "\n"
-                    )
+                    (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
                     return {
                         "type": "divergence",
                         "run_dir": run_dir,
@@ -2684,9 +2550,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                         "xmage_choices": xmage_result.get("choices", []),
                         "reason": point_diff,
                     }
-                    (run_dir / "divergence.json").write_text(
-                        json.dumps(report, indent=2) + "\n"
-                    )
+                    (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
                     return {
                         "type": "divergence",
                         "run_dir": run_dir,
@@ -2694,9 +2558,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                         "kind": "combat_batch",
                     }
                 if point_diff.get("kind") == "unmapped_prompt":
-                    xmage_states = await asyncio.gather(
-                        *(_get_state(session) for session in sessions)
-                    )
+                    xmage_states = await asyncio.gather(*(_get_state(session) for session in sessions))
                     return _unmapped_prompt_result(
                         run_dir,
                         run_id,
@@ -2722,15 +2584,8 @@ async def run_game(args: argparse.Namespace) -> dict:
                         "xmage_choices": xmage_result,
                         "reason": "XMage game ended before the phase decision point",
                     }
-                    (run_dir / "divergence.json").write_text(
-                        json.dumps(report, indent=2) + "\n"
-                    )
-                    return {
-                        "type": "divergence",
-                        "run_dir": run_dir,
-                        "step": steps,
-                        "kind": "decision_point",
-                    }
+                    (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
+                    return {"type": "divergence", "run_dir": run_dir, "step": steps, "kind": "decision_point"}
 
                 if point_diff:
                     report = {
@@ -2757,9 +2612,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                         "skipped_stops": skipped_stops,
                         "normalization_events": normalization_events,
                     }
-                    (run_dir / "divergence.json").write_text(
-                        json.dumps(report, indent=2) + "\n"
-                    )
+                    (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
                     return {
                         "type": "divergence",
                         "run_dir": run_dir,
@@ -2774,9 +2627,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                         projection_from_phase(decision["state"]),
                     )
                 else:
-                    xmage_states = await asyncio.gather(
-                        *(_get_state(session) for session in sessions)
-                    )
+                    xmage_states = await asyncio.gather(*(_get_state(session) for session in sessions))
                 phase_projection = projection_from_phase(decision["state"])
                 xmage_projection = projection_from_xmage(xmage_states)
                 state_diff = compare_projection(phase_projection, xmage_projection)
@@ -2803,15 +2654,8 @@ async def run_game(args: argparse.Namespace) -> dict:
                         "xmage_choices": xmage_result.get("choices", []),
                         "xmage_pending": xmage_result,
                     }
-                    (run_dir / "divergence.json").write_text(
-                        json.dumps(report, indent=2) + "\n"
-                    )
-                    return {
-                        "type": "divergence",
-                        "run_dir": run_dir,
-                        "step": steps,
-                        "kind": "state",
-                    }
+                    (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
+                    return {"type": "divergence", "run_dir": run_dir, "step": steps, "kind": "state"}
 
                 try:
                     legal_diff = _legal_action_diff(
@@ -2851,15 +2695,8 @@ async def run_game(args: argparse.Namespace) -> dict:
                         "phase_candidates": decision["candidates"],
                         "xmage_choices": xmage_result.get("choices", []),
                     }
-                    (run_dir / "divergence.json").write_text(
-                        json.dumps(report, indent=2) + "\n"
-                    )
-                    return {
-                        "type": "divergence",
-                        "run_dir": run_dir,
-                        "step": steps,
-                        "kind": "legal_actions",
-                    }
+                    (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
+                    return {"type": "divergence", "run_dir": run_dir, "step": steps, "kind": "legal_actions"}
 
                 if decision["state"]["turn"] >= MAX_TURNS:
                     summary = {
@@ -2873,9 +2710,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                         "normalization_events": normalization_events,
                         "final_projection": xmage_projection,
                     }
-                    (run_dir / "summary.json").write_text(
-                        json.dumps(summary, indent=2) + "\n"
-                    )
+                    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
                     game_completed = True
                     return {"type": "summary", "run_dir": run_dir, **summary}
 
@@ -2907,9 +2742,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                 last_xmage_pending = xmage_result
                 applied = await asyncio.to_thread(phase.choose, index)
                 if applied.get("type") != "applied" or not applied.get("ok"):
-                    raise RuntimeError(
-                        f"phase rejected policy action {action}: {applied}"
-                    )
+                    raise RuntimeError(f"phase rejected policy action {action}: {applied}")
                 if attack_key is not None:
                     phase_attack_records.add(attack_key)
                 batch_data = action.get("data", {})
@@ -2948,18 +2781,13 @@ async def run_game(args: argparse.Namespace) -> dict:
             game_completed = True
             phase_state = projection_from_phase(decision["state"])
             xmage_states, terminal_issue = await _advance_xmage_to_terminal(
-                sessions,
-                action_tasks,
-                phase_state,
-                last_xmage_pending,
-                last_xmage_states,
+                sessions, action_tasks, phase_state, last_xmage_pending, last_xmage_states
             )
             xmage_state = projection_from_xmage(xmage_states)
             final_diff = compare_projection(phase_state, xmage_state)
             terminal_unavailable = terminal_issue and (
                 terminal_issue.get("terminal_projection_unavailable")
-                or "Bridge processor is shut down"
-                in terminal_issue.get("bridge_error", "")
+                or "Bridge processor is shut down" in terminal_issue.get("bridge_error", "")
             )
             if terminal_unavailable:
                 summary = {
@@ -2977,9 +2805,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                     "final_projection": xmage_state,
                     "terminal_result": terminal_issue,
                 }
-                (run_dir / "summary.json").write_text(
-                    json.dumps(summary, indent=2) + "\n"
-                )
+                (run_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
                 terminal_summary_written = True
                 return {"type": "summary", "run_dir": run_dir, **summary}
             if final_diff:
@@ -2988,26 +2814,15 @@ async def run_game(args: argparse.Namespace) -> dict:
                     "seed": args.seed,
                     "kind": "state",
                     "step": steps,
-                    "state": {
-                        "phase": phase_state,
-                        "xmage": xmage_state,
-                        "diff": final_diff,
-                    },
+                    "state": {"phase": phase_state, "xmage": xmage_state, "diff": final_diff},
                     "phase_candidates": [],
                     "xmage_choices": (last_xmage_pending or {}).get("choices", []),
                     "last_action": last_action,
                     "last_xmage_pending": last_xmage_pending,
                     "reason": terminal_issue,
                 }
-                (run_dir / "divergence.json").write_text(
-                    json.dumps(report, indent=2) + "\n"
-                )
-                return {
-                    "type": "divergence",
-                    "run_dir": run_dir,
-                    "step": steps,
-                    "kind": "state",
-                }
+                (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
+                return {"type": "divergence", "run_dir": run_dir, "step": steps, "kind": "state"}
             game_log = await _call(sessions[0], "get_game_log")
             winner = re.search(
                 r"\bPlayer\s+(.+?)\s+is the winner\b",
@@ -3016,14 +2831,10 @@ async def run_game(args: argparse.Namespace) -> dict:
             )
             if winner:
                 xmage_winner = PLAYER_NAMES.index(winner.group(1))
-            elif re.search(
-                r"\bgame is a draw\b", game_log.get("log", ""), re.IGNORECASE
-            ):
+            elif re.search(r"\bgame is a draw\b", game_log.get("log", ""), re.IGNORECASE):
                 xmage_winner = None
             else:
-                raise RuntimeError(
-                    f"Could not determine XMage winner from game log: {game_log}"
-                )
+                raise RuntimeError(f"Could not determine XMage winner from game log: {game_log}")
             summary = {
                 "run_id": run_id,
                 "seed": args.seed,
@@ -3066,17 +2877,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("player_deck", type=Path)
     parser.add_argument("opponent_deck", type=Path)
     parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument(
-        "--data-root", type=Path, default=Path.home() / "repos" / "eng" / "pdata" / "v"
-    )
-    parser.add_argument(
-        "--mage-bench",
-        type=Path,
-        default=Path(os.environ.get("MAGE_BENCH_ROOT", DEFAULT_MAGE_BENCH)),
-    )
-    parser.add_argument(
-        "--xmage-library-top", choices=("first", "last"), default="first"
-    )
+    parser.add_argument("--data-root", type=Path, default=Path.home() / "repos" / "eng" / "pdata" / "v")
+    parser.add_argument("--mage-bench", type=Path, default=Path(os.environ.get("MAGE_BENCH_ROOT", DEFAULT_MAGE_BENCH)))
+    parser.add_argument("--xmage-library-top", choices=("first", "last"), default="first")
     parser.add_argument("--v0", action="store_true")
     return parser.parse_args()
 
