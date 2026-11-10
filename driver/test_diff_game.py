@@ -30,6 +30,12 @@ SCRY_FIXTURE = (
     / "fixtures"
     / "boros-dimir-seed-17-scry.json"
 )
+SCRY_POLARITY_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "boros-dimir-seed-42-scry-polarity.json"
+)
 DUPLICATE_FIXTURE = (
     Path(__file__).resolve().parents[1]
     / "tests"
@@ -126,17 +132,78 @@ def test_scry_prompt_maps_phase_library_choice_to_xmage_semantically() -> None:
     bottom = next(
         candidate
         for candidate in decision["candidates"]
-        if candidate.get("data", {}).get("cards")
+        if candidate.get("data", {}).get("cards") == []
     )
     assert _scry_selection_payload(bottom, decision, xmage) == {"choice": "p27"}
 
     keep = next(
         candidate
         for candidate in decision["candidates"]
-        if candidate.get("data", {}).get("cards") == []
+        if candidate.get("data", {}).get("cards") == [96]
     )
     assert ("keep",) in phase_choices
     assert _scry_selection_payload(keep, decision, xmage) == {"choice": "no"}
+
+
+def _diagnostic_scry_inputs() -> tuple[dict, dict, dict, dict]:
+    fixture = json.loads(SCRY_POLARITY_FIXTURE.read_text())
+    looked_at_id = 9001
+    empty_action = fixture["phase_action"]
+    keep_action = {"type": "SelectCards", "data": {"cards": [looked_at_id]}}
+    decision = {
+        "waiting_for": {
+            "type": "ScryChoice",
+            "data": {"player": 1, "cards": [looked_at_id]},
+        },
+        "objects": {str(looked_at_id): fixture["phase_looked_at"]},
+        "candidates": [empty_action, keep_action],
+    }
+    return decision, fixture["xmage_prompt"], empty_action, keep_action
+
+
+# Captured from seed-42 run 20261110T092457080542Z. The Phase action handler
+# treats SelectCards.cards as keep-on-top cards; the complement goes to the
+# bottom (phase/crates/engine/src/game/engine_resolution_choices.rs:2296–2323;
+# CR 701.22a).
+def test_scry_diagnostic_empty_phase_selection_maps_to_xmage_bottom_id() -> None:
+    decision, xmage, empty_action, _ = _diagnostic_scry_inputs()
+
+    assert _scry_selection_payload(empty_action, decision, xmage) == {"choice": "p26"}
+
+
+def test_scry_diagnostic_kept_phase_card_maps_to_xmage_no() -> None:
+    decision, xmage, _, keep_action = _diagnostic_scry_inputs()
+
+    assert _scry_selection_payload(keep_action, decision, xmage) == {"choice": "no"}
+
+
+def test_scry_more_than_one_phase_card_fails_closed() -> None:
+    decision, xmage, _, _ = _diagnostic_scry_inputs()
+    decision["waiting_for"]["data"]["cards"].append(9002)
+
+    with pytest.raises(UnmappedPromptError, match="Unsupported Phase scry prompt"):
+        _scry_legal_choices(decision, xmage)
+
+
+@pytest.mark.parametrize(
+    ("message", "extra_choices"),
+    (
+        ("Select up to two cards to PUT on the BOTTOM of your library (Scry)", []),
+        (
+            "Select up to one card to PUT on the BOTTOM of your library (Scry)",
+            [{"id": "p27", "name": "Dream Beavers", "target_type": "card"}],
+        ),
+    ),
+)
+def test_scry_xmage_multi_selection_prompts_fail_closed(
+    message: str, extra_choices: list[dict]
+) -> None:
+    decision, xmage, _, _ = _diagnostic_scry_inputs()
+    xmage["message"] = message
+    xmage["choices"].extend(extra_choices)
+
+    with pytest.raises(UnmappedPromptError, match="Unsupported XMage scry prompt"):
+        _scry_legal_choices(decision, xmage)
 
 
 def test_scry_legal_set_difference_is_not_normalized_away() -> None:

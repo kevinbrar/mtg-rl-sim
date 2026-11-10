@@ -1591,13 +1591,25 @@ def _scry_legal_choices(decision: dict, xmage_result: dict) -> tuple[set, set]:
             continue
         cards = action.get("data", {}).get("cards")
         if cards == []:
-            phase_choices.add(("keep",))
-        elif cards == [card_id]:
             phase_choices.add(card_key)
+        elif cards == [card_id]:
+            phase_choices.add(("keep",))
         else:
             raise UnmappedPromptError(f"Unsupported Phase scry candidate: {action}")
     if not phase_choices:
         raise UnmappedPromptError(f"Phase scry prompt has no SelectCards candidates: {decision}")
+    message = xmage_result.get("message")
+    if not isinstance(message, str) or "up to one card" not in message.casefold():
+        raise UnmappedPromptError(f"Unsupported XMage scry prompt: {xmage_result}")
+    xmage_card_choices = [
+        choice
+        for choice in xmage_result.get("choices", [])
+        if isinstance(choice, dict)
+        and choice.get("target_type") == "card"
+        and choice.get("name")
+    ]
+    if len(xmage_card_choices) != 1:
+        raise UnmappedPromptError(f"Unsupported XMage scry prompt: {xmage_result}")
     board = xmage_result.get("board", [])
     if not any(
         item.get("is_you") and item.get("name") == PLAYER_NAMES[owner]
@@ -1606,8 +1618,7 @@ def _scry_legal_choices(decision: dict, xmage_result: dict) -> tuple[set, set]:
         raise UnmappedPromptError(f"XMage scry prompt is not for {PLAYER_NAMES[owner]}: {xmage_result}")
     xmage_choices = {
         ("bottom", normalize_name(choice["name"]), owner, "Library", "Scry")
-        for choice in xmage_result.get("choices", [])
-        if choice.get("target_type") == "card" and choice.get("name")
+        for choice in xmage_card_choices
     }
     if not xmage_result.get("required", True) and xmage_result.get("can_cancel"):
         xmage_choices.add(("keep",))
@@ -1623,13 +1634,27 @@ def _scry_selection_payload(action: dict, decision: dict, xmage_result: dict) ->
             f"Phase/XMage scry choices differ: {phase_choices} vs {xmage_choices}"
         )
     card_ids = action.get("data", {}).get("cards", [])
+    waiting = decision["waiting_for"]["data"]
+    looked_at_id = waiting["cards"][0]
+    obj = decision["objects"].get(str(looked_at_id))
+    if not isinstance(obj, dict):
+        raise UnmappedPromptError(f"Phase scry object lacks library metadata: {obj}")
     if not card_ids:
+        bottom_choice = (
+            "bottom",
+            normalize_name(obj["name"]),
+            waiting["player"],
+            "Library",
+            "Scry",
+        )
+        if bottom_choice not in phase_choices:
+            raise UnmappedPromptError(f"Phase scry has no bottom choice: {action}")
+    elif card_ids == [looked_at_id]:
         if ("keep",) not in phase_choices:
             raise UnmappedPromptError(f"Phase scry has no keep choice: {action}")
         return {"choice": "no"}
-    if len(card_ids) != 1:
+    else:
         raise UnmappedPromptError(f"Unsupported Phase scry selection: {action}")
-    obj = decision["objects"].get(str(card_ids[0]))
     matching = [
         choice
         for choice in xmage_result.get("choices", [])

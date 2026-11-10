@@ -1,0 +1,38 @@
+{
+  "run_id": "20261110T092457080542Z",
+  "step": 4,
+  "game_seq": 27,
+  "phase_action": {
+    "type": "SelectCards",
+    "data": {
+      "cards": []
+    }
+  },
+  "phase_looked_at": {
+    "controller": 1,
+    "incarnation": 0,
+    "name": "Dream Beavers",
+    "zone": "Library"
+  },
+  "xmage_prompt": {
+    "action_type": "GAME_TARGET",
+    "board": [
+      {
+        "name": "DiffB",
+        "is_you": true
+      }
+    ],
+    "can_cancel": true,
+    "choices": [
+      {
+        "id": "p26",
+        "name": "Dream Beavers",
+        "target_type": "card"
+      }
+    ],
+    "game_seq": 27,
+    "message": "Select up to one card to PUT on the BOTTOM of your library (Scry)",
+    "required": false,
+    "respond_with": "choice=pN, or choice=no to cancel"
+  }
+}
