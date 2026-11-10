@@ -1,0 +1,9 @@
+# XMage missing cards
+- Jace's Machinations — not implemented in XMage upstream @3a9bc5ac; Forge oracle planned.
+- Extrapolate the Impossible — not implemented in XMage upstream @3a9bc5ac; Forge oracle planned.
+- Enlightened Confidant — the upstream class requires `Player.SurveilResult.getCardsPutInGraveyard()`, absent from pinned XMage @2e68eefa; adding it would modify core.
+
+## XMage-unrunnable decks
+- `azorius-control.txt`: contains Jace's Machinations.
+- `4c-control.txt`: contains Extrapolate the Impossible.
+- `lifegain.txt`: contains Enlightened Confidant.
