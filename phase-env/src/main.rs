@@ -25,6 +25,7 @@ use engine::game::deck_loading::{
 use engine::game::engine::start_game_with_starting_player;
 use engine::game::game_object::AttachTarget;
 use engine::types::actions::{GameAction, MulliganChoice};
+use engine::types::events::GameEvent;
 use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::player::PlayerId;
@@ -412,13 +413,12 @@ fn run_game(out: &mut impl Write, inp: &mut impl BufRead, db: &CardDatabase, spe
             }
         };
         match apply_ai_action_proposal(&mut state, &contract, contract.authorized_actor, action) {
-            AiProposalApplication::AppliedAction { .. } => emit(
+            AiProposalApplication::AppliedAction { result, .. } => {
+                emit(out, applied_message(&result.events, snapshot(&state), None))
+            }
+            AiProposalApplication::AppliedStackPass { result, .. } => emit(
                 out,
-                json!({"type":"applied","ok":true,"state":snapshot(&state)}),
-            ),
-            AiProposalApplication::AppliedStackPass { .. } => emit(
-                out,
-                json!({"type":"applied","ok":true,"reason":"stack_pass","state":snapshot(&state)}),
+                applied_message(&result.events, snapshot(&state), Some("stack_pass")),
             ),
             AiProposalApplication::Stale => {
                 emit(out, json!({"type":"applied","ok":false,"reason":"stale"}))
@@ -430,6 +430,65 @@ fn run_game(out: &mut impl Write, inp: &mut impl BufRead, db: &CardDatabase, spe
         }
     }
     emit(out, json!({"type":"error","reason":"decision cap reached"}));
+}
+
+fn applied_message(events: &[GameEvent], state: Value, reason: Option<&str>) -> Value {
+    let mana_added: Vec<Value> = events
+        .iter()
+        .filter_map(|event| match event {
+            GameEvent::ManaAdded {
+                player_id,
+                mana_type,
+                source_id,
+                ..
+            } => Some(json!({
+                "source_id": source_id.0,
+                "mana_type": mana_type,
+                "player_id": player_id.0,
+            })),
+            _ => None,
+        })
+        .collect();
+    let mut message = json!({
+        "type": "applied",
+        "ok": true,
+        "mana_added": mana_added,
+        "state": state,
+    });
+    if let Some(reason) = reason {
+        message["reason"] = json!(reason);
+    }
+    message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine::types::events::ManaTapState;
+    use engine::types::identifiers::ObjectId;
+    use engine::types::mana::ManaType;
+    use engine::types::player::PlayerId;
+
+    #[test]
+    fn applied_message_reports_mana_added_by_a_land_tap() {
+        let message = applied_message(
+            &[GameEvent::ManaAdded {
+                player_id: PlayerId(0),
+                mana_type: ManaType::Red,
+                source_id: ObjectId(17),
+                tap_state: ManaTapState::FromTap,
+            }],
+            json!({"turn": 1}),
+            None,
+        );
+
+        assert_eq!(
+            message["mana_added"],
+            json!([{"source_id": 17, "mana_type": "Red", "player_id": 0}])
+        );
+        assert_eq!(message["type"], "applied");
+        assert_eq!(message["ok"], true);
+    }
 }
 
 fn main() {

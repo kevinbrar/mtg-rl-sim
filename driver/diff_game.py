@@ -31,6 +31,15 @@ TERMINAL_STATUSES = frozenset(
     ("completed", "completed_terminal_projection_unavailable")
 )
 MISSING = ("missing",)
+MANA_SYMBOLS = {
+    "White": "W",
+    "Blue": "U",
+    "Black": "B",
+    "Red": "R",
+    "Green": "G",
+    "Colorless": "C",
+}
+MANA_RULE_PATTERN = re.compile(r"^\{T\}:\s*Add\s*\{([WUBRGC])\}\.$")
 COUNTER_NAMES = {
     "+1/+1": "+1/+1",
     "p1p1": "+1/+1",
@@ -797,6 +806,158 @@ def _resolve_battlefield_choice(
     )
     bindings.bind(phase_id, incarnation, str(choice["id"]))
     return choice
+
+
+def _mana_added_from_applied(
+    applied: dict, decision: dict
+) -> list[tuple[dict, dict, dict]]:
+    events = applied.get("mana_added")
+    if not isinstance(events, list):
+        raise RuntimeError(f"Phase applied response omitted mana_added: {applied}")
+    state = applied.get("state")
+    if not isinstance(state, dict) or any(not isinstance(event, dict) for event in events):
+        raise RuntimeError(f"Invalid Phase mana_added response: {applied}")
+    return [(event, decision, state) for event in events]
+
+
+def _phase_mana_source(
+    source_id: int, decision: dict, applied_state: dict, actor: int
+) -> dict:
+    phase_state = decision.get("state", {})
+    battlefield = phase_state.get("battlefield", [])
+    if not any(
+        isinstance(item, dict) and item.get("id") == source_id
+        for item in applied_state.get("battlefield", [])
+    ):
+        raise UnmappedPromptError(
+            f"Mana source {source_id} left the Phase battlefield during payment"
+        )
+    state_object = next(
+        (
+            item
+            for item in battlefield
+            if isinstance(item, dict) and item.get("id") == source_id
+        ),
+        None,
+    )
+    if state_object is None:
+        raise UnmappedPromptError(
+            f"Mana source {source_id} is not on Phase's battlefield: {decision}"
+        )
+    phase_object = dict(decision.get("objects", {}).get(str(source_id), state_object))
+    phase_object.setdefault("zone", "Battlefield")
+    phase_object.setdefault("incarnation", state_object.get("incarnation"))
+    phase_object.setdefault("damage", 0)
+    phase_object.setdefault("attached_to", None)
+    if (
+        phase_object.get("controller") != actor
+        or phase_object.get("zone") != "Battlefield"
+    ):
+        raise UnmappedPromptError(
+            f"Mana source {source_id} is not the actor's battlefield permanent: "
+            f"{phase_object}"
+        )
+    return phase_object
+
+
+def _mana_plan_from_events(
+    mana_events: list[tuple[dict, dict, dict]],
+    actor: int,
+    bindings: ObjectBindings,
+    xmage_state: dict,
+) -> list[str]:
+    if not isinstance(actor, int) or isinstance(actor, bool) or not 0 <= actor < len(
+        PLAYER_NAMES
+    ):
+        raise UnmappedPromptError(f"Invalid actor for mana plan: {actor!r}")
+    plan = []
+    used_sources = set()
+    battlefield = _xmage_battlefield_by_id(xmage_state)
+    player_name = PLAYER_NAMES[actor]
+    for event, decision, applied_state in mana_events:
+        source_id = event.get("source_id")
+        player_id = event.get("player_id")
+        symbol = MANA_SYMBOLS.get(event.get("mana_type"))
+        if (
+            not isinstance(source_id, int)
+            or isinstance(source_id, bool)
+            or not isinstance(player_id, int)
+            or isinstance(player_id, bool)
+            or player_id != actor
+            or symbol is None
+        ):
+            raise UnmappedPromptError(
+                f"Unmapped mana-added event for actor {actor}: {event}"
+            )
+        if source_id in used_sources:
+            raise UnmappedPromptError(
+                f"Mana source {source_id} added mana more than once in one cast"
+            )
+        used_sources.add(source_id)
+        phase_object = _phase_mana_source(
+            source_id, decision, applied_state, actor
+        )
+        source_choices = [
+            {"id": short_id, "name": permanent.get("name")}
+            for short_id, (player, permanent) in battlefield.items()
+            if player.get("name") == player_name
+        ]
+        match = _resolve_battlefield_choice(
+            "mana source",
+            ("mana", source_id),
+            source_id,
+            phase_object,
+            decision,
+            {"choices": source_choices},
+            source_choices,
+            bindings,
+            xmage_state,
+        )
+        entry = battlefield.get(str(match.get("id")))
+        if entry is None or entry[0].get("name") != player_name:
+            raise UnmappedPromptError(
+                f"XMage mana source is not on the actor's battlefield: {match}"
+            )
+        permanent = entry[1]
+        rules = permanent.get("rules")
+        if not isinstance(rules, list) or any(
+            not isinstance(line, str) for line in rules
+        ):
+            raise UnmappedPromptError(
+                f"XMage mana source omitted rules lines: {permanent}"
+            )
+        mana_lines = []
+        matching_indices = []
+        for line in rules:
+            normalized = line.strip().strip("'")
+            match_rule = MANA_RULE_PATTERN.fullmatch(normalized)
+            if match_rule:
+                mana_lines.append(match_rule.group(1))
+                if match_rule.group(1) == symbol:
+                    matching_indices.append(len(mana_lines) - 1)
+        if len(matching_indices) != 1:
+            raise UnmappedPromptError(
+                f"No unique {symbol} mana-ability rule for XMage source "
+                f"{permanent}: rules={rules}"
+            )
+        short_id = str(match["id"])
+        plan.append(
+            short_id if len(mana_lines) == 1 else f"{short_id}:{matching_indices[0]}"
+        )
+    return plan
+
+
+def _mana_plan_ack_error(result: dict, plan: list[str]) -> str | None:
+    if not plan:
+        return None
+    if result.get("mana_plan_set") is not True:
+        return f"XMage did not accept mana_plan: {result}"
+    if result.get("mana_plan_size") != len(plan):
+        return (
+            f"XMage mana_plan_size mismatch: expected {len(plan)}, "
+            f"got {result.get('mana_plan_size')}: {result}"
+        )
+    return None
 
 
 def _phase_ability_key(action: dict, decision: dict) -> tuple:

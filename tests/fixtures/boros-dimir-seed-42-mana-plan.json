@@ -1,0 +1,115 @@
+{
+  "source_artifact": "runs/20261110T192400975972Z/divergence.json",
+  "run_id": "20261110T192400975972Z",
+  "seed": 42,
+  "step": 50,
+  "phase_object_ids_are_synthetic": true,
+  "phase": {
+    "state": {
+      "turn": 9,
+      "active_player": 0,
+      "phase": "PrecombatMain",
+      "battlefield": [
+        {
+          "id": 901,
+          "incarnation": 1,
+          "name": "Inspiring Vantage",
+          "controller": 0,
+          "tapped": false
+        },
+        {
+          "id": 902,
+          "incarnation": 1,
+          "name": "Inspiring Vantage",
+          "controller": 0,
+          "tapped": false
+        }
+      ]
+    },
+    "objects": {
+      "901": {
+        "id": 901,
+        "incarnation": 1,
+        "name": "Inspiring Vantage",
+        "controller": 0,
+        "zone": "Battlefield",
+        "tapped": false,
+        "damage": 0,
+        "attached_to": null
+      },
+      "902": {
+        "id": 902,
+        "incarnation": 1,
+        "name": "Inspiring Vantage",
+        "controller": 0,
+        "zone": "Battlefield",
+        "tapped": false,
+        "damage": 0,
+        "attached_to": null
+      }
+    }
+  },
+  "xmage_state": {
+    "players": [
+      {
+        "name": "DiffA",
+        "battlefield": [
+          {
+            "id": "p6",
+            "name": "Inspiring Vantage",
+            "tapped": true,
+            "damage": 0,
+            "rules": [
+              "{this} enters tapped unless you control two or fewer other lands.",
+              "{T}: Add {R}.",
+              "{T}: Add {W}.",
+              ": ",
+              "ICON_BADYou control two or fewer other lands"
+            ]
+          },
+          {
+            "id": "p7",
+            "name": "Inspiring Vantage",
+            "tapped": false,
+            "damage": 0,
+            "rules": [
+              "{this} enters tapped unless you control two or fewer other lands.",
+              "{T}: Add {R}.",
+              "{T}: Add {W}.",
+              ": ",
+              "ICON_BADYou control two or fewer other lands"
+            ]
+          },
+          {
+            "id": "p8",
+            "name": "Inspiring Vantage",
+            "tapped": false,
+            "damage": 0,
+            "rules": [
+              "{this} enters tapped unless you control two or fewer other lands.",
+              "{T}: Add {R}.",
+              "{T}: Add {W}.",
+              ": ",
+              "ICON_BADYou control two or fewer other lands"
+            ]
+          },
+          {
+            "id": "p55",
+            "name": "Mountain",
+            "tapped": false,
+            "damage": 0,
+            "rules": ["{T}: Add {R}."]
+          }
+        ]
+      },
+      {
+        "name": "DiffB",
+        "battlefield": [
+          {"id": "p14", "name": "Swamp", "tapped": false, "damage": 0, "rules": ["{T}: Add {B}."]},
+          {"id": "p15", "name": "Swamp", "tapped": false, "damage": 0, "rules": ["{T}: Add {B}."]},
+          {"id": "p16", "name": "Swamp", "tapped": false, "damage": 0, "rules": ["{T}: Add {B}."]}
+        ]
+      }
+    ]
+  }
+}

@@ -73,6 +73,12 @@ ABILITY_ZONE_FIXTURE = (
     / "fixtures"
     / "boros-dimir-seed-42-ability-zone.json"
 )
+MANA_PLAN_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "boros-dimir-seed-42-mana-plan.json"
+)
 COMBAT_BLOCKER_FIXTURE = (
     Path(__file__).resolve().parents[1]
     / "tests"
@@ -1910,3 +1916,233 @@ def test_summary_without_all_success_conditions_exits_nonzero(
     summary: dict,
 ) -> None:
     assert summary_exit_code(summary) != 0
+
+
+def _mana_source_decision(
+    permanents: list[dict], *, waiting_type: str = "ManaPayment"
+) -> dict:
+    return {
+        "owner": 0,
+        "actor": 0,
+        "waiting_for": {"type": waiting_type, "data": {"player": 0}},
+        "objects": {str(permanent["id"]): permanent for permanent in permanents},
+        "state": {
+            "turn": 9,
+            "active_player": 0,
+            "phase": "PrecombatMain",
+            "battlefield": [
+                {
+                    "id": permanent["id"],
+                    "incarnation": permanent["incarnation"],
+                }
+                for permanent in permanents
+            ],
+        },
+        "candidates": [],
+    }
+
+
+def _mana_permanent(
+    object_id: int,
+    name: str,
+    mana_symbol: str | None,
+    *,
+    tapped: bool = False,
+) -> dict:
+    rules = [f"{{T}}: Add {{{mana_symbol}}}."] if mana_symbol else []
+    return {
+        "id": object_id,
+        "incarnation": 1,
+        "name": name,
+        "zone": "Battlefield",
+        "controller": 0,
+        "tapped": tapped,
+        "damage": 0,
+        "attached_to": None,
+        "rules": rules,
+    }
+
+
+def _mana_applied_state(decision: dict, source_ids: set[int] | None = None) -> dict:
+    source_ids = source_ids or set()
+    battlefield = []
+    for item in decision["state"]["battlefield"]:
+        permanent = dict(item)
+        permanent["tapped"] = item["id"] in source_ids
+        battlefield.append(permanent)
+    return {"battlefield": battlefield}
+
+
+def _mana_added(
+    source_id: int, mana_type: str, decision: dict
+) -> tuple[dict, dict, dict]:
+    return (
+        {
+            "source_id": source_id,
+            "mana_type": mana_type,
+            "player_id": 0,
+        },
+        decision,
+        _mana_applied_state(decision, {source_id}),
+    )
+
+
+def test_mana_added_from_applied_keeps_event_and_states() -> None:
+    event = {"source_id": 7, "mana_type": "Red", "player_id": 0}
+    decision = {"type": "decision"}
+    state = {"battlefield": [{"id": 7}]}
+
+    assert diff_game._mana_added_from_applied(
+        {"mana_added": [event], "state": state}, decision
+    ) == [(event, decision, state)]
+
+
+def test_single_ability_land_mana_plan_omits_ability_index() -> None:
+    phase_source = _mana_permanent(7, "Mountain", "R")
+    decision = _mana_source_decision([phase_source])
+    xmage_state = {
+        "players": [
+            {
+                "name": "DiffA",
+                "battlefield": [
+                    {
+                        "id": "p5",
+                        "name": "Mountain",
+                        "tapped": False,
+                        "damage": 0,
+                        "rules": ["{T}: Add {R}."],
+                    }
+                ],
+            }
+        ]
+    }
+
+    plan = diff_game._mana_plan_from_events(
+        [_mana_added(7, "Red", decision)], 0, ObjectBindings(), xmage_state
+    )
+
+    assert plan == ["p5"]
+
+
+@pytest.mark.parametrize(
+    ("mana_type", "expected"), (("White", "p7:1"), ("Red", "p7:0"))
+)
+def test_inspiring_vantage_plan_uses_color_rule_index(
+    mana_type: str, expected: str
+) -> None:
+    fixture = json.loads(MANA_PLAN_FIXTURE.read_text())
+    phase_source = fixture["phase"]["objects"]["901"]
+    decision = _mana_source_decision([phase_source])
+    decision["state"] = fixture["phase"]["state"]
+    xmage_state = fixture["xmage_state"]
+
+    plan = diff_game._mana_plan_from_events(
+        [_mana_added(901, mana_type, decision)], 0, ObjectBindings(), xmage_state
+    )
+
+    assert fixture["source_artifact"] == "runs/20261110T192400975972Z/divergence.json"
+    assert fixture["phase_object_ids_are_synthetic"] is True
+    assert plan == [expected]
+
+
+def test_duplicate_basic_mana_sources_reuse_battlefield_bindings() -> None:
+    first = _mana_permanent(11, "Island", "U")
+    second = _mana_permanent(12, "Island", "U")
+    first_decision = _mana_source_decision([first, second])
+    second_decision = _mana_source_decision(
+        [_mana_permanent(11, "Island", "U", tapped=True), second]
+    )
+    xmage_state = {
+        "players": [
+            {
+                "name": "DiffA",
+                "battlefield": [
+                    {
+                        "id": "p3",
+                        "name": "Island",
+                        "tapped": False,
+                        "damage": 0,
+                        "rules": ["{T}: Add {U}."],
+                    },
+                    {
+                        "id": "p4",
+                        "name": "Island",
+                        "tapped": False,
+                        "damage": 0,
+                        "rules": ["{T}: Add {U}."],
+                    },
+                ],
+            }
+        ]
+    }
+
+    plan = diff_game._mana_plan_from_events(
+        [
+            _mana_added(11, "Blue", first_decision),
+            _mana_added(12, "Blue", second_decision),
+        ],
+        0,
+        ObjectBindings(),
+        xmage_state,
+    )
+
+    assert plan == ["p3", "p4"]
+
+
+def test_sacrificed_treasure_mana_source_is_unmapped() -> None:
+    treasure = _mana_permanent(31, "Treasure", None)
+    decision = _mana_source_decision([treasure])
+    applied_state = {"battlefield": []}
+    event = (
+        {"source_id": 31, "mana_type": "Red", "player_id": 0},
+        decision,
+        applied_state,
+    )
+
+    with pytest.raises(UnmappedPromptError, match="left the Phase battlefield"):
+        diff_game._mana_plan_from_events(
+            [event],
+            0,
+            ObjectBindings(),
+            {"players": [{"name": "DiffA", "battlefield": []}]},
+        )
+
+
+def test_two_mana_additions_from_one_source_are_unmapped() -> None:
+    source = _mana_permanent(41, "Mountain", "R")
+    decision = _mana_source_decision([source])
+
+    with pytest.raises(UnmappedPromptError, match="added mana more than once"):
+        diff_game._mana_plan_from_events(
+            [
+                _mana_added(41, "Red", decision),
+                _mana_added(41, "Red", decision),
+            ],
+            0,
+            ObjectBindings(),
+            {
+                "players": [
+                    {
+                        "name": "DiffA",
+                        "battlefield": [
+                            {
+                                "id": "p5",
+                                "name": "Mountain",
+                                "tapped": False,
+                                "damage": 0,
+                                "rules": ["{T}: Add {R}."],
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+
+def test_mana_plan_size_mismatch_is_reported() -> None:
+    error = diff_game._mana_plan_ack_error(
+        {"mana_plan_set": True, "mana_plan_size": 1}, ["p7:1", "p5"]
+    )
+
+    assert error is not None
+    assert "got 1" in error
