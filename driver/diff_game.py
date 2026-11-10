@@ -89,6 +89,8 @@ def _unmapped_prompt_result(
         "reason": reason,
         "prompts": {
             "phase": {
+                "waiting_for": decision.get("waiting_for"),
+                "objects": decision.get("objects"),
                 "state": decision.get("state"),
                 "candidates": decision.get("candidates"),
             },
@@ -256,7 +258,7 @@ def compare_projection(left: dict, right: dict) -> dict:
     return diff
 
 
-def policy_candidate(decision: dict, rng: random.Random) -> tuple[int, dict]:
+def _policy_candidate_v0(decision: dict, rng: random.Random) -> tuple[int, dict]:
     candidates = decision["candidates"]
     attacks = [
         (index, action)
@@ -300,6 +302,23 @@ def policy_candidate(decision: dict, rng: random.Random) -> tuple[int, dict]:
     if not supported:
         raise UnmappedPromptError(f"No supported phase action at decision: {decision}")
     return rng.choice(supported)
+
+
+def policy_candidate(
+    decision: dict, rng: random.Random, *, v0: bool = False
+) -> tuple[int, dict]:
+    if v0:
+        return _policy_candidate_v0(decision, rng)
+    candidates = list(enumerate(decision["candidates"]))
+    preferred = [
+        item
+        for item in candidates
+        if item[1].get("type") in {"CastSpell", "ActivateAbility"}
+    ]
+    other = [item for item in candidates if item not in preferred]
+    if preferred and other:
+        return rng.choice(preferred if rng.random() < 0.8 else other)
+    return rng.choice(candidates)
 
 
 def _is_meaningful_decision(decision: dict) -> bool:
@@ -681,6 +700,32 @@ async def _sync_xmage_to_decision(
 
 
 def _legal_action_diff(decision: dict, xmage_result: dict) -> dict:
+    waiting_for = decision.get("waiting_for", {})
+    phase_scry = (
+        isinstance(waiting_for, dict) and waiting_for.get("type") == "ScryChoice"
+    )
+    xmage_scry = (
+        xmage_result.get("action_type") == "GAME_TARGET"
+        and "(Scry)" in xmage_result.get("message", "")
+    )
+    if phase_scry or xmage_scry:
+        if not phase_scry or not xmage_scry:
+            return {
+                "phase": {"waiting_for": waiting_for, "candidates": decision["candidates"]},
+                "xmage": xmage_result,
+            }
+        waiting_player = waiting_for.get("data", {}).get("player")
+        if "owner" in decision and decision["owner"] != waiting_player:
+            return {
+                "phase": {"owner": decision["owner"], "waiting_for": waiting_for},
+                "xmage": xmage_result,
+            }
+        phase_choices, xmage_choices = _scry_legal_choices(decision, xmage_result)
+        if phase_choices != xmage_choices:
+            return {
+                "phase": {"scry_choices": sorted(phase_choices)},
+                "xmage": {"scry_choices": sorted(xmage_choices), "prompt": xmage_result},
+            }
     phase_cards = _card_action_set(decision)
     xmage_cards, xmage_can_attack = _xmage_legal_actions(xmage_result)
     phase_can_attack = _phase_can_attack(decision)
@@ -701,6 +746,78 @@ def _legal_action_diff(decision: dict, xmage_result: dict) -> dict:
             "combat_phase": xmage_result.get("combat_phase"),
         },
     }
+
+
+def _scry_legal_choices(decision: dict, xmage_result: dict) -> tuple[set, set]:
+    waiting = decision["waiting_for"]["data"]
+    owner = waiting.get("player")
+    if not isinstance(owner, int) or len(waiting.get("cards", [])) != 1:
+        raise UnmappedPromptError(f"Unsupported Phase scry prompt: {waiting}")
+    card_id = waiting["cards"][0]
+    obj = decision.get("objects", {}).get(str(card_id))
+    if (
+        not isinstance(obj, dict)
+        or obj.get("controller") != owner
+        or obj.get("zone") != "Library"
+    ):
+        raise UnmappedPromptError(f"Phase scry object lacks library metadata: {obj}")
+    card_key = ("bottom", normalize_name(obj["name"]), owner, "Library", "Scry")
+    phase_choices = set()
+    for action in decision["candidates"]:
+        if action.get("type") != "SelectCards":
+            continue
+        cards = action.get("data", {}).get("cards")
+        if cards == []:
+            phase_choices.add(("keep",))
+        elif cards == [card_id]:
+            phase_choices.add(card_key)
+        else:
+            raise UnmappedPromptError(f"Unsupported Phase scry candidate: {action}")
+    if not phase_choices:
+        raise UnmappedPromptError(f"Phase scry prompt has no SelectCards candidates: {decision}")
+    board = xmage_result.get("board", [])
+    if not any(
+        item.get("is_you") and item.get("name") == PLAYER_NAMES[owner]
+        for item in board
+    ):
+        raise UnmappedPromptError(f"XMage scry prompt is not for {PLAYER_NAMES[owner]}: {xmage_result}")
+    xmage_choices = {
+        ("bottom", normalize_name(choice["name"]), owner, "Library", "Scry")
+        for choice in xmage_result.get("choices", [])
+        if choice.get("target_type") == "card" and choice.get("name")
+    }
+    if not xmage_result.get("required", True) and xmage_result.get("can_cancel"):
+        xmage_choices.add(("keep",))
+    return phase_choices, xmage_choices
+
+
+def _scry_selection_payload(action: dict, decision: dict, xmage_result: dict) -> dict:
+    if action not in decision["candidates"]:
+        raise UnmappedPromptError(f"Selected Phase action is not a candidate: {action}")
+    phase_choices, xmage_choices = _scry_legal_choices(decision, xmage_result)
+    if phase_choices != xmage_choices:
+        raise UnmappedPromptError(
+            f"Phase/XMage scry choices differ: {phase_choices} vs {xmage_choices}"
+        )
+    card_ids = action.get("data", {}).get("cards", [])
+    if not card_ids:
+        if ("keep",) not in phase_choices:
+            raise UnmappedPromptError(f"Phase scry has no keep choice: {action}")
+        return {"choice": "no"}
+    if len(card_ids) != 1:
+        raise UnmappedPromptError(f"Unsupported Phase scry selection: {action}")
+    obj = decision["objects"].get(str(card_ids[0]))
+    matching = [
+        choice
+        for choice in xmage_result.get("choices", [])
+        if choice.get("target_type") == "card"
+        and normalize_name(choice.get("name", "")) == normalize_name(obj["name"])
+    ]
+    if len(matching) != 1:
+        raise UnmappedPromptError(
+            f"Could not uniquely map Phase scry card {obj['name']}: {xmage_result}"
+        )
+    return {"choice": str(matching[0]["id"])}
 
 
 async def _keep_opening_hands(sessions: list) -> dict[int, asyncio.Task]:
@@ -832,6 +949,10 @@ async def _apply_xmage_action(
         return asyncio.create_task(_call(session, "choose_action", {"choice": str(choice["index"])}))
     if kind == "SelectCards":
         card_ids = data.get("cards", [])
+        if decision.get("waiting_for", {}).get("type") == "ScryChoice":
+            return asyncio.create_task(
+                _call(session, "choose_action", _scry_selection_payload(action, decision, xmage_result))
+            )
         if len(card_ids) != 1:
             raise UnmappedPromptError(f"Policy cannot map multi-card selection: {action}")
         hand_cards = decision["state"]["players"][decision["owner"]]["hand_cards"]
@@ -1201,6 +1322,14 @@ async def run_game(args: argparse.Namespace) -> dict:
                             "xmage": xmage_projection,
                             "diff": state_diff,
                         },
+                        "prompts": {
+                            "phase": {
+                                "waiting_for": decision.get("waiting_for"),
+                                "objects": decision.get("objects"),
+                                "candidates": decision["candidates"],
+                            },
+                            "xmage": xmage_result,
+                        },
                         "phase_candidates": decision["candidates"],
                         "xmage_choices": xmage_result.get("choices", []),
                         "xmage_pending": xmage_result,
@@ -1233,6 +1362,14 @@ async def run_game(args: argparse.Namespace) -> dict:
                             "xmage": xmage_projection,
                         },
                         "legal_actions": legal_diff,
+                        "prompts": {
+                            "phase": {
+                                "waiting_for": decision.get("waiting_for"),
+                                "objects": decision.get("objects"),
+                                "candidates": decision["candidates"],
+                            },
+                            "xmage": xmage_result,
+                        },
                         "phase_candidates": decision["candidates"],
                         "xmage_choices": xmage_result.get("choices", []),
                     }
@@ -1261,7 +1398,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                     return {"type": "summary", "run_dir": run_dir, **summary}
 
                 try:
-                    index, action = policy_candidate(decision, rng)
+                    index, action = policy_candidate(decision, rng, v0=args.v0)
                     action_task = await _apply_xmage_action(
                         sessions[owner], action, decision, xmage_result
                     )

@@ -1,0 +1,533 @@
+{
+  "run_id": "20261110T034553805166Z",
+  "seed": 17,
+  "status": "unmapped_prompt",
+  "kind": "unmapped_prompt",
+  "step": 4,
+  "reason": "Could not map phase selection to a hand card: {'data': {'cards': [96]}, 'type': 'SelectCards'}",
+  "prompts": {
+    "phase": {
+      "waiting_for": {
+        "data": {
+          "cards": [
+            96
+          ],
+          "player": 1
+        },
+        "type": "ScryChoice"
+      },
+      "objects": {
+        "96": {
+          "controller": 1,
+          "name": "Dream Beavers",
+          "zone": "Library"
+        }
+      },
+      "state": {
+        "active_player": 1,
+        "battlefield": [
+          {
+            "controller": 0,
+            "id": 47,
+            "name": "Inspiring Vantage",
+            "tapped": true
+          },
+          {
+            "controller": 0,
+            "id": 45,
+            "name": "Basilisk Collar",
+            "tapped": false
+          },
+          {
+            "controller": 1,
+            "id": 84,
+            "name": "Swamp",
+            "tapped": true
+          },
+          {
+            "controller": 1,
+            "id": 92,
+            "name": "Dream Beavers",
+            "tapped": false
+          }
+        ],
+        "phase": "PreCombatMain",
+        "players": [
+          {
+            "graveyard": [],
+            "hand": [
+              "Inspiring Vantage",
+              "Inspiring Vantage",
+              "Inspiring Vantage",
+              "Basilisk Collar",
+              "Dwarven Mauler"
+            ],
+            "hand_cards": [
+              {
+                "id": 46,
+                "name": "Inspiring Vantage"
+              },
+              {
+                "id": 26,
+                "name": "Inspiring Vantage"
+              },
+              {
+                "id": 44,
+                "name": "Inspiring Vantage"
+              },
+              {
+                "id": 27,
+                "name": "Basilisk Collar"
+              },
+              {
+                "id": 25,
+                "name": "Dwarven Mauler"
+              }
+            ],
+            "id": 0,
+            "library": [
+              "Dwarven Mauler",
+              "Dwarven Mauler",
+              "Dwarven Mauler",
+              "Mountain",
+              "Lavaspur Boots",
+              "Lavaspur Boots",
+              "Lavaspur Boots",
+              "Lavaspur Boots",
+              "Thorin, Mountain-king",
+              "Thorin, Mountain-king",
+              "Thorin, Mountain-king",
+              "Thorin, Mountain-king",
+              "Skateboard",
+              "Skateboard",
+              "Cavern of Souls",
+              "Cavern of Souls",
+              "Cavern of Souls",
+              "Cavern of Souls",
+              "D\u00e1in's Company",
+              "D\u00e1in's Company",
+              "D\u00e1in's Company",
+              "D\u00e1in's Company",
+              "The Lonely Mountain",
+              "The Lonely Mountain",
+              "The Lonely Mountain",
+              "The Lonely Mountain",
+              "Sacred Foundry",
+              "Sacred Foundry",
+              "Sacred Foundry",
+              "Sacred Foundry",
+              "Dwalin, Weaponmaster",
+              "Dwalin, Weaponmaster",
+              "Dwalin, Weaponmaster",
+              "K\u00edli the Resourceful",
+              "K\u00edli the Resourceful",
+              "K\u00edli the Resourceful",
+              "K\u00edli the Resourceful",
+              "Dragonfire Blade",
+              "Dragonfire Blade",
+              "Dragonfire Blade",
+              "Dragonfire Blade",
+              "Leyline Axe",
+              "Leyline Axe",
+              "Leyline Axe",
+              "Leyline Axe",
+              "Plains",
+              "Plains",
+              "Chainsaw",
+              "Chainsaw",
+              "Sunbillow Verge",
+              "Sunbillow Verge",
+              "Sunbillow Verge",
+              "Sunbillow Verge"
+            ],
+            "library_count": 53,
+            "life": 19
+          },
+          {
+            "graveyard": [],
+            "hand": [
+              "Swamp",
+              "Swamp",
+              "Floodpits Drowner",
+              "Floodpits Drowner",
+              "Floodpits Drowner",
+              "Floodpits Drowner"
+            ],
+            "hand_cards": [
+              {
+                "id": 73,
+                "name": "Swamp"
+              },
+              {
+                "id": 99,
+                "name": "Swamp"
+              },
+              {
+                "id": 75,
+                "name": "Floodpits Drowner"
+              },
+              {
+                "id": 100,
+                "name": "Floodpits Drowner"
+              },
+              {
+                "id": 106,
+                "name": "Floodpits Drowner"
+              },
+              {
+                "id": 64,
+                "name": "Floodpits Drowner"
+              }
+            ],
+            "id": 1,
+            "library": [
+              "Dream Beavers",
+              "Dream Beavers",
+              "Dream Beavers",
+              "Kaito, Bane of Nightmares",
+              "Kaito, Bane of Nightmares",
+              "Kaito, Bane of Nightmares",
+              "Kaito, Bane of Nightmares",
+              "Wan Shi Tong, Librarian",
+              "Restless Reef",
+              "Restless Reef",
+              "We Say Thee Nay!",
+              "We Say Thee Nay!",
+              "Island",
+              "Island",
+              "Island",
+              "Island",
+              "Shipwreck Marsh",
+              "Shipwreck Marsh",
+              "Spell Snare",
+              "The Wondrous Wasp",
+              "The Wondrous Wasp",
+              "Bitter Triumph",
+              "Bitter Triumph",
+              "Enduring Curiosity",
+              "Enduring Curiosity",
+              "Enduring Curiosity",
+              "Enduring Curiosity",
+              "Shoot the Sheriff",
+              "Shoot the Sheriff",
+              "Requiting Hex",
+              "Requiting Hex",
+              "Requiting Hex",
+              "Spyglass Siren",
+              "Spyglass Siren",
+              "Spyglass Siren",
+              "Spyglass Siren",
+              "Tishana's Tidebinder",
+              "Tishana's Tidebinder",
+              "Watery Grave",
+              "Watery Grave",
+              "Watery Grave",
+              "Watery Grave",
+              "Soulstone Sanctuary",
+              "Soulstone Sanctuary",
+              "Strategic Betrayal",
+              "Strategic Betrayal",
+              "Gloomlake Verge",
+              "Gloomlake Verge",
+              "Gloomlake Verge",
+              "Gloomlake Verge",
+              "Hidden Lair",
+              "Hidden Lair"
+            ],
+            "library_count": 52,
+            "life": 21
+          }
+        ],
+        "stack": [],
+        "turn": 2
+      },
+      "candidates": [
+        {
+          "data": {
+            "cards": []
+          },
+          "type": "SelectCards"
+        },
+        {
+          "data": {
+            "cards": [
+              96
+            ]
+          },
+          "type": "SelectCards"
+        }
+      ]
+    },
+    "xmage": {
+      "action_pending": true,
+      "action_type": "GAME_TARGET",
+      "message": "Select up to one card to PUT on the BOTTOM of your library (Scry)",
+      "response_type": "index",
+      "respond_with": "choice=pN, or choice=no to cancel",
+      "context": "T1 Precombat Main/Precombat Main (DiffB) YOUR_MAIN",
+      "board": [
+        {
+          "hand_size": 6,
+          "is_active": true,
+          "is_you": true,
+          "battlefield": [
+            {
+              "tapped": false,
+              "name": "Dream Beavers",
+              "rules": [
+                "Flying",
+                "When {this} enters, each opponent loses 1 life and you gain 1 life. Scry 1. (Look at the top card of your library. You may put that card on the bottom.)"
+              ],
+              "id": "p24",
+              "power": "1",
+              "toughness": "1",
+              "summoning_sick": true
+            },
+            {
+              "tapped": true,
+              "name": "Swamp",
+              "rules": [
+                "{T}: Add {B}."
+              ],
+              "id": "p14"
+            }
+          ],
+          "name": "DiffB",
+          "library_size": 52,
+          "life": 21,
+          "hand": [
+            {
+              "mana_cost": "{1}{U}",
+              "name": "Floodpits Drowner",
+              "rules": [
+                "Flash",
+                "Vigilance",
+                "When {this} enters, tap target creature an opponent controls and put a stun counter on it.",
+                "{1}{U}, {T}: Shuffle {this} and target creature with a stun counter on it into their owners' libraries."
+              ],
+              "power": "2",
+              "id": "p10",
+              "toughness": "1"
+            },
+            {
+              "mana_cost": "{1}{U}",
+              "name": "Floodpits Drowner",
+              "rules": [
+                "Flash",
+                "Vigilance",
+                "When {this} enters, tap target creature an opponent controls and put a stun counter on it.",
+                "{1}{U}, {T}: Shuffle {this} and target creature with a stun counter on it into their owners' libraries."
+              ],
+              "power": "2",
+              "id": "p11",
+              "toughness": "1"
+            },
+            {
+              "mana_cost": "{1}{U}",
+              "name": "Floodpits Drowner",
+              "rules": [
+                "Flash",
+                "Vigilance",
+                "When {this} enters, tap target creature an opponent controls and put a stun counter on it.",
+                "{1}{U}, {T}: Shuffle {this} and target creature with a stun counter on it into their owners' libraries."
+              ],
+              "power": "2",
+              "id": "p12",
+              "toughness": "1"
+            },
+            {
+              "mana_cost": "{1}{U}",
+              "name": "Floodpits Drowner",
+              "rules": [
+                "Flash",
+                "Vigilance",
+                "When {this} enters, tap target creature an opponent controls and put a stun counter on it.",
+                "{1}{U}, {T}: Shuffle {this} and target creature with a stun counter on it into their owners' libraries."
+              ],
+              "power": "2",
+              "id": "p13",
+              "toughness": "1"
+            },
+            {
+              "name": "Swamp",
+              "is_land": true,
+              "rules": [
+                "{T}: Add {B}."
+              ],
+              "id": "p15"
+            },
+            {
+              "name": "Swamp",
+              "is_land": true,
+              "rules": [
+                "{T}: Add {B}."
+              ],
+              "id": "p16"
+            }
+          ]
+        },
+        {
+          "hand_size": 5,
+          "is_active": false,
+          "is_you": false,
+          "battlefield": [
+            {
+              "tapped": false,
+              "name": "Basilisk Collar",
+              "rules": [
+                "Equipped creature has deathtouch and lifelink.",
+                "Equip {2} ({2}: Attach to target creature you control. Equip only as a sorcery.)"
+              ],
+              "id": "p3"
+            },
+            {
+              "tapped": true,
+              "name": "Inspiring Vantage",
+              "rules": [
+                "{this} enters tapped unless you control two or fewer other lands.",
+                "{T}: Add {R}.",
+                "{T}: Add {W}.",
+                ": ",
+                "ICON_GOODYou control two or fewer other lands"
+              ],
+              "id": "p6"
+            }
+          ],
+          "name": "DiffA",
+          "library_size": 53,
+          "life": 19
+        }
+      ],
+      "board_cursor": 11,
+      "choices": [
+        {
+          "name": "Dream Beavers",
+          "target_type": "card",
+          "index": 0,
+          "id": "p27"
+        }
+      ],
+      "stack": [
+        {
+          "owner": "DiffB",
+          "ability_text": "When Dream Beavers enters, each opponent loses 1 life and you gain 1 life. Scry 1. (Look at the top card of your library. You may put that card on the bottom.)",
+          "name": "Dream Beavers",
+          "source_card": "Dream Beavers"
+        }
+      ],
+      "game_seq": 35,
+      "land_drops_used": 1,
+      "required": false,
+      "can_cancel": true,
+      "stop_reason": "non_priority_action"
+    }
+  },
+  "last_state": {
+    "phase": {
+      "players": [
+        {
+          "life": 19,
+          "hand": [
+            "basilisk collar",
+            "dwarven mauler",
+            "inspiring vantage",
+            "inspiring vantage",
+            "inspiring vantage"
+          ],
+          "library_count": 53,
+          "graveyard": []
+        },
+        {
+          "life": 21,
+          "hand": [
+            "floodpits drowner",
+            "floodpits drowner",
+            "floodpits drowner",
+            "floodpits drowner",
+            "swamp",
+            "swamp"
+          ],
+          "library_count": 52,
+          "graveyard": []
+        }
+      ],
+      "battlefield": [
+        [
+          "basilisk collar",
+          0,
+          false
+        ],
+        [
+          "dream beavers",
+          1,
+          false
+        ],
+        [
+          "inspiring vantage",
+          0,
+          true
+        ],
+        [
+          "swamp",
+          1,
+          true
+        ]
+      ],
+      "turn": 2,
+      "active_player": 1
+    },
+    "xmage": {
+      "players": [
+        {
+          "life": 19,
+          "hand": [
+            "basilisk collar",
+            "dwarven mauler",
+            "inspiring vantage",
+            "inspiring vantage",
+            "inspiring vantage"
+          ],
+          "library_count": 53,
+          "graveyard": []
+        },
+        {
+          "life": 21,
+          "hand": [
+            "floodpits drowner",
+            "floodpits drowner",
+            "floodpits drowner",
+            "floodpits drowner",
+            "swamp",
+            "swamp"
+          ],
+          "library_count": 52,
+          "graveyard": []
+        }
+      ],
+      "battlefield": [
+        [
+          "basilisk collar",
+          0,
+          false
+        ],
+        [
+          "dream beavers",
+          1,
+          false
+        ],
+        [
+          "inspiring vantage",
+          0,
+          true
+        ],
+        [
+          "swamp",
+          1,
+          true
+        ]
+      ],
+      "turn": 2,
+      "active_player": 1
+    }
+  }
+}

@@ -5,8 +5,8 @@
 //! Protocol (stdin/stdout, one JSON object per line):
 //!   <- {"type":"new_game","seed":N,"player":{"main_deck":["4 Island",...]},
 //!        "opponent":{"main_deck":[...]}}
-//!   -> {"type":"decision","turn":N,"waiting_for":"Priority","owner":0,"actor":0,
-//!        "candidates":[<serde GameAction>, ...], "state":{...}}
+//!   -> {"type":"decision","turn":N,"waiting_for":<serde WaitingFor>,"owner":0,"actor":0,
+//!        "candidates":[<serde GameAction>, ...],"objects":{...},"state":{...}}
 //!   <- {"type":"choose","index":K}
 //!   -> {"type":"applied","ok":true,"reason":"action"}  (then next "decision")
 //!   -> {"type":"game_over","winner":0|"draw"|null,"turns":N}
@@ -197,6 +197,28 @@ fn waiting_for_label(state: &GameState) -> String {
         .to_string()
 }
 
+fn objects_for_candidates(
+    state: &GameState,
+    candidates: &[engine::types::actions::GameAction],
+) -> Value {
+    let mut objects = serde_json::Map::new();
+    for id in candidates.iter().flat_map(GameAction::related_object_ids) {
+        let object = state
+            .objects
+            .get(&id)
+            .expect("candidate object reference must exist in game state");
+        objects.insert(
+            id.0.to_string(),
+            json!({
+                "name": object.name,
+                "zone": format!("{:?}", object.zone),
+                "controller": object.controller.0,
+            }),
+        );
+    }
+    Value::Object(objects)
+}
+
 fn emit(out: &mut impl Write, v: Value) {
     writeln!(out, "{}", serde_json::to_string(&v).unwrap()).unwrap();
     out.flush().unwrap();
@@ -268,6 +290,11 @@ fn run_game(out: &mut impl Write, inp: &mut impl BufRead, db: &CardDatabase, spe
         }
         let owner = actors[0];
         let contract = AiDecisionContract::issue(&state, owner);
+        let actions: Vec<GameAction> = contract
+            .candidates
+            .iter()
+            .map(|candidate| candidate.action.clone())
+            .collect();
         let candidates: Vec<Value> = contract
             .candidates
             .iter()
@@ -278,10 +305,11 @@ fn run_game(out: &mut impl Write, inp: &mut impl BufRead, db: &CardDatabase, spe
             json!({
                 "type": "decision",
                 "turn": state.turn_number,
-                "waiting_for": waiting_for_label(&state),
+                "waiting_for": serde_json::to_value(&state.waiting_for).unwrap(),
                 "owner": contract.semantic_owner.0,
                 "actor": contract.authorized_actor.0,
                 "candidates": candidates,
+                "objects": objects_for_candidates(&state, &actions),
                 "state": snapshot(&state),
             }),
         );
