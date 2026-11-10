@@ -256,6 +256,36 @@ def test_choose_player_target_uses_the_phase_player_name() -> None:
     assert _phase_target_key(action, {}) == ("player", "diffb")
 
 
+def test_select_targets_maps_one_target_through_the_same_keying() -> None:
+    action = {"type": "SelectTargets", "data": {"targets": [{"Player": 1}]}}
+
+    assert _phase_target_key(action, {}) == ("player", "diffb")
+
+
+@pytest.mark.parametrize(
+    "action",
+    (
+        {"type": "SelectTargets", "data": {"targets": []}},
+        {
+            "type": "SelectTargets",
+            "data": {"targets": [{"Player": 0}, {"Player": 1}]},
+        },
+        {"type": "SelectTargets", "data": {"targets": [{"Other": 1}]}},
+        {"type": "ChooseTarget", "data": {"target": {"Other": 1}}},
+        {"type": "ChooseTarget", "data": {"target": {"Object": 99}}},
+    ),
+)
+def test_unmapped_target_shapes_fail_closed(action: dict) -> None:
+    decision = {
+        "objects": {
+            "3": {"name": "Dwarven Mauler", "controller": 0, "zone": "Battlefield"}
+        }
+    }
+
+    with pytest.raises(UnmappedPromptError):
+        _phase_target_key(action, decision)
+
+
 def test_v0_policy_keeps_existing_choice_stream() -> None:
     decision = {
         "candidates": [

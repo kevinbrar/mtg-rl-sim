@@ -524,16 +524,35 @@ def _phase_target_key(action: dict, decision: dict) -> tuple:
             )
         card, owner = _phase_hand_card(cards[0], decision)
         return ("card", normalize_name(card["name"]), owner, "hand")
-    target = action.get("data", {}).get("target", {})
-    if action.get("type") == "ChooseTarget" and isinstance(target, dict):
-        player = target.get("Player")
-        if player is not None:
-            if not isinstance(player, int) or isinstance(player, bool) or not 0 <= player < len(PLAYER_NAMES):
-                raise UnmappedPromptError(f"Unsupported Phase player target: {target}")
-            return ("player", normalize_name(PLAYER_NAMES[player]))
-    if not isinstance(target, dict) or "Object" not in target:
-        return ("player", str(target))
-    obj = decision.get("objects", {}).get(str(target["Object"]), {})
+    if action.get("type") == "ChooseTarget":
+        target = action.get("data", {}).get("target")
+    elif action.get("type") == "SelectTargets":
+        targets = action.get("data", {}).get("targets")
+        if not isinstance(targets, list) or len(targets) != 1:
+            raise UnmappedPromptError(f"Unsupported Phase target selection: {action}")
+        target = targets[0]
+    else:
+        raise UnmappedPromptError(f"Unsupported Phase target action: {action}")
+    if not isinstance(target, dict) or len(target) != 1:
+        raise UnmappedPromptError(f"Unsupported Phase target reference: {target}")
+    if "Player" in target:
+        player = target["Player"]
+        if (
+            not isinstance(player, int)
+            or isinstance(player, bool)
+            or not 0 <= player < len(PLAYER_NAMES)
+        ):
+            raise UnmappedPromptError(f"Unsupported Phase player target: {target}")
+        return ("player", normalize_name(PLAYER_NAMES[player]))
+    if "Object" not in target:
+        raise UnmappedPromptError(f"Unsupported Phase target reference: {target}")
+    obj = decision.get("objects", {}).get(str(target["Object"]))
+    if not isinstance(obj, dict) or not all(
+        key in obj for key in ("name", "controller", "zone")
+    ):
+        raise UnmappedPromptError(
+            f"Phase target object metadata is missing for {target}: {obj}"
+        )
     return (
         "permanent",
         normalize_name(obj.get("name", "")),
