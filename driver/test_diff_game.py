@@ -541,8 +541,8 @@ def test_single_battlefield_match_must_match_signature() -> None:
 
     with pytest.raises(UnmappedPromptError) as error:
         _xmage_target_choice(action, decision, xmage, ObjectBindings(), xmage_state)
-    assert "phase_signature=" in str(error.value)
-    assert "xmage_signature=" in str(error.value)
+    assert "phase_signatures=" in str(error.value)
+    assert "xmage_signatures=" in str(error.value)
 
 
 def test_bound_battlefield_id_must_remain_a_matching_choice() -> None:
