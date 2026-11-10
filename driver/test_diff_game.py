@@ -11,7 +11,6 @@ from diff_game import (
     _phase_hand_card,
     _phase_target_key,
     _xmage_hand_choice,
-    _xmage_target_choice,
     _scry_legal_choices,
     _scry_selection_payload,
     _xmage_activation_choice,
