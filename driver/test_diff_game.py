@@ -5,7 +5,7 @@ import random
 import sys
 from contextlib import AsyncExitStack
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import diff_game
@@ -2425,7 +2425,14 @@ def test_cast_macro_fails_closed_on_unsupported_and_other_actor_prompts() -> Non
             },
             True,
         ),
-        ({"log": "The spell resolved.", "cursor": 6, "cursor_reset": False}, False),
+        (
+            {
+                "log": "Card text mentions Spell cancelled, without a system message.",
+                "cursor": 6,
+                "cursor_reset": False,
+            },
+            False,
+        ),
         ({"log": "", "cursor": 6, "cursor_reset": True}, True),
     ),
 )
@@ -2449,12 +2456,153 @@ def test_game_log_cancellation_check(response: dict, raises: bool, monkeypatch) 
     if raises:
         with pytest.raises(diff_game.DifferentialDivergenceError) as error:
             asyncio.run(check())
-        if "Spell cancelled" in response["log"]:
+        if "[System] Spell cancelled" in response["log"]:
             assert error.value.kind == "mana_plan"
             assert error.value.details["mana_plan"] == ["p5"]
-            assert "Spell cancelled" in error.value.details["log_excerpt"]
+            assert "[System] Spell cancelled" in error.value.details["log_excerpt"]
     else:
         asyncio.run(check())
+
+
+def test_pending_mana_plan_cancellation_precedes_sync_divergence(
+    monkeypatch, tmp_path
+) -> None:
+    events = []
+    initial_decision = {"type": "decision"}
+    cast_action = {"type": "CastSpell", "data": {"object_id": 42}}
+    first_decision = {
+        "type": "decision",
+        "owner": 0,
+        "state": {"turn": 1, "phase": "PrecombatMain", "active_player": 0},
+        "candidates": [cast_action],
+        "waiting_for": {"type": "Priority", "data": {"player": 0}},
+    }
+    next_decision = {
+        "type": "decision",
+        "owner": 0,
+        "state": {"turn": 1, "phase": "PrecombatMain", "active_player": 0},
+        "candidates": [{"type": "PassPriority"}],
+        "waiting_for": {"type": "Priority", "data": {"player": 0}},
+    }
+    decisions = iter([first_decision, next_decision])
+
+    class FakePhase:
+        def __init__(self, _data_root) -> None:
+            self.started = {}
+
+        def new_game(self, *_args, **_kwargs):
+            self.started = {
+                "state": {
+                    "players": [
+                        {"hand": ["Card"] * 7},
+                        {"hand": ["Card"] * 7},
+                    ]
+                }
+            }
+            return initial_decision
+
+        def close(self) -> None:
+            pass
+
+    async def start_mage_bench(**kwargs):
+        game_dir = kwargs["game_logs"] / "game_stub"
+        game_dir.mkdir()
+        for name in ("DiffA", "DiffB"):
+            (game_dir / f"{name}_mcp_url.txt").write_text(f"http://{name}")
+        return None, None
+
+    async def connect_xmage(_urls):
+        return AsyncExitStack(), [object(), object()]
+
+    async def keep_opening_hands(_sessions):
+        return {}
+
+    async def get_state(_session):
+        return {}
+
+    async def advance_phase(*_args, **_kwargs):
+        return next(decisions)
+
+    sync_results = iter(
+        [
+            ({"action_pending": True, "choices": []}, {}),
+            (None, {"kind": "decision_point", "reason": "synthetic sync mismatch"}),
+        ]
+    )
+
+    async def sync_xmage(*_args, **_kwargs):
+        events.append("sync")
+        return next(sync_results)
+
+    async def cast_macro(*_args, **_kwargs):
+        return next_decision, 0, [], []
+
+    async def send_cast_macro(*_args, **_kwargs):
+        events.append("send")
+        return (
+            {"action_pending": True, "choices": []},
+            {
+                "owner": 0,
+                "cursor": 5,
+                "macro_decision": next_decision,
+                "mana_plan": ["p5"],
+            },
+        )
+
+    async def call(_session, name, arguments=None):
+        events.append("get_game_log")
+        assert name == "get_game_log"
+        assert arguments == {"cursor": 5}
+        return {
+            "log": "[System] Spell cancelled — mana plan was incorrect or incomplete.",
+            "cursor": 6,
+            "cursor_reset": False,
+        }
+
+    projection = {
+        "players": [{"hand": ["card"] * 7}, {"hand": ["card"] * 7}],
+        "battlefield": [],
+    }
+    monkeypatch.setattr(diff_game, "ROOT", tmp_path)
+    monkeypatch.setattr(diff_game, "expand_deck", lambda _path: ["Card"] * 7)
+    monkeypatch.setattr(diff_game, "read_printings", lambda: {})
+    monkeypatch.setattr(diff_game, "write_xmage_deck", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(diff_game, "_mage_bench_external_players", lambda _decks: [])
+    monkeypatch.setattr(diff_game, "_start_mage_bench", start_mage_bench)
+    monkeypatch.setattr(diff_game, "_connect_xmage", connect_xmage)
+    monkeypatch.setattr(diff_game, "_keep_opening_hands", keep_opening_hands)
+    monkeypatch.setattr(diff_game, "_get_state", get_state)
+    monkeypatch.setattr(diff_game, "PhaseEnv", FakePhase)
+    monkeypatch.setattr(diff_game, "_phase_advance_to_meaningful", advance_phase)
+    monkeypatch.setattr(diff_game, "_sync_xmage_to_decision", sync_xmage)
+    monkeypatch.setattr(diff_game, "_is_meaningful_decision", lambda _decision: True)
+    monkeypatch.setattr(diff_game, "_phase_blocker_key", lambda _decision: None)
+    monkeypatch.setattr(diff_game, "projection_from_phase", lambda _state: projection)
+    monkeypatch.setattr(diff_game, "projection_from_xmage", lambda _state: projection)
+    monkeypatch.setattr(diff_game, "compare_projection", lambda *_args: None)
+    monkeypatch.setattr(diff_game, "_legal_action_diff", lambda *_args: None)
+    monkeypatch.setattr(
+        diff_game, "policy_candidate", lambda *_args, **_kwargs: (0, cast_action)
+    )
+    monkeypatch.setattr(diff_game, "_phase_cast_macro", cast_macro)
+    monkeypatch.setattr(diff_game, "_mana_plan_from_events", lambda *_args: ["p5"])
+    monkeypatch.setattr(diff_game, "_send_cast_macro_to_xmage", send_cast_macro)
+    monkeypatch.setattr(diff_game, "_call", call)
+
+    args = SimpleNamespace(
+        mage_bench=tmp_path,
+        player_deck=tmp_path / "player.txt",
+        opponent_deck=tmp_path / "opponent.txt",
+        data_root=tmp_path,
+        xmage_library_top="first",
+        seed=17,
+        v0=False,
+    )
+
+    result = asyncio.run(diff_game.run_game(args))
+
+    assert result["kind"] == "mana_plan"
+    assert events == ["sync", "send", "sync", "get_game_log"]
 
 
 def test_cast_action_sends_nonempty_csv_or_empty_auto_tap_request(monkeypatch) -> None:

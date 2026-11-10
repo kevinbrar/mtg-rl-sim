@@ -1969,7 +1969,7 @@ async def _check_pending_mana_plan_log(sessions: list, pending_check: dict) -> N
     log = result.get("log")
     if not isinstance(log, str):
         raise RuntimeError(f"XMage game log response omitted log text: {result}")
-    cancellation = log.find("Spell cancelled")
+    cancellation = log.find("[System] Spell cancelled")
     if cancellation >= 0:
         details["reason"] = "XMage cancelled the spell during mana payment"
         details["log_excerpt"] = log[max(0, cancellation - 100) : cancellation + 240]
@@ -3070,7 +3070,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                     phase_blocker_decisions=phase_blocker_decisions,
                     expected_combat_batches=expected_combat_batches,
                 )
-                if pending_mana_check is not None and xmage_result is not None:
+                if pending_mana_check is not None:
                     try:
                         await _check_pending_mana_plan_log(
                             sessions, pending_mana_check
