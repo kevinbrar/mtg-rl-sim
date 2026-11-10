@@ -1821,6 +1821,43 @@ def test_v0_policy_keeps_existing_choice_stream() -> None:
     )
 
 
+def test_policy_ignores_cancel_cast_on_equip_target_prompt() -> None:
+    decision = {
+        "waiting_for": {"type": "Priority", "data": {"player": 0}},
+        "candidates": [
+            {"type": "ChooseTarget", "data": {"target": {"Object": 2}}},
+            {"type": "ChooseTarget", "data": {"target": {"Object": 23}}},
+            {"type": "ChooseTarget", "data": {"target": {"Object": 25}}},
+            {"type": "CancelCast"},
+        ],
+    }
+
+    for seed in range(100):
+        _, action = policy_candidate(decision, random.Random(seed))
+        assert action["type"] == "ChooseTarget"
+
+
+def test_v0_policy_ignores_cancel_cast_when_supported_choice_remains() -> None:
+    decision = {
+        "candidates": [
+            {"type": "CancelCast"},
+            {"type": "PassPriority"},
+        ]
+    }
+
+    for seed in range(100):
+        _, action = policy_candidate(decision, random.Random(seed), v0=True)
+        assert action["type"] == "PassPriority"
+
+
+@pytest.mark.parametrize("v0", (False, True))
+def test_cancel_cast_only_is_unmapped(v0: bool) -> None:
+    decision = {"candidates": [{"type": "CancelCast"}]}
+
+    with pytest.raises(UnmappedPromptError, match="No phase action remains"):
+        policy_candidate(decision, random.Random(0), v0=v0)
+
+
 def test_v1_policy_is_seeded_and_biases_casts_and_activations() -> None:
     decision = {
         "candidates": [
