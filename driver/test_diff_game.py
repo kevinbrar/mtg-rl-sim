@@ -29,6 +29,7 @@ from diff_game import (
     _xmage_activation_set,
     _xmage_target_key,
     _xmage_target_choice,
+    _advance_xmage_to_terminal,
     _policy_candidate_v0,
     policy_candidate,
     summary_exit_code,
@@ -258,6 +259,47 @@ def test_terminal_summary_with_matching_winner_exits_successfully(status: str) -
     }
 
     assert summary_exit_code(summary) == 0
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    (
+        ({"failed": [{"id": "p5"}]}, "failed entries"),
+        ({"interrupted": True}, "batch interrupted"),
+    ),
+)
+def test_terminal_combat_batch_results_fail_closed(
+    overrides: dict, reason: str
+) -> None:
+    result = {
+        "action_taken": "batch_block",
+        "success": True,
+        "interrupted": False,
+        "failed": [],
+        "declared": [{"id": "p5:p1"}],
+        "action_pending": False,
+    }
+    result.update(overrides)
+    fallback_states = [{"available": True}, {"available": True}]
+
+    async def advance():
+        task = asyncio.get_running_loop().create_future()
+        task.set_result(result)
+        return await _advance_xmage_to_terminal(
+            [object()],
+            {0: task},
+            {},
+            None,
+            fallback_states,
+            expected_combat_batches={0: ("batch_block", 1)},
+        )
+
+    states, terminal_issue = asyncio.run(advance())
+
+    assert states == fallback_states
+    assert terminal_issue["kind"] == "combat_batch"
+    assert reason in terminal_issue["reason"]
+    assert summary_exit_code({"type": "divergence", "kind": "combat_batch"}) == 1
 
 
 def test_unmapped_prompt_summary_exits_with_distinct_status() -> None:

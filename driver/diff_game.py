@@ -2302,7 +2302,10 @@ async def _advance_xmage_to_terminal(
     fallback_result: dict | None,
     fallback_states: list[dict],
     timeout: float = 45,
+    expected_combat_batches: dict[int, tuple[str, int]] | None = None,
 ) -> tuple[list[dict], dict | None]:
+    if expected_combat_batches is None:
+        expected_combat_batches = {}
     deadline = time.monotonic() + timeout
     last_result = fallback_result
     while time.monotonic() < deadline:
@@ -2316,6 +2319,19 @@ async def _advance_xmage_to_terminal(
             except Exception as exc:
                 return _result_states(last_result), {"seat": PLAYER_NAMES[seat], "error": str(exc)}
             last_result = result
+            expected_batch = expected_combat_batches.pop(seat, None)
+            if expected_batch is not None:
+                batch_error = _combat_batch_error(result, expected_batch)
+                if batch_error is not None:
+                    return fallback_states, {
+                        "kind": "combat_batch",
+                        "seat": seat,
+                        "expected": {
+                            "action_taken": expected_batch[0],
+                            "declared": expected_batch[1],
+                        },
+                        "reason": batch_error,
+                    }
             if result.get("success") is False:
                 return _result_states(result), {"seat": PLAYER_NAMES[seat], "result": result}
             if result.get("game_over"):
@@ -2781,8 +2797,42 @@ async def run_game(args: argparse.Namespace) -> dict:
             game_completed = True
             phase_state = projection_from_phase(decision["state"])
             xmage_states, terminal_issue = await _advance_xmage_to_terminal(
-                sessions, action_tasks, phase_state, last_xmage_pending, last_xmage_states
+                sessions,
+                action_tasks,
+                phase_state,
+                last_xmage_pending,
+                last_xmage_states,
+                expected_combat_batches=expected_combat_batches,
             )
+            if expected_combat_batches:
+                seat, expected_batch = next(iter(expected_combat_batches.items()))
+                terminal_issue = {
+                    "kind": "combat_batch",
+                    "seat": seat,
+                    "expected": {
+                        "action_taken": expected_batch[0],
+                        "declared": expected_batch[1],
+                    },
+                    "reason": "XMage did not return the combat batch result before terminal state",
+                }
+            if terminal_issue and terminal_issue.get("kind") == "combat_batch":
+                report = {
+                    "run_id": run_id,
+                    "seed": args.seed,
+                    "kind": "combat_batch",
+                    "step": steps,
+                    "state": {"phase": phase_state, "xmage": xmage_states},
+                    "reason": terminal_issue,
+                }
+                (run_dir / "divergence.json").write_text(
+                    json.dumps(report, indent=2) + "\n"
+                )
+                return {
+                    "type": "divergence",
+                    "run_dir": run_dir,
+                    "step": steps,
+                    "kind": "combat_batch",
+                }
             xmage_state = projection_from_xmage(xmage_states)
             final_diff = compare_projection(phase_state, xmage_state)
             terminal_unavailable = terminal_issue and (
