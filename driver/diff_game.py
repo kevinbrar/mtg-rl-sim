@@ -1875,12 +1875,12 @@ async def _suppress_broken_resource_after_terminal(
     stack: AsyncExitStack,
     terminal_summary_recorded: Callable[[], bool],
 ):
-    from anyio import BrokenResourceError
+    from anyio import BrokenResourceError, ClosedResourceError
 
     try:
         async with stack:
             yield
-    except* BrokenResourceError:
+    except* (BrokenResourceError, ClosedResourceError):
         if not terminal_summary_recorded():
             raise
 

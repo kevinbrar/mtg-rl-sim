@@ -1,6 +1,11 @@
+import asyncio
+import builtins
 import json
 import random
+import sys
+from contextlib import AsyncExitStack
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -14,6 +19,7 @@ from diff_game import (
     _xmage_hand_choice,
     _scry_legal_choices,
     _scry_selection_payload,
+    _suppress_broken_resource_after_terminal,
     _xmage_activation_choice,
     _xmage_activation_set,
     _xmage_target_key,
@@ -94,6 +100,62 @@ def _xmage_signature_state(battlefields: dict[str, list[dict]]) -> dict:
             for name, permanents in battlefields.items()
         ],
     }
+
+
+def _install_fake_anyio_resource_errors(monkeypatch):
+    broken_resource_error = type("BrokenResourceError", (Exception,), {})
+    closed_resource_error = type("ClosedResourceError", (Exception,), {})
+    anyio = ModuleType("anyio")
+    anyio.__dict__["BrokenResourceError"] = broken_resource_error
+    anyio.__dict__["ClosedResourceError"] = closed_resource_error
+    monkeypatch.setitem(sys.modules, "anyio", anyio)
+    return broken_resource_error, closed_resource_error
+
+
+def _run_resource_error_on_stack_exit(error, terminal_summary_recorded):
+    async def run():
+        stack = AsyncExitStack()
+
+        async def raise_error():
+            raise error
+
+        stack.push_async_callback(raise_error)
+        async with _suppress_broken_resource_after_terminal(
+            stack, lambda: terminal_summary_recorded
+        ):
+            pass
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("grouped", (False, True))
+def test_closed_resource_error_is_suppressed_after_terminal(monkeypatch, grouped):
+    _, closed_resource_error = _install_fake_anyio_resource_errors(monkeypatch)
+    error = closed_resource_error()
+    if grouped:
+        error = builtins.ExceptionGroup("closed resource", [error])
+
+    _run_resource_error_on_stack_exit(error, terminal_summary_recorded=True)
+
+
+@pytest.mark.parametrize("grouped", (False, True))
+def test_broken_resource_error_is_suppressed_after_terminal(monkeypatch, grouped):
+    broken_resource_error, _ = _install_fake_anyio_resource_errors(monkeypatch)
+    error = broken_resource_error()
+    if grouped:
+        error = builtins.ExceptionGroup("broken resource", [error])
+
+    _run_resource_error_on_stack_exit(error, terminal_summary_recorded=True)
+
+
+def test_closed_resource_error_is_raised_before_terminal(monkeypatch):
+    _, closed_resource_error = _install_fake_anyio_resource_errors(monkeypatch)
+
+    with pytest.raises(builtins.ExceptionGroup) as error:
+        _run_resource_error_on_stack_exit(
+            closed_resource_error(), terminal_summary_recorded=False
+        )
+    assert error.value.subgroup(closed_resource_error) is not None
 
 
 @pytest.mark.parametrize(
