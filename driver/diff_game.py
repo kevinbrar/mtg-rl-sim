@@ -28,6 +28,48 @@ MAX_TURNS = 30
 TERMINAL_STATUSES = frozenset(
     ("completed", "completed_terminal_projection_unavailable")
 )
+MISSING = ("missing",)
+COUNTER_NAMES = {
+    "+1/+1": "+1/+1",
+    "p1p1": "+1/+1",
+    "plus1plus1": "+1/+1",
+    "-1/-1": "-1/-1",
+    "m1m1": "-1/-1",
+    "minus1minus1": "-1/-1",
+    "age": "age",
+    "charge": "charge",
+    "defense": "defense",
+    "energy": "energy",
+    "experience": "experience",
+    "fade": "fade",
+    "finality": "finality",
+    "first strike": "first strike",
+    "double strike": "double strike",
+    "deathtouch": "deathtouch",
+    "vigilance": "vigilance",
+    "hexproof": "hexproof",
+    "lifelink": "lifelink",
+    "decayed": "decayed",
+    "exalted": "exalted",
+    "trample": "trample",
+    "flying": "flying",
+    "menace": "menace",
+    "shadow": "shadow",
+    "haste": "haste",
+    "reach": "reach",
+    "indestructible": "indestructible",
+    "flood": "flood",
+    "level": "level",
+    "loyalty": "loyalty",
+    "lore": "lore",
+    "oil": "oil",
+    "poison": "poison",
+    "quest": "quest",
+    "rad": "rad",
+    "shield": "shield",
+    "stun": "stun",
+    "time": "time",
+}
 
 
 def _reexec_with_mage_bench_python() -> None:
@@ -67,6 +109,65 @@ def summary_exit_code(summary: dict) -> int:
 
 class UnmappedPromptError(RuntimeError):
     pass
+
+
+class ObjectBindings:
+    def __init__(self) -> None:
+        self.phase_to_xmage: dict[tuple[int, int], str] = {}
+        self.xmage_to_phase: dict[str, tuple[int, int]] = {}
+
+    def bind(self, phase_id: int, incarnation: int, xmage_id: str) -> None:
+        phase_identity = (phase_id, incarnation)
+        phase_bound = self.phase_to_xmage.get(phase_identity)
+        xmage_bound = self.xmage_to_phase.get(xmage_id)
+        if (phase_bound not in (None, xmage_id)) or (
+            xmage_bound not in (None, phase_identity)
+        ):
+            raise UnmappedPromptError(
+                f"Object binding is not bijective: phase={phase_identity}, "
+                f"xmage={xmage_id}, phase_to_xmage={self.phase_to_xmage}, "
+                f"xmage_to_phase={self.xmage_to_phase}"
+            )
+        self.phase_to_xmage[phase_identity] = xmage_id
+        self.xmage_to_phase[xmage_id] = phase_identity
+
+    def prune(self, phase_state: dict, xmage_state: dict) -> None:
+        phase_battlefield = phase_state.get("battlefield")
+        players = _xmage_players(xmage_state)
+        if not isinstance(phase_battlefield, list) or not players:
+            raise UnmappedPromptError(
+                f"Cannot prune object bindings without both battlefield views: "
+                f"phase={phase_state}, xmage={xmage_state}"
+            )
+        phase_incarnations = {}
+        for item in phase_battlefield:
+            if not isinstance(item, dict) or item.get("id") is None:
+                raise UnmappedPromptError(
+                    f"Invalid Phase battlefield object metadata: {item}"
+                )
+            incarnation = item.get("incarnation")
+            if not isinstance(incarnation, int) or isinstance(incarnation, bool):
+                raise UnmappedPromptError(
+                    f"Missing or invalid Phase battlefield incarnation: {item}"
+                )
+            phase_incarnations[item["id"]] = incarnation
+        xmage_ids = set()
+        for player in players:
+            for permanent in player.get("battlefield", []):
+                short_id = permanent.get("id")
+                if short_id is None:
+                    raise UnmappedPromptError(
+                        f"XMage battlefield permanent omitted its stable id: {permanent}"
+                    )
+                xmage_ids.add(str(short_id))
+        for phase_identity, xmage_id in list(self.phase_to_xmage.items()):
+            phase_id, incarnation = phase_identity
+            if (
+                phase_incarnations.get(phase_id) != incarnation
+                or xmage_id not in xmage_ids
+            ):
+                del self.phase_to_xmage[phase_identity]
+                del self.xmage_to_phase[xmage_id]
 
 
 def _unmapped_prompt_result(
@@ -368,6 +469,309 @@ def _card_action_set(decision: dict) -> Counter:
     return Counter(actions)
 
 
+def _xmage_players(state: dict) -> list[dict]:
+    players = state.get("players", state.get("board", []))
+    return players if isinstance(players, list) else []
+
+
+def _xmage_battlefield_by_id(state: dict) -> dict[str, tuple[dict, dict]]:
+    entries = {}
+    for player in _xmage_players(state):
+        for permanent in player.get("battlefield", []):
+            if not isinstance(permanent, dict) or permanent.get("id") is None:
+                continue
+            short_id = str(permanent["id"])
+            if short_id in entries:
+                raise UnmappedPromptError(
+                    f"Duplicate XMage battlefield id {short_id}: "
+                    f"{entries[short_id]}, {(player, permanent)}"
+                )
+            entries[short_id] = (player, permanent)
+    return entries
+
+
+def _counter_signature(counters: object, side: str) -> tuple:
+    if not isinstance(counters, dict):
+        raise UnmappedPromptError(f"Invalid {side} counter metadata: {counters}")
+    normalized = []
+    for name, count in counters.items():
+        key = normalize_name(str(name))
+        if key not in COUNTER_NAMES and not re.fullmatch(r"[+-]\d+/[+-]\d+", key):
+            raise UnmappedPromptError(
+                f"Unknown {side} counter name {name!r}; counters={counters}"
+            )
+        if not isinstance(count, int) or isinstance(count, bool):
+            raise UnmappedPromptError(
+                f"Invalid {side} counter count for {name!r}: {count!r}"
+            )
+        normalized.append((COUNTER_NAMES.get(key, key), count))
+    return tuple(sorted(normalized))
+
+
+def _attached_signature(
+    obj: dict,
+    side: str,
+    decision: dict,
+    xmage_state: dict,
+    bindings: ObjectBindings,
+    player: dict | None = None,
+) -> object:
+    if "attached_to" not in obj:
+        return None if side == "xmage" else MISSING
+    attached_to = obj["attached_to"]
+    if attached_to is None:
+        return None
+    if side == "phase":
+        try:
+            phase_attached_id = int(attached_to)
+        except (TypeError, ValueError) as exc:
+            raise UnmappedPromptError(
+                f"Invalid Phase attachment id {attached_to!r}: {obj}"
+            ) from exc
+        attached = decision.get("objects", {}).get(str(attached_to))
+        if not isinstance(attached, dict):
+            raise UnmappedPromptError(
+                f"Phase attachment metadata is missing for {attached_to}: {obj}"
+            )
+        attached_incarnation = attached.get("incarnation")
+        if not isinstance(attached_incarnation, int) or isinstance(
+            attached_incarnation, bool
+        ):
+            raise UnmappedPromptError(
+                f"Missing Phase attachment incarnation: {attached}"
+            )
+        bound_id = bindings.phase_to_xmage.get(
+            (phase_attached_id, attached_incarnation)
+        )
+        if bound_id is not None:
+            return ("bound", bound_id)
+        return (
+            "unbound",
+            _object_signature(
+                attached,
+                "phase",
+                decision,
+                xmage_state,
+                bindings,
+                include_attachment=False,
+            ),
+        )
+    attached_id = str(attached_to)
+    phase_id = bindings.xmage_to_phase.get(attached_id)
+    if phase_id is not None:
+        return ("bound", attached_id)
+    entry = _xmage_battlefield_by_id(xmage_state).get(attached_id)
+    if entry is None:
+        raise UnmappedPromptError(
+            f"XMage attachment id {attached_id} is absent from the battlefield: "
+            f"state={xmage_state}"
+        )
+    attached_player, attached = entry
+    if attached_player.get("name") not in PLAYER_NAMES:
+        raise UnmappedPromptError(f"Unknown XMage attachment controller: {entry}")
+    return (
+        "unbound",
+        _object_signature(
+            attached,
+            "xmage",
+            decision,
+            xmage_state,
+            bindings,
+            player=attached_player,
+            include_attachment=False,
+        ),
+    )
+
+
+def _object_signature(
+    obj: dict,
+    side: str,
+    decision: dict,
+    xmage_state: dict,
+    bindings: ObjectBindings,
+    player: dict | None = None,
+    include_attachment: bool = True,
+) -> tuple:
+    if not isinstance(obj.get("name"), str) or "name" not in obj:
+        raise UnmappedPromptError(f"Missing {side} object name: {obj}")
+    if side == "phase":
+        controller = obj.get("controller", MISSING)
+        if not isinstance(controller, int) or isinstance(controller, bool):
+            raise UnmappedPromptError(f"Invalid Phase object controller: {obj}")
+    else:
+        if player is None or player.get("name") not in PLAYER_NAMES:
+            raise UnmappedPromptError(f"Unknown XMage object controller: {player}")
+        controller = PLAYER_NAMES.index(player["name"])
+
+    signature = [
+        normalize_name(str(obj.get("name", ""))),
+        controller,
+    ]
+    for field in ("tapped", "power", "toughness", "damage", "summoning_sick"):
+        if field not in obj:
+            signature.append(MISSING)
+        elif field in {"power", "toughness"}:
+            value = obj[field]
+            if isinstance(value, bool):
+                raise UnmappedPromptError(f"Invalid {side} {field}: {obj}")
+            try:
+                signature.append(int(value))
+            except (TypeError, ValueError):
+                signature.append(
+                    None if value is None else normalize_name(str(value))
+                )
+        elif field in {"tapped", "summoning_sick"}:
+            if not isinstance(obj[field], bool):
+                raise UnmappedPromptError(f"Invalid {side} {field}: {obj}")
+            signature.append(obj[field])
+        elif field == "damage":
+            if not isinstance(obj[field], int) or isinstance(obj[field], bool):
+                raise UnmappedPromptError(f"Invalid {side} damage: {obj}")
+            signature.append(obj[field])
+    signature.append(
+        _counter_signature(obj["counters"], side)
+        if "counters" in obj
+        else MISSING
+    )
+    for field in ("token", "face_down"):
+        if field in obj and not isinstance(obj[field], bool):
+            raise UnmappedPromptError(f"Invalid {side} {field}: {obj}")
+        signature.append(obj[field] if field in obj else MISSING)
+    if include_attachment:
+        signature.append(
+            _attached_signature(
+                obj, side, decision, xmage_state, bindings, player=player
+            )
+        )
+    return tuple(signature)
+
+
+def _short_id_sequence(short_id: str) -> int:
+    match = re.fullmatch(r"[pl](\d+)", short_id)
+    if not match:
+        raise UnmappedPromptError(f"Unrecognized XMage short id: {short_id}")
+    return int(match.group(1))
+
+
+def _resolve_battlefield_choice(
+    kind: str,
+    key: tuple,
+    phase_id: int,
+    phase_object: dict,
+    decision: dict,
+    result: dict,
+    matching: list[dict],
+    bindings: ObjectBindings | None,
+    xmage_state: dict | None,
+) -> dict:
+    if bindings is None:
+        return _unique_semantic_choice(kind, key, decision, result, matching)
+    if not matching:
+        return _unique_semantic_choice(kind, key, decision, result, matching)
+
+    phase_battlefield_incarnations = {
+        item.get("id"): item.get("incarnation")
+        for item in decision.get("state", {}).get("battlefield", [])
+        if isinstance(item, dict)
+    }
+    incarnation = phase_object.get("incarnation")
+    if not isinstance(incarnation, int) or isinstance(incarnation, bool):
+        raise UnmappedPromptError(
+            f"Missing Phase object incarnation while resolving {kind}: "
+            f"phase_object={phase_object}"
+        )
+    phase_identity = (phase_id, incarnation)
+    if (
+        phase_battlefield_incarnations.get(phase_id) != incarnation
+        or xmage_state is None
+    ):
+        raise UnmappedPromptError(
+            f"Battlefield state is missing while resolving {kind}: "
+            f"phase_id={phase_identity}, "
+            f"phase_choices={decision.get('candidates', [])}; "
+            f"xmage_choices={result.get('choices', [])}; xmage_state={xmage_state}"
+        )
+    xmage_battlefield = _xmage_battlefield_by_id(xmage_state)
+    phase_signature = _object_signature(
+        phase_object, "phase", decision, xmage_state, bindings
+    )
+    bound_id = bindings.phase_to_xmage.get(phase_identity)
+    if bound_id is not None:
+        choice = next(
+            (item for item in matching if str(item.get("id")) == bound_id), None
+        )
+        if choice is None:
+            raise UnmappedPromptError(
+                f"Bound XMage object is not among matching {kind} choices: "
+                f"phase_id={phase_identity}, bound_id={bound_id}, "
+                f"phase_choices={decision.get('candidates', [])}; "
+                f"xmage_choices={result.get('choices', [])}"
+            )
+        entry = xmage_battlefield.get(bound_id)
+        if entry is None:
+            raise UnmappedPromptError(
+                f"Bound XMage object is absent from get_game_state while resolving "
+                f"{kind}: phase_id={phase_identity}, bound_id={bound_id}; "
+                f"phase_choices={decision.get('candidates', [])}; "
+                f"xmage_choices={result.get('choices', [])}; "
+                f"get_game_state={xmage_state}"
+            )
+        player, permanent = entry
+        xmage_signature = _object_signature(
+            permanent, "xmage", decision, xmage_state, bindings, player=player
+        )
+        if xmage_signature != phase_signature:
+            raise UnmappedPromptError(
+                f"Bound {kind} object signature mismatch for "
+                f"phase_id={phase_identity}: phase_signature={phase_signature}; "
+                f"xmage_signature={xmage_signature}; "
+                f"phase_choices={decision.get('candidates', [])}; "
+                f"xmage_choices={result.get('choices', [])}"
+            )
+        return choice
+
+    for choice in matching:
+        choice_id = choice.get("id")
+        if choice_id is None or str(choice_id) not in xmage_battlefield:
+            raise UnmappedPromptError(
+                f"Ambiguous {kind} choice id is absent from get_game_state "
+                f"battlefields: choice={choice}; xmage_choices={result.get('choices', [])}; "
+                f"get_game_state={xmage_state}"
+            )
+
+    available = [
+        choice
+        for choice in matching
+        if str(choice["id"]) not in bindings.xmage_to_phase
+    ]
+
+    xmage_signatures = []
+    for choice in available:
+        player, permanent = xmage_battlefield[str(choice["id"])]
+        signature = _object_signature(
+            permanent, "xmage", decision, xmage_state, bindings, player=player
+        )
+        xmage_signatures.append((choice, signature))
+    equivalent = [
+        (choice, signature)
+        for choice, signature in xmage_signatures
+        if signature == phase_signature
+    ]
+    if not equivalent:
+        raise UnmappedPromptError(
+            f"No matching {kind} object signature for phase_id={phase_identity}: "
+            f"phase_signatures={[{'id': phase_identity, 'signature': phase_signature}]}; "
+            f"xmage_signatures={[{'id': choice.get('id'), 'signature': signature} for choice, signature in xmage_signatures]}; "
+            f"phase_choices={decision.get('candidates', [])}; "
+            f"xmage_choices={result.get('choices', [])}"
+        )
+    choice, _ = min(
+        equivalent, key=lambda item: _short_id_sequence(str(item[0]["id"]))
+    )
+    bindings.bind(phase_id, incarnation, str(choice["id"]))
+    return choice
+
+
 def _phase_ability_key(action: dict, decision: dict) -> tuple:
     data = action.get("data", {})
     source = decision.get("objects", {}).get(str(data.get("source_id")), {})
@@ -387,10 +791,15 @@ def _phase_ability_key(action: dict, decision: dict) -> tuple:
     )
 
 
-def _xmage_ability_key(choice: dict, result: dict, ability_text: str | None = None) -> tuple:
+def _xmage_ability_key(
+    choice: dict,
+    result: dict,
+    ability_text: str | None = None,
+    xmage_state: dict | None = None,
+) -> tuple:
     name = normalize_name(choice.get("name", ""))
     sources = set()
-    for player in result.get("board", []):
+    for player in _xmage_players(xmage_state or result):
         if player.get("name") not in PLAYER_NAMES:
             continue
         for zone, cards in player.items():
@@ -561,7 +970,9 @@ def _phase_target_key(action: dict, decision: dict) -> tuple:
     )
 
 
-def _xmage_target_key(choice: dict, result: dict) -> tuple:
+def _xmage_target_key(
+    choice: dict, result: dict, xmage_state: dict | None = None
+) -> tuple:
     if choice.get("target_type") == "card":
         owner, player = _xmage_hand_owner(result)
         hand = player.get("hand")
@@ -582,7 +993,7 @@ def _xmage_target_key(choice: dict, result: dict) -> tuple:
     name = normalize_name(choice.get("name", ""))
     battlefield = [
         (player, card)
-        for player in result.get("board", [])
+        for player in _xmage_players(xmage_state or result)
         for card in player.get("battlefield", [])
     ]
     if any(card.get("id") is not None for _, card in battlefield):
@@ -620,26 +1031,32 @@ def _phase_target_set(decision: dict) -> Counter:
     )
 
 
-def _xmage_target_set(result: dict) -> Counter:
+def _xmage_target_set(result: dict, xmage_state: dict | None = None) -> Counter:
     if result.get("action_type") != "GAME_TARGET" or "(Scry)" in result.get("message", ""):
         return Counter()
     return Counter(
-        _xmage_target_key(choice, result)
+        _xmage_target_key(choice, result, xmage_state)
         for choice in result.get("choices", [])
         if choice.get("target_type") in {"permanent", "player", "card"}
     )
 
 
-def _xmage_activation_set(result: dict) -> Counter:
+def _xmage_activation_set(result: dict, xmage_state: dict | None = None) -> Counter:
     return Counter(
-        _xmage_ability_key(choice, result, ability_text)
+        _xmage_ability_key(choice, result, ability_text, xmage_state)
         for choice in result.get("choices", [])
         if choice.get("action") == "activate"
         for ability_text in choice.get("playable_abilities", [])
     )
 
 
-def _xmage_activation_choice(action: dict, decision: dict, result: dict) -> dict:
+def _xmage_activation_choice(
+    action: dict,
+    decision: dict,
+    result: dict,
+    bindings: ObjectBindings | None = None,
+    xmage_state: dict | None = None,
+) -> dict:
     if (
         decision.get("waiting_for", {}).get("type") != "Priority"
         or result.get("action_type") != "GAME_SELECT"
@@ -654,11 +1071,26 @@ def _xmage_activation_choice(action: dict, decision: dict, result: dict) -> dict
         for choice in result.get("choices", [])
         if choice.get("action") == "activate"
         and any(
-            _xmage_ability_key(choice, result, ability_text) == key
+            _xmage_ability_key(choice, result, ability_text, xmage_state) == key
             for ability_text in choice.get("playable_abilities", [])
         )
     ]
-    choice = _unique_semantic_choice("activation", key, decision, result, matching)
+    source_id = action.get("data", {}).get("source_id")
+    source = decision.get("objects", {}).get(str(source_id), {})
+    if normalize_name(source.get("zone", "")) == "battlefield":
+        choice = _resolve_battlefield_choice(
+            "activation",
+            key,
+            source_id,
+            source,
+            decision,
+            result,
+            matching,
+            bindings,
+            xmage_state,
+        )
+    else:
+        choice = _unique_semantic_choice("activation", key, decision, result, matching)
     if len(choice.get("playable_abilities", [])) > 1:
         raise UnmappedPromptError(
             f"XMage activation requires an ability choice for {key}: "
@@ -668,7 +1100,13 @@ def _xmage_activation_choice(action: dict, decision: dict, result: dict) -> dict
     return choice
 
 
-def _xmage_target_choice(action: dict, decision: dict, result: dict) -> dict:
+def _xmage_target_choice(
+    action: dict,
+    decision: dict,
+    result: dict,
+    bindings: ObjectBindings | None = None,
+    xmage_state: dict | None = None,
+) -> dict:
     if (
         decision.get("waiting_for", {}).get("type") != "TargetSelection"
         or result.get("action_type") != "GAME_TARGET"
@@ -681,8 +1119,31 @@ def _xmage_target_choice(action: dict, decision: dict, result: dict) -> dict:
     matching = [
         choice
         for choice in result.get("choices", [])
-        if _xmage_target_key(choice, result) == key
+        if _xmage_target_key(choice, result, xmage_state) == key
     ]
+    target = action.get("data", {}).get("target")
+    if action.get("type") == "SelectTargets":
+        targets = action.get("data", {}).get("targets")
+        target = targets[0] if isinstance(targets, list) and len(targets) == 1 else None
+    if (
+        isinstance(target, dict)
+        and set(target) == {"Object"}
+        and key[0] == "permanent"
+        and key[3] == "battlefield"
+    ):
+        phase_id = target["Object"]
+        phase_object = decision.get("objects", {}).get(str(phase_id), {})
+        return _resolve_battlefield_choice(
+            "target",
+            key,
+            phase_id,
+            phase_object,
+            decision,
+            result,
+            matching,
+            bindings,
+            xmage_state,
+        )
     return _unique_semantic_choice("target", key, decision, result, matching)
 
 
@@ -1027,7 +1488,9 @@ async def _sync_xmage_to_decision(
     }
 
 
-def _legal_action_diff(decision: dict, xmage_result: dict) -> dict:
+def _legal_action_diff(
+    decision: dict, xmage_result: dict, xmage_state: dict | None = None
+) -> dict:
     waiting_for = decision.get("waiting_for", {})
     phase_scry = (
         isinstance(waiting_for, dict) and waiting_for.get("type") == "ScryChoice"
@@ -1058,9 +1521,9 @@ def _legal_action_diff(decision: dict, xmage_result: dict) -> dict:
     phase_cards = _card_action_set(decision)
     xmage_cards, xmage_can_attack = _xmage_legal_actions(xmage_result)
     phase_abilities = _phase_activation_set(decision)
-    xmage_abilities = _xmage_activation_set(xmage_result)
+    xmage_abilities = _xmage_activation_set(xmage_result, xmage_state)
     phase_targets = _phase_target_set(decision)
-    xmage_targets = _xmage_target_set(xmage_result)
+    xmage_targets = _xmage_target_set(xmage_result, xmage_state)
     phase_can_attack = _phase_can_attack(decision)
     if (
         phase_cards == xmage_cards
@@ -1277,6 +1740,7 @@ async def _apply_xmage_action(
     action: dict,
     decision: dict,
     xmage_result: dict,
+    bindings: ObjectBindings | None = None,
 ) -> asyncio.Task:
     kind = action["type"]
     data = action.get("data", {})
@@ -1291,12 +1755,22 @@ async def _apply_xmage_action(
         )
         return asyncio.create_task(_call(session, "choose_action", {"choice": str(choice["index"])}))
     if kind == "ActivateAbility":
-        choice = _xmage_activation_choice(action, decision, xmage_result)
+        xmage_state = await _get_state(session)
+        if bindings is not None:
+            bindings.prune(decision.get("state", {}), xmage_state)
+        choice = _xmage_activation_choice(
+            action, decision, xmage_result, bindings, xmage_state
+        )
         return asyncio.create_task(
             _call(session, "choose_action", {"choice": str(choice["index"])})
         )
     if kind in {"ChooseTarget", "SelectTargets"}:
-        choice = _xmage_target_choice(action, decision, xmage_result)
+        xmage_state = await _get_state(session)
+        if bindings is not None:
+            bindings.prune(decision.get("state", {}), xmage_state)
+        choice = _xmage_target_choice(
+            action, decision, xmage_result, bindings, xmage_state
+        )
         return asyncio.create_task(
             _call(session, "choose_action", {"choice": str(choice["index"])})
         )
@@ -1536,6 +2010,7 @@ async def run_game(args: argparse.Namespace) -> dict:
             normalization_events: list[dict] = []
             skipped_stops: list[dict] = []
             pending_results: dict[int, dict] = {}
+            object_bindings = ObjectBindings()
             phase_projection = projection_from_phase(phase.started["state"])
             xmage_states = await asyncio.gather(*(_get_state(session) for session in sessions))
             xmage_projection = projection_from_xmage(xmage_states)
@@ -1692,7 +2167,9 @@ async def run_game(args: argparse.Namespace) -> dict:
                     return {"type": "divergence", "run_dir": run_dir, "step": steps, "kind": "state"}
 
                 try:
-                    legal_diff = _legal_action_diff(decision, xmage_result)
+                    legal_diff = _legal_action_diff(
+                        decision, xmage_result, xmage_states[owner]
+                    )
                 except UnmappedPromptError as exc:
                     return _unmapped_prompt_result(
                         run_dir,
@@ -1754,7 +2231,11 @@ async def run_game(args: argparse.Namespace) -> dict:
                 try:
                     index, action = policy_candidate(decision, rng, v0=args.v0)
                     action_task = await _apply_xmage_action(
-                        sessions[owner], action, decision, xmage_result
+                        sessions[owner],
+                        action,
+                        decision,
+                        xmage_result,
+                        object_bindings,
                     )
                 except UnmappedPromptError as exc:
                     return _unmapped_prompt_result(
