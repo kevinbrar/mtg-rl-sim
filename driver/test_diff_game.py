@@ -338,6 +338,82 @@ def test_unbound_attachment_hosts_use_full_signature() -> None:
     )
 
 
+def test_bound_collar_attached_to_different_host_fails_signature_reuse() -> None:
+    fixture = json.loads(DUPLICATE_FIXTURE.read_text())
+    decision = fixture["prompts"]["activation"]["phase"]
+    xmage = fixture["prompts"]["activation"]["xmage"]
+    for host_id in ("2", "23"):
+        decision["objects"][host_id] = {
+            "name": "Dwarven Mauler",
+            "zone": "Battlefield",
+            "controller": 0,
+            "incarnation": 0,
+            "tapped": False,
+            "power": 3,
+            "toughness": 2,
+            "damage": 0,
+            "summoning_sick": False,
+            "attached_to": None,
+        }
+    _signature_fields(decision)
+    decision["objects"]["27"]["attached_to"] = 2
+    decision["objects"]["45"]["attached_to"] = 23
+    xmage_state = _xmage_signature_state(
+        {
+            "DiffA": [
+                {
+                    "id": "p3",
+                    "name": "Basilisk Collar",
+                    "tapped": False,
+                    "damage": 0,
+                    "attached_to": "p28",
+                },
+                {
+                    "id": "p4",
+                    "name": "Basilisk Collar",
+                    "tapped": False,
+                    "damage": 0,
+                    "attached_to": "p5",
+                },
+                {
+                    "id": "p5",
+                    "name": "Dwarven Mauler",
+                    "tapped": False,
+                    "power": 3,
+                    "toughness": 2,
+                    "damage": 0,
+                    "summoning_sick": False,
+                },
+                {
+                    "id": "p28",
+                    "name": "Dwarven Mauler",
+                    "tapped": False,
+                    "power": 3,
+                    "toughness": 2,
+                    "damage": 0,
+                    "summoning_sick": False,
+                },
+            ],
+            "DiffB": [],
+        }
+    )
+    bindings = ObjectBindings()
+    bindings.bind(2, 0, "p5")
+    bindings.bind(23, 0, "p28")
+    bindings.bind(27, 0, "p3")
+    action = next(
+        item
+        for item in decision["candidates"]
+        if item.get("type") == "ActivateAbility" and item["data"]["source_id"] == 27
+    )
+
+    with pytest.raises(UnmappedPromptError) as error:
+        _xmage_activation_choice(action, decision, xmage, bindings, xmage_state)
+    assert "phase_signature=" in str(error.value)
+    assert "xmage_signature=" in str(error.value)
+    assert bindings.phase_to_xmage[(27, 0)] == "p3"
+
+
 def test_tapped_mauler_target_matches_by_signature() -> None:
     fixture = json.loads(DUPLICATE_FIXTURE.read_text())
     decision = fixture["prompts"]["target"]["phase"]
