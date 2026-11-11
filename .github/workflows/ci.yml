@@ -309,49 +309,56 @@ jobs:
             git fetch origin main
             git diff --name-only --no-renames origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
           fi
-          if grep -Eiq '^(phase-patches/|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
-            echo "mode=fail-closed" >> "$GITHUB_OUTPUT"
-            echo "reason=phase-patches-card-data" >> "$GITHUB_OUTPUT"
-          elif ! grep -Eiq '^(phase-patches/|phase(/|$)|phase-env/|oracle/|driver/diff_game\.py$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
-            echo "mode=skip" >> "$GITHUB_OUTPUT"
-            echo "No XMage-gated paths changed."
-          elif [[ "$EVENT_NAME" != "pull_request" ]]; then
-            echo "mode=smoke" >> "$GITHUB_OUTPUT"
-          else
-            cards_mode="$(python3 - <<'PY'
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            cards="$(python3 - <<'PY'
           import os
 
           from scripts.check_review_packet import parse_cards_line
 
           cards = parse_cards_line(os.environ.get("PR_BODY", ""))
-          if cards is None:
-              print("missing")
-          elif cards.casefold() == "none":
-              print("none")
-          else:
-              print("listed")
+          print(cards or "")
           PY
           )"
-            if [[ "$cards_mode" == "none" ]]; then
-              echo "mode=smoke" >> "$GITHUB_OUTPUT"
-            else
+            if [[ -n "$cards" && "${cards,,}" != "none" ]]; then
+              echo "mode=per-card" >> "$GITHUB_OUTPUT"
+              echo "cards=$cards" >> "$GITHUB_OUTPUT"
+            elif ! grep -Eiq '^(phase-patches/|phase(/|$)|phase-env/|oracle/|driver/diff_game\.py$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
+              echo "mode=skip" >> "$GITHUB_OUTPUT"
+              echo "No XMage-gated paths changed."
+            elif [[ -z "$cards" ]]; then
               echo "mode=fail-closed" >> "$GITHUB_OUTPUT"
-              echo "reason=cards-listed-or-missing" >> "$GITHUB_OUTPUT"
+              echo "reason=cards-missing" >> "$GITHUB_OUTPUT"
+            elif [[ "${cards,,}" == "none" ]]; then
+              if grep -Eiq '^(phase-patches/|oracle/scenarios/|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
+                echo "mode=fail-closed" >> "$GITHUB_OUTPUT"
+                echo "reason=cards-none-per-card" >> "$GITHUB_OUTPUT"
+              else
+                echo "mode=smoke" >> "$GITHUB_OUTPUT"
+              fi
             fi
+          elif grep -Eiq '^(phase-patches/|phase(/|$)|phase-env/|oracle/|driver/diff_game\.py$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
+            echo "mode=smoke" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+            echo "No XMage-gated paths changed."
           fi
-      - name: Fail closed for phase-patches/card-data changes
-        if: steps.scope.outputs.mode == 'fail-closed' && steps.scope.outputs.reason == 'phase-patches-card-data'
+      - name: Fail closed for missing or required per-card scenario scope
+        if: steps.scope.outputs.mode == 'fail-closed'
         run: |
-          echo "::error::phase-patches/card-data changes need per-card XMage diffs (harness v1); cards: none is not accepted for them"
+          echo "::error::xmage-diff requires a cards: list and a scenario suite for every listed card; cards: none is not accepted for phase-patches, card-data, or oracle/scenarios changes"
           exit 1
-      - name: Fail closed for per-card XMage changes until harness v1
-        if: steps.scope.outputs.mode == 'fail-closed' && steps.scope.outputs.reason == 'cards-listed-or-missing'
-        run: |
-          echo "::error::xmage-diff not implemented yet; see docs/harness-v1-plan.md"
-          exit 1
+      - uses: actions/setup-python@v5
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
+        with:
+          python-version: "3.12"
+      - name: Validate changed scenario suites are listed
+        if: steps.scope.outputs.mode == 'per-card'
+        env:
+          CARDS: ${{ steps.scope.outputs.cards }}
+        run: python scripts/run_card_scenarios.py --cards "$CARDS" --check-changed-suites "$RUNNER_TEMP/changed-files.txt"
       - name: Read pinned mage-bench revision
         id: mage-bench-pin
-        if: steps.scope.outputs.mode == 'smoke'
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         run: |
           mapfile -t pin < oracle/mage-bench.txt
           if [[ "${#pin[@]}" -ne 2 ]]; then
@@ -372,59 +379,59 @@ jobs:
           echo "repository=$repo" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
-        if: steps.scope.outputs.mode == 'smoke'
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         with:
           repository: ${{ steps.mage-bench-pin.outputs.repository }}
           ref: ${{ steps.mage-bench-pin.outputs.sha }}
           path: mage-bench
           fetch-depth: 1
       - uses: actions/setup-java@v4
-        if: steps.scope.outputs.mode == 'smoke'
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         with:
           distribution: temurin
           java-version: "21"
           cache: maven
           cache-dependency-path: mage-bench/**/pom.xml
       - name: Apply local mage-bench patches
-        if: steps.scope.outputs.mode == 'smoke'
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         run: |
           mapfile -t patches < <(find oracle/patches -maxdepth 1 -type f -name 'mage-bench-*.patch' -print | LC_ALL=C sort)
           for patch in "${patches[@]}"; do
             (cd mage-bench && git apply "../$patch")
           done
       - name: Cache mage-bench build output
-        if: steps.scope.outputs.mode == 'smoke'
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         uses: actions/cache@v4
         with:
           path: mage-bench/**/target
           key: mage-bench-${{ runner.os }}-${{ steps.mage-bench-pin.outputs.sha }}-${{ hashFiles('oracle/patches/mage-bench-*.patch') }}
       - name: Build mage-bench
-        if: steps.scope.outputs.mode == 'smoke'
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         working-directory: mage-bench
         run: mvn install package -DskipTests
       - uses: astral-sh/setup-uv@v6
-        if: steps.scope.outputs.mode == 'smoke'
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         with:
           enable-cache: true
           cache-dependency-glob: mage-bench/uv.lock
       - name: Install mage-bench Python dependencies
-        if: steps.scope.outputs.mode == 'smoke'
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         working-directory: mage-bench
         run: uv sync --locked
       - name: Apply local engine patches
-        if: steps.scope.outputs.mode == 'smoke'
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         run: ./scripts/apply-phase-patches.sh
       - uses: dtolnay/rust-toolchain@master
-        if: steps.scope.outputs.mode == 'smoke'
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         with:
           toolchain: nightly-2026-04-19
       - uses: Swatinem/rust-cache@v2
-        if: steps.scope.outputs.mode == 'smoke'
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         with:
           workspaces: . -> target
           shared-key: xmage-diff-${{ hashFiles('phase-patches/*.patch') }}
       - name: Download and verify matching patched card data
-        if: steps.scope.outputs.mode == 'smoke'
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         working-directory: phase
         env:
           GH_TOKEN: ${{ github.token }}
@@ -469,14 +476,16 @@ jobs:
           install -D "$data_file" client/public/card-data.json
           echo "Installed patched card data with SHA-256 $actual_sha"
       - name: Build phase-env
-        if: steps.scope.outputs.mode == 'smoke'
-        run: cargo build --release -p phase-env
-      - uses: actions/setup-python@v5
-        if: steps.scope.outputs.mode == 'smoke'
-        with:
-          python-version: "3.12"
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
+        run: cargo build --release -p phase-env --features oracle-scenario
+      - name: Run listed card scenario suites
+        if: steps.scope.outputs.mode == 'per-card'
+        env:
+          CARDS: ${{ steps.scope.outputs.cards }}
+          MAGE_BENCH_ROOT: ${{ github.workspace }}/mage-bench
+        run: python scripts/run_card_scenarios.py --cards "$CARDS"
       - name: Run two-seed mono-green differential smoke
-        if: steps.scope.outputs.mode == 'smoke'
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         env:
           MAGE_BENCH_ROOT: ${{ github.workspace }}/mage-bench
         run: |
@@ -490,7 +499,7 @@ jobs:
           done
           exit "$failed"
       - uses: actions/upload-artifact@v4
-        if: always() && steps.scope.outputs.mode == 'smoke'
+        if: always() && (steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card')
         with:
           name: xmage-diff-runs
           path: runs/

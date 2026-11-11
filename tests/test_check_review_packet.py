@@ -6,7 +6,6 @@ from scripts.check_review_packet import (
     validate_review_packet,
 )
 
-
 DEFAULT_ROW = (
     "Parser behavior | python -m pytest tests -q | passed: 3 "
     "| artifacts/test-results.log | N"
@@ -252,16 +251,17 @@ def test_cards_line_accepts_names_or_none_case_insensitively(cards: str) -> None
         "phase-patches/0031-x.patch",
         "phase/client/public/card-data.json",
         "phase/client/public/Card-Data.json",
+        "oracle/scenarios/essence-burn.toml",
     ),
 )
-def test_cards_none_is_rejected_for_patches_and_card_data(path: str) -> None:
+def test_cards_none_is_rejected_for_per_card_paths(path: str) -> None:
     body = packet(
         cards="cards: none",
         evidence_rows=(DEFAULT_ROW.replace(" | N", " | Y, mutants"),),
     )
     errors = validate_review_packet(body, [path])
     assert (
-        "phase-patches/card-data changes need per-card XMage diffs (harness v1); "
+        "phase-patches/card-data/oracle-scenarios changes need per-card XMage scenarios; "
         "cards: none is not accepted for them"
     ) in errors
 

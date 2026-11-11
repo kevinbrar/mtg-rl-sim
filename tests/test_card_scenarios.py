@@ -8,7 +8,9 @@ import pytest
 
 from scripts.compare_card_scenarios import compare, read_results
 from scripts.run_card_scenarios import (
+    check_changed_scenario_suites,
     load_specs,
+    main,
     parse_mage_report,
     scenario_paths_for_cards,
 )
@@ -41,6 +43,38 @@ def test_load_specs_rejects_duplicate_names(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="unique"):
         load_specs([first, second])
+
+
+def test_runner_rejects_empty_second_suite_with_file_and_exit_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    first = tmp_path / "first.toml"
+    first.write_text(
+        '[[scenarios]]\nname = "first"\n[scenarios.setup.P0]\n',
+        encoding="utf-8",
+    )
+    second = tmp_path / "empty.toml"
+    second.write_text("", encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["run_card_scenarios.py", str(first), str(second)])
+    assert main() == 2
+    error = capsys.readouterr().err
+    assert str(second) in error
+    assert "contains no scenarios" in error
+
+
+def test_runner_rejects_scenario_without_name_with_file_and_exit_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    spec = tmp_path / "unnamed.toml"
+    spec.write_text(
+        "[[scenarios]]\n[scenarios.setup.P0]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("sys.argv", ["run_card_scenarios.py", str(spec)])
+    assert main() == 2
+    error = capsys.readouterr().err
+    assert str(spec) in error
+    assert "scenario 1 is missing a name" in error
 
 
 def test_load_specs_rejects_damage_setup(tmp_path: Path) -> None:
@@ -80,6 +114,56 @@ def test_card_names_resolve_to_scenario_specs() -> None:
     assert scenario_paths_for_cards("essence burn") == [
         root / "oracle/scenarios/essence-burn.toml"
     ]
+
+
+def test_listed_scenario_suite_slug_matches_card() -> None:
+    check_changed_scenario_suites(
+        "Essence Burn", ["oracle/scenarios/essence-burn.toml"]
+    )
+
+
+def test_unlisted_changed_scenario_suite_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("scripts.run_card_scenarios.ROOT", tmp_path)
+    with pytest.raises(ValueError, match="not listed") as error:
+        check_changed_scenario_suites(
+            "essence burn", ["oracle/scenarios/unlisted.toml"]
+        )
+    assert "oracle/scenarios/unlisted.toml" in str(error.value)
+
+
+def test_deleted_unlisted_scenario_suite_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("scripts.run_card_scenarios.ROOT", tmp_path)
+    with pytest.raises(ValueError, match="not listed") as error:
+        check_changed_scenario_suites("essence burn", ["oracle/scenarios/deleted.toml"])
+    assert "oracle/scenarios/deleted.toml" in str(error.value)
+
+
+def test_deleted_listed_scenario_suite_fails_as_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("scripts.run_card_scenarios.ROOT", tmp_path)
+    with pytest.raises(ValueError, match="is missing") as error:
+        check_changed_scenario_suites(
+            "essence burn", ["oracle/scenarios/essence-burn.toml"]
+        )
+    assert "oracle/scenarios/essence-burn.toml" in str(error.value)
+
+
+def test_card_scenario_runner_fails_when_mapped_spec_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("scripts.run_card_scenarios.ROOT", tmp_path)
+    monkeypatch.setattr(
+        "sys.argv", ["run_card_scenarios.py", "--cards", "essence burn"]
+    )
+    assert main() == 2
+    assert (
+        str(tmp_path / "oracle/scenarios/essence-burn.toml") in capsys.readouterr().err
+    )
 
 
 def test_parse_mage_report_extracts_projection_records() -> None:
