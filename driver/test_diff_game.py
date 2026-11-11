@@ -2432,6 +2432,10 @@ def test_single_ability_land_mana_plan_omits_ability_index() -> None:
             "Red",
             ["{T}: Add {C}.", "{T}, Pay 1 life: Add {R}."],
         ),
+        (
+            "Red",
+            ["{T}: Add {R} or {W}."],
+        ),
     ),
 )
 def test_mana_plan_rejects_unsupported_mana_ability_lines(
@@ -2523,11 +2527,11 @@ def test_unless_payment_pay_false_maps_to_no(monkeypatch) -> None:
     assert calls == [("choose_action", {"choice": "no"})]
 
 
-def test_unless_payment_pay_true_sends_dual_land_plan_and_requires_ack(
+def test_unless_payment_pay_true_sends_mana_plan_and_requires_ack(
     monkeypatch,
 ) -> None:
-    source = _mana_permanent(7, "Inspiring Vantage", None)
-    source["rules"] = ["{T}: Add {R} or {W}."]
+    source = _mana_permanent(7, "Mountain", "R")
+    source["rules"] = ["{T}: Add {R}."]
     decision = _unless_payment_decision([source])
     event = {"source_id": 7, "mana_type": "Red", "player_id": 0}
     applied = {
@@ -2568,10 +2572,10 @@ def test_unless_payment_pay_true_sends_dual_land_plan_and_requires_ack(
                 "battlefield": [
                     {
                         "id": "p7",
-                        "name": "Inspiring Vantage",
+                        "name": "Mountain",
                         "tapped": False,
                         "damage": 0,
-                        "rules": ["{T}: Add {R} or {W}."],
+                        "rules": ["{T}: Add {R}."],
                     }
                 ],
             }

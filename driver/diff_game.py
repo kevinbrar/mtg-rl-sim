@@ -39,9 +39,7 @@ MANA_SYMBOLS = {
     "Green": "G",
     "Colorless": "C",
 }
-MANA_RULE_PATTERN = re.compile(
-    r"^\{T\}:\s*Add\s*(\{[WUBRGC]\}(?:\s+or\s+\{[WUBRGC]\})*)\.$"
-)
+MANA_RULE_PATTERN = re.compile(r"^\{T\}:\s*Add\s*\{([WUBRGC])\}\.$")
 COUNTER_NAMES = {
     "+1/+1": "+1/+1",
     "p1p1": "+1/+1",
@@ -991,9 +989,9 @@ def _mana_plan_from_events(
                     f"Unsupported mana-ability line for XMage permanent "
                     f"{permanent}: {normalized!r}; rules={rules}"
                 )
-            line_symbols = re.findall(r"\{([WUBRGC])\}", match_rule.group(1))
-            mana_lines.append(line_symbols)
-            if symbol in line_symbols:
+            line_symbol = match_rule.group(1)
+            mana_lines.append(line_symbol)
+            if symbol == line_symbol:
                 matching_indices.append(len(mana_lines) - 1)
         if len(matching_indices) != 1:
             raise UnmappedPromptError(
