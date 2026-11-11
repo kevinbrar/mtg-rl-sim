@@ -1,0 +1,141 @@
+[[scenarios]]
+name = "M1 targeted creature spell draws and sets hand-size power"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Giant Growth", targets = ["walking-corpse"] },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "hand", card = "Colossal Dreadmaw" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "forest-growth", card = "Forest" },
+  { label = "ms-marvel", card = "Ms. Marvel, Kamala Khan" },
+  { label = "walking-corpse", card = "Walking Corpse" },
+]
+hand = ["Giant Growth", "Shock", "Swamp"]
+library_top = ["Colossal Dreadmaw", "Colossal Dreadmaw", "Colossal Dreadmaw"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = ["Forest", "Forest", "Forest"]
+graveyard = []
+
+[[scenarios]]
+name = "M2 untargeted creature spell lowers hand-size power"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Giant Growth", targets = ["walking-corpse"] },
+  { action = "pass_until_resolved" },
+  { action = "cast", card = "Llanowar Elves" },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "hand", card = "Colossal Dreadmaw" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "forest-growth", card = "Forest" },
+  { label = "forest-elf", card = "Forest" },
+  { label = "ms-marvel", card = "Ms. Marvel, Kamala Khan" },
+  { label = "walking-corpse", card = "Walking Corpse" },
+]
+hand = ["Giant Growth", "Llanowar Elves", "Shock"]
+library_top = ["Colossal Dreadmaw", "Colossal Dreadmaw", "Colossal Dreadmaw"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = ["Forest", "Forest", "Forest"]
+graveyard = []
+
+[[scenarios]]
+name = "M3 opponent creature target does not trigger"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Shock", targets = ["p1-walking-corpse"] },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P1", zone = "graveyard", card = "Walking Corpse" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "mountain", card = "Mountain" },
+  { label = "ms-marvel", card = "Ms. Marvel, Kamala Khan" },
+]
+hand = ["Shock"]
+library_top = ["Colossal Dreadmaw", "Colossal Dreadmaw", "Colossal Dreadmaw"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "p1-walking-corpse", card = "Walking Corpse" }]
+hand = []
+library_top = ["Forest", "Forest", "Forest"]
+graveyard = []
+
+[[scenarios]]
+name = "M4 hand-size power expires at end of turn"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Giant Growth", targets = ["walking-corpse"] },
+  { action = "pass_until_resolved" },
+  { action = "end_turn" },
+]
+reach = { player = "P0", zone = "hand", card = "Colossal Dreadmaw" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "forest-growth", card = "Forest" },
+  { label = "ms-marvel", card = "Ms. Marvel, Kamala Khan" },
+  { label = "walking-corpse", card = "Walking Corpse" },
+]
+hand = ["Giant Growth", "Shock", "Swamp"]
+library_top = ["Colossal Dreadmaw", "Colossal Dreadmaw", "Colossal Dreadmaw"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = ["Forest", "Forest", "Forest"]
+graveyard = []
+
+[[scenarios]]
+name = "M5 targeting Ms. Marvel triggers her ability"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Giant Growth", targets = ["ms-marvel"] },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "hand", card = "Colossal Dreadmaw" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "forest-growth", card = "Forest" },
+  { label = "ms-marvel", card = "Ms. Marvel, Kamala Khan" },
+]
+hand = ["Giant Growth", "Shock", "Swamp"]
+library_top = ["Colossal Dreadmaw", "Colossal Dreadmaw", "Colossal Dreadmaw"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = ["Forest", "Forest", "Forest"]
+graveyard = []

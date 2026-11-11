@@ -9,8 +9,7 @@ _Updated 2026-11-11._
 - Upstream offer: phase-rs#10736; patches public at kevinbrar/phase@standard-meta-fixes.
 
 ## In progress
-- PR candidate: Bringer of the Last Gift (`devin/1794404513-scenarios-bringer-of-the-last-gift`); B1–B3 match XMage with reach, and reverting patch 0023 diverges in B1/B3.
-- PR candidate `devin/1794422751-xmage-card-db-init-lock`: add a cross-JVM file lock around schema initialization for the shared cards and authorized-user H2 databases, with a concurrent child-JVM regression test. Patched regression passed (1/1); the unpatched run did not reproduce the race. Mono-green seeds 17/42 completed with zero divergences and matching winners at 44/53 steps. Evidence: `/home/ubuntu/prP-body.md`; CI has not been run.
+- PR candidate: Ms. Marvel, Kamala Khan (`devin/1794404518-scenarios-ms-marvel-kamala-khan`); M1–M5 match XMage with reach, and reverting patches 0024/0026/0027 diverges in M1/M2/M4/M5.
 - PR G candidate `devin/1794369729-harness-unless-payment`: affirmative mana-based `UnlessPayment` applies Phase-first and passes a verified mana plan to XMage `GAME_ASK`; the normalized XMage ask must now match Phase's rendered mana cost, with unsupported shards failing closed. Declines remain lockstep, non-mana costs and continuation prompts fail closed, and ward-resolution mana is excluded from the pre-cast unplanned-mana guard. The new Bridge patch shares `GAME_SELECT` mana-plan validation. `python -m pytest` under Python 3.12: 199 passed; Ruff check and test-file format passed; Mage-Bench Python tests: 8 passed; Bridge package/build and `BridgeCallbackHandlerTest`: 89 passed. All six sorted Mage-Bench patches applied to a clean pinned checkout. Patched Phase tree `b55566fad463e2e8f99ebef1c27f9af24cf0137e`; `phase-env` SHA-256 `0d40e6a5829c341d11f941f88105e2b1d85d644d1fd09c4fa141e31ae82354ac`.
   - Mono-green `--v0` seed 17 exited 0 at 44 steps and seed 42 exited 0 at 53 steps, both with 0 divergences and matched winners: `runs/20261111T050747276401Z/summary.json`, `runs/20261111T044622484602Z/summary.json`.
   - Boros Dwarves vs Dimir Midrange seed 17 exited 2 at step 268 (`unmapped_prompt`, multi-slot trigger targeting); it passed the step-259 ward `Pay {1}?` prompt, and no ward mana-plan line followed, consistent with the policy declining. Artifact: `runs/20261111T051109362299Z/divergence.json`; `DiffB_mcp.log:95-96` records the ask and continuation. Seed 42 exited 2 at step 156 (`unmapped_prompt`, multi-slot trigger targeting), `runs/20261111T045243954737Z/divergence.json`; seed 101 exited 2 at step 256 (`unmapped_prompt`, multi-slot trigger targeting), `runs/20261111T045504641502Z/divergence.json`.
@@ -70,6 +69,8 @@ _Updated 2026-11-11._
 ## Merged / done
 - PR #21 merged: canonical unordered-zone comparison and semicolon-separated card lists.
 - PR #22 merged: deterministic XMage library fixtures, token projections, and forced scenario mana payments.
+- PR #23 merged: Bringer B1–B3.
+- PR #25 merged: cross-JVM H2 init lock.
 
 ## Next
 - Backburner: full-game lockstep coverage (plan A). Per-card differential scenarios are the card-correctness gate; retain full-game lockstep as CI smoke coverage and later agent-game audit tooling.
