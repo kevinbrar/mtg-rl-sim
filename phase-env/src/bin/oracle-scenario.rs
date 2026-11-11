@@ -599,6 +599,20 @@ fn check_reach(
     if !in_zone {
         return Ok(false);
     }
+    if let Some(tapped_labels) = reach.get("tapped_labels") {
+        let Some(tapped_labels) = tapped_labels.as_array() else {
+            return Err("reach.tapped_labels must be an array".to_string());
+        };
+        for label in tapped_labels {
+            let label = label
+                .as_str()
+                .ok_or("reach.tapped_labels must be strings")?;
+            let id = resolve_label(labels, label)?;
+            if !state.objects.get(&id).is_some_and(|object| object.tapped) {
+                return Ok(false);
+            }
+        }
+    }
     let Some(object) = (zone == "battlefield")
         .then(|| {
             state.battlefield.iter().find_map(|id| {
@@ -705,20 +719,6 @@ fn check_reach(
         };
         if object.tapped != expected {
             return Ok(false);
-        }
-    }
-    if let Some(tapped_labels) = reach.get("tapped_labels") {
-        let Some(tapped_labels) = tapped_labels.as_array() else {
-            return Err("reach.tapped_labels must be an array".to_string());
-        };
-        for label in tapped_labels {
-            let label = label
-                .as_str()
-                .ok_or("reach.tapped_labels must be strings")?;
-            let id = resolve_label(labels, label)?;
-            if !state.objects.get(&id).is_some_and(|object| object.tapped) {
-                return Ok(false);
-            }
         }
     }
     Ok(true)
@@ -884,6 +884,25 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[test]
+    fn graveyard_reach_checks_tapped_labels() {
+        let mut scenario = GameScenario::new();
+        scenario.add_creature_to_graveyard(PlayerId(0), "Graveyard fixture", 1, 1);
+        let forest = scenario.add_basic_land(PlayerId(0), ManaColor::Green);
+        let mut runner = scenario.build();
+        let labels = HashMap::from([(forest, "forest".to_string())]);
+        let reach = json!({
+            "player": "P0",
+            "zone": "graveyard",
+            "card": "Graveyard fixture",
+            "tapped_labels": ["forest"]
+        });
+
+        assert_eq!(check_reach(runner.state(), &labels, Some(&reach)), Ok(false));
+        runner.state_mut().objects.get_mut(&forest).unwrap().tapped = true;
+        assert_eq!(check_reach(runner.state(), &labels, Some(&reach)), Ok(true));
     }
 
     #[test]
