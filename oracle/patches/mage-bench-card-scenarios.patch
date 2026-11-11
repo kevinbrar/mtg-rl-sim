@@ -1,9 +1,9 @@
 diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 new file mode 100644
-index 00000000000..6921aa568a1
+index 00000000000..91bff5c8b87
 --- /dev/null
 +++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-@@ -0,0 +1,485 @@
+@@ -0,0 +1,491 @@
 +package org.mage.test.testapi;
 +
 +import com.google.gson.Gson;
@@ -51,6 +51,7 @@ index 00000000000..6921aa568a1
 +    private final JsonObject scenario;
 +    private final Map<String, UUID> labels = new LinkedHashMap<>();
 +    private final Map<String, Map<String, Integer>> counters = new LinkedHashMap<>();
++    private JsonArray initialLegalTargets;
 +
 +    public CardScenarioProjectionTest(String scenarioName, JsonObject scenario) {
 +        this.scenarioName = scenarioName;
@@ -94,6 +95,11 @@ index 00000000000..6921aa568a1
 +        activePlayer = active;
 +        addScenarioSetup();
 +        scheduleCounterSetup(active);
++        if (scenario.has("legal_targets_of")) {
++            runCode("capture initial legal targets", 1, step, active, (info, player, game) -> {
++                initialLegalTargets = legalTargets();
++            });
++        }
 +        int finalTurn = scheduleScript(initialActive, step);
 +        PhaseStep finalStep = finalTurn == 1 ? step : lastStep;
 +        setStrictChooseMode(true);
@@ -284,7 +290,7 @@ index 00000000000..6921aa568a1
 +        currentGame.getExile().getAllCards(currentGame).forEach(card -> exile.add(card.getName()));
 +        exile.sort(String::compareTo);
 +        projection.add("exile", strings(exile));
-+        JsonArray legalTargets = legalTargets();
++        JsonArray legalTargets = initialLegalTargets;
 +        if (legalTargets == null) {
 +            projection.add("legal_targets", JsonNull.INSTANCE);
 +        } else {
