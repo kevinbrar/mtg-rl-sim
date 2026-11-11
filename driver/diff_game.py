@@ -111,6 +111,7 @@ def _mage_bench_external_players(decks: list[Path]) -> list[dict]:
             "name": name,
             "deck": str(deck),
             "max_interactions_per_turn": DIFF_MAX_INTERACTIONS_PER_TURN,
+            "stop_at_all_priority_steps": True,
         }
         for name, deck in zip(PLAYER_NAMES, decks)
     ]
@@ -2496,7 +2497,7 @@ async def _keep_opening_hands(sessions: list) -> dict[int, asyncio.Task]:
             message = (result.get("message") or "").casefold()
             if (
                 result.get("action_type") == "GAME_SELECT"
-                and (result.get("context") or "").startswith("T1 Precombat Main")
+                and (result.get("context") or "").startswith("T1 ")
                 and all(
                     any(
                         player.get("name") == name and player.get("hand_size") == 7
@@ -2946,6 +2947,17 @@ def _xmage_winner_from_logs(game_logs: Path) -> int | None:
     return None
 
 
+def _assert_stop_at_all_priority_steps_enabled(game_logs: Path) -> None:
+    for name in PLAYER_NAMES:
+        log_paths = list(game_logs.glob(f"game_*/{name}_mcp.log"))
+        if len(log_paths) != 1:
+            raise RuntimeError(f"Expected one {name} MCP log, found {len(log_paths)}")
+        if "stopAtAllPrioritySteps enabled" not in log_paths[0].read_text(errors="replace"):
+            raise RuntimeError(
+                f"{name} MCP log did not enable stopAtAllPrioritySteps: {log_paths[0]}"
+            )
+
+
 async def run_game(args: argparse.Namespace) -> dict:
     mage_bench = args.mage_bench.resolve()
     decks = [args.player_deck.resolve(), args.opponent_deck.resolve()]
@@ -2992,6 +3004,7 @@ async def run_game(args: argparse.Namespace) -> dict:
             game_logs=game_logs,
             chooser=PLAYER_NAMES[0],
         )
+        _assert_stop_at_all_priority_steps_enabled(game_logs)
         url_paths = sorted(game_logs.glob("game_*/Diff?_mcp_url.txt"))
         urls_by_name = {path.name.split("_", 1)[0]: path.read_text().strip() for path in url_paths}
         urls = [urls_by_name[name] for name in PLAYER_NAMES]
