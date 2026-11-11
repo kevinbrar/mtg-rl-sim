@@ -35,6 +35,14 @@ seedable. Two complementary approaches:
    "activate C's ability", "attack/block with C", plus targeted interaction
    pairs. phase-rs has a matching scenario API (`game/scenario.rs`).
 
+## Scenario mana payments
+
+Fixtures must make every scripted mana payment forced, so neither engine has
+to choose between interchangeable lands. Avoid supplying multiple lands of the
+same type when a script taps only some of them; use distinct colors where the
+spell costs allow it. This keeps tapped-state comparisons about game behavior,
+not auto-payment tie-breaking.
+
 ## Comparator v0
 
 At every decision boundary and after each applied action, compare a canonical

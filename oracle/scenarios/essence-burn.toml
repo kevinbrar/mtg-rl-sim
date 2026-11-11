@@ -97,7 +97,7 @@ legal_targets_of = "Essence Burn"
 life = 20
 battlefield = [
   { label = "p0.bf.0", card = "Mountain" },
-  { label = "p0.bf.1", card = "Mountain" },
+  { label = "p0.bf.1", card = "Plains" },
 ]
 hand = ["Essence Burn", "Shock"]
 library_top = []
