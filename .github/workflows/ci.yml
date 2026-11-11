@@ -347,6 +347,15 @@ jobs:
         run: |
           echo "::error::xmage-diff requires a cards: list and a scenario suite for every listed card; cards: none is not accepted for phase-patches, card-data, or oracle/scenarios changes"
           exit 1
+      - uses: actions/setup-python@v5
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
+        with:
+          python-version: "3.12"
+      - name: Validate changed scenario suites are listed
+        if: steps.scope.outputs.mode == 'per-card'
+        env:
+          CARDS: ${{ steps.scope.outputs.cards }}
+        run: python scripts/run_card_scenarios.py --cards "$CARDS" --check-changed-suites "$RUNNER_TEMP/changed-files.txt"
       - name: Read pinned mage-bench revision
         id: mage-bench-pin
         if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
@@ -469,10 +478,6 @@ jobs:
       - name: Build phase-env
         if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         run: cargo build --release -p phase-env --features oracle-scenario
-      - uses: actions/setup-python@v5
-        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
-        with:
-          python-version: "3.12"
       - name: Run listed card scenario suites
         if: steps.scope.outputs.mode == 'per-card'
         env:

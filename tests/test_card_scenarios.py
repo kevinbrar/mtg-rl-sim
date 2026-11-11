@@ -8,6 +8,7 @@ import pytest
 
 from scripts.compare_card_scenarios import compare, read_results
 from scripts.run_card_scenarios import (
+    check_changed_scenario_suites,
     load_specs,
     main,
     parse_mage_report,
@@ -81,6 +82,45 @@ def test_card_names_resolve_to_scenario_specs() -> None:
     assert scenario_paths_for_cards("essence burn") == [
         root / "oracle/scenarios/essence-burn.toml"
     ]
+
+
+def test_listed_scenario_suite_slug_matches_card() -> None:
+    check_changed_scenario_suites(
+        "Essence Burn", ["oracle/scenarios/essence-burn.toml"]
+    )
+
+
+def test_unlisted_changed_scenario_suite_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("scripts.run_card_scenarios.ROOT", tmp_path)
+    with pytest.raises(ValueError, match="not listed") as error:
+        check_changed_scenario_suites(
+            "essence burn", ["oracle/scenarios/unlisted.toml"]
+        )
+    assert "oracle/scenarios/unlisted.toml" in str(error.value)
+
+
+def test_deleted_unlisted_scenario_suite_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("scripts.run_card_scenarios.ROOT", tmp_path)
+    with pytest.raises(ValueError, match="not listed") as error:
+        check_changed_scenario_suites(
+            "essence burn", ["oracle/scenarios/deleted.toml"]
+        )
+    assert "oracle/scenarios/deleted.toml" in str(error.value)
+
+
+def test_deleted_listed_scenario_suite_fails_as_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("scripts.run_card_scenarios.ROOT", tmp_path)
+    with pytest.raises(ValueError, match="is missing") as error:
+        check_changed_scenario_suites(
+            "essence burn", ["oracle/scenarios/essence-burn.toml"]
+        )
+    assert "oracle/scenarios/essence-burn.toml" in str(error.value)
 
 
 def test_card_scenario_runner_fails_when_mapped_spec_is_missing(

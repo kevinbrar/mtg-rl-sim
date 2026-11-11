@@ -12,6 +12,7 @@ import sys
 import tomllib
 import unicodedata
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,23 +22,51 @@ PLAYER_SETUP_FIELDS = {"life", "battlefield", "hand", "library_top", "graveyard"
 PERMANENT_SETUP_FIELDS = {"label", "card", "tapped", "counters"}
 
 
-def scenario_paths_for_cards(cards: str) -> list[Path]:
+def _card_names(cards: str) -> list[str]:
     names = [name.strip() for name in cards.split(",")]
-    if not names or any(not name for name in names) or cards.casefold() == "none":
+    if (
+        not names
+        or any(not name for name in names)
+        or cards.strip().casefold() == "none"
+    ):
         raise ValueError("cards must be a comma-separated list of card names")
+    return names
+
+
+def _card_slug(name: str) -> str:
+    normalized = (
+        unicodedata.normalize("NFKD", name)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .casefold()
+    )
+    slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
+    if not slug:
+        raise ValueError(f"cannot derive a scenario filename for card {name!r}")
+    return slug
+
+
+def scenario_paths_for_cards(cards: str) -> list[Path]:
+    names = _card_names(cards)
     paths = []
     for name in names:
-        normalized = (
-            unicodedata.normalize("NFKD", name)
-            .encode("ascii", "ignore")
-            .decode("ascii")
-            .casefold()
-        )
-        slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
-        if not slug:
-            raise ValueError(f"cannot derive a scenario filename for card {name!r}")
-        paths.append(ROOT / "oracle/scenarios" / f"{slug}.toml")
+        paths.append(ROOT / "oracle/scenarios" / f"{_card_slug(name)}.toml")
     return paths
+
+
+def check_changed_scenario_suites(cards: str, changed_files: Sequence[str]) -> None:
+    listed_slugs = {_card_slug(name) for name in _card_names(cards)}
+    for changed_file in changed_files:
+        match = re.fullmatch(r"oracle/scenarios/([^/]+)\.toml", changed_file)
+        if match is None:
+            continue
+        slug = match.group(1)
+        if slug not in listed_slugs:
+            raise ValueError(
+                f"changed scenario suite {changed_file} is not listed in cards: {cards}"
+            )
+        if not (ROOT / changed_file).is_file():
+            raise ValueError(f"changed scenario suite {changed_file} is missing")
 
 
 def parse_mage_report(report: str) -> list[dict]:
@@ -145,6 +174,11 @@ def main() -> int:
         help="comma-separated card names; resolves oracle/scenarios/<card>.toml",
     )
     parser.add_argument(
+        "--check-changed-suites",
+        type=Path,
+        help="check changed scenario suite paths against --cards",
+    )
+    parser.add_argument(
         "--phase-bin", type=Path, default=ROOT / "target/release/oracle-scenario"
     )
     parser.add_argument(
@@ -163,6 +197,23 @@ def main() -> int:
     )
     parser.add_argument("--outdir", type=Path)
     args = parser.parse_args()
+
+    if args.check_changed_suites is not None:
+        if not args.cards or args.specs:
+            print(
+                "--check-changed-suites requires --cards and cannot be combined with spec paths",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            changed_files = args.check_changed_suites.read_text(
+                encoding="utf-8"
+            ).splitlines()
+            check_changed_scenario_suites(args.cards, changed_files)
+        except (OSError, ValueError) as error:
+            print(f"invalid changed scenario suites: {error}", file=sys.stderr)
+            return 2
+        return 0
 
     if args.cards and args.specs:
         print("spec paths and --cards cannot be used together", file=sys.stderr)
