@@ -640,11 +640,23 @@ fn check_reach(
     for (key, actual) in [
         (
             "types",
-            sorted(object.card_types.core_types.iter().map(ToString::to_string)),
+            sorted(
+                object
+                    .card_types
+                    .core_types
+                    .iter()
+                    .map(|kind| normalize_characteristic(&kind.to_string())),
+            ),
         ),
         (
             "subtypes",
-            sorted(object.card_types.subtypes.iter().cloned()),
+            sorted(
+                object
+                    .card_types
+                    .subtypes
+                    .iter()
+                    .map(|subtype| normalize_characteristic(subtype)),
+            ),
         ),
         (
             "colors",
@@ -666,7 +678,13 @@ fn check_reach(
                 .map(|value| {
                     value
                         .as_str()
-                        .map(str::to_string)
+                        .map(|value| {
+                            if key == "colors" {
+                                value.to_string()
+                            } else {
+                                normalize_characteristic(value)
+                            }
+                        })
                         .ok_or_else(|| format!("reach.{key} values must be strings"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -903,6 +921,35 @@ mod tests {
         assert_eq!(check_reach(runner.state(), &labels, Some(&reach)), Ok(false));
         runner.state_mut().objects.get_mut(&forest).unwrap().tapped = true;
         assert_eq!(check_reach(runner.state(), &labels, Some(&reach)), Ok(true));
+    }
+
+    #[test]
+    fn reach_normalizes_expected_and_actual_types_and_subtypes() {
+        let mut scenario = GameScenario::new();
+        let creature = scenario
+            .add_creature(PlayerId(0), "Normalized fixture", 2, 2)
+            .id();
+        let mut runner = scenario.build();
+        runner
+            .state_mut()
+            .objects
+            .get_mut(&creature)
+            .unwrap()
+            .card_types
+            .subtypes
+            .push("Human".to_string());
+        let reach = json!({
+            "player": "P0",
+            "zone": "battlefield",
+            "card": "Normalized fixture",
+            "types": ["creature"],
+            "subtypes": ["human"]
+        });
+
+        assert_eq!(
+            check_reach(runner.state(), &HashMap::new(), Some(&reach)),
+            Ok(true)
+        );
     }
 
     #[test]
