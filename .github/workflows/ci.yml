@@ -322,6 +322,10 @@ jobs:
             if [[ -n "$cards" && "${cards,,}" != "none" ]]; then
               echo "mode=per-card" >> "$GITHUB_OUTPUT"
               echo "cards=$cards" >> "$GITHUB_OUTPUT"
+            elif [[ "${cards,,}" == "none" ]] \
+              && grep -Eiq '^(scripts/|\.github/workflows/)' "$RUNNER_TEMP/changed-files.txt" \
+              && ! grep -Eiq '^(phase-patches/|oracle/scenarios/|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
+              echo "mode=smoke" >> "$GITHUB_OUTPUT"
             elif ! grep -Eiq '^(phase-patches/|phase(/|$)|phase-env/|oracle/|driver/diff_game\.py$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
               echo "mode=skip" >> "$GITHUB_OUTPUT"
               echo "No XMage-gated paths changed."
@@ -345,7 +349,7 @@ jobs:
       - name: Fail closed for missing or required per-card scenario scope
         if: steps.scope.outputs.mode == 'fail-closed'
         run: |
-          echo "::error::xmage-diff requires a cards: list and a scenario suite for every listed card; cards: none is not accepted for phase-patches, card-data, or oracle/scenarios changes"
+          echo "::error::xmage-diff requires a semicolon-separated cards: list and a scenario suite for every listed card; cards: none is not accepted for phase-patches, card-data, or oracle/scenarios changes"
           exit 1
       - uses: actions/setup-python@v5
         if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'

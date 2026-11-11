@@ -190,7 +190,7 @@ def validate_review_packet(body: str, changed_files: Sequence[str]) -> list[str]
         if cards is None:
             errors.append("Engine-path changes require a cards: line")
         else:
-            entries = [entry.strip() for entry in cards.split(",")]
+            entries = [entry.strip() for entry in cards.split(";")]
             if not cards or (
                 cards.casefold() != "none"
                 and (
@@ -199,7 +199,7 @@ def validate_review_packet(body: str, changed_files: Sequence[str]) -> list[str]
                 )
             ):
                 errors.append(
-                    "cards: must be `none` or a comma-separated list of card names"
+                    "cards: must be `none` or a semicolon-separated list of card names"
                 )
             if cards.casefold() == "none" and any(
                 _is_per_card_xmage_path(path) for path in changed_files

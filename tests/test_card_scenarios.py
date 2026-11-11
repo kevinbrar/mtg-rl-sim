@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import tomllib
 from pathlib import Path
@@ -116,9 +117,42 @@ def test_card_names_resolve_to_scenario_specs() -> None:
     ]
 
 
+def test_comma_card_name_resolves_to_one_scenario_spec() -> None:
+    root = Path(__file__).parents[1]
+    assert scenario_paths_for_cards("Ms. Marvel, Kamala Khan") == [
+        root / "oracle/scenarios/ms-marvel-kamala-khan.toml"
+    ]
+
+
+def test_semicolon_separated_card_names_resolve_to_two_specs() -> None:
+    root = Path(__file__).parents[1]
+    assert scenario_paths_for_cards("a; b") == [
+        root / "oracle/scenarios/a.toml",
+        root / "oracle/scenarios/b.toml",
+    ]
+
+
+def test_card_names_reject_empty_semicolon_segments() -> None:
+    with pytest.raises(ValueError, match="semicolon-separated"):
+        scenario_paths_for_cards("a;;b")
+
+
 def test_listed_scenario_suite_slug_matches_card() -> None:
     check_changed_scenario_suites(
         "Essence Burn", ["oracle/scenarios/essence-burn.toml"]
+    )
+
+
+def test_comma_card_name_matches_changed_scenario_suite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    suite = tmp_path / "oracle/scenarios/ms-marvel-kamala-khan.toml"
+    suite.parent.mkdir(parents=True)
+    suite.write_text("", encoding="utf-8")
+    monkeypatch.setattr("scripts.run_card_scenarios.ROOT", tmp_path)
+    check_changed_scenario_suites(
+        "Ms. Marvel, Kamala Khan",
+        ["oracle/scenarios/ms-marvel-kamala-khan.toml"],
     )
 
 
@@ -189,6 +223,75 @@ def test_projection_comparator_requires_equal_projections_and_reach() -> None:
     right["S1"]["projection"] = {"life": 20}
     right["S1"]["reach"] = False
     assert compare(left, right) == ["S1 (reach failed)"]
+
+
+def test_projection_comparator_ignores_unordered_zone_permutations() -> None:
+    left = {
+        "S1": {
+            "scenario": "S1",
+            "projection": {
+                "battlefield": [
+                    {"controller": "P0", "name": "Bringer"},
+                    {"controller": "P1", "name": "Grizzly"},
+                ],
+                "exile": ["Shock", "Giant Growth"],
+                "players": {
+                    "P0": {
+                        "battlefield": ["Bringer", "Swamp"],
+                        "hand": ["Forest", "Shock"],
+                        "library": ["Forest", "Swamp"],
+                        "graveyard": ["Walking Corpse", "Shock"],
+                    }
+                },
+            },
+            "reach": True,
+        }
+    }
+    right = copy.deepcopy(left)
+    projection = right["S1"]["projection"]
+    projection["battlefield"].reverse()
+    projection["exile"].reverse()
+    projection["players"]["P0"]["battlefield"].reverse()
+    projection["players"]["P0"]["hand"].reverse()
+    left_before = copy.deepcopy(left)
+    right_before = copy.deepcopy(right)
+
+    assert compare(left, right) == []
+    assert left == left_before
+    assert right == right_before
+
+
+def test_projection_comparator_rejects_battlefield_content_difference() -> None:
+    left = {
+        "S1": {
+            "scenario": "S1",
+            "projection": {"battlefield": [{"controller": "P0", "name": "Bringer"}]},
+            "reach": True,
+        }
+    }
+    right = copy.deepcopy(left)
+    right["S1"]["projection"]["battlefield"][0]["name"] = "Vren"
+
+    assert compare(left, right) == ["S1"]
+
+
+@pytest.mark.parametrize("zone", ("graveyard", "library"))
+def test_projection_comparator_preserves_ordered_zone_permutations(
+    zone: str,
+) -> None:
+    left = {
+        "S1": {
+            "scenario": "S1",
+            "projection": {
+                "players": {"P0": {zone: ["first", "second"]}},
+            },
+            "reach": True,
+        }
+    }
+    right = copy.deepcopy(left)
+    right["S1"]["projection"]["players"]["P0"][zone].reverse()
+
+    assert compare(left, right) == ["S1"]
 
 
 def test_projection_comparator_rejects_empty_sides() -> None:

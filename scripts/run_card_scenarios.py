@@ -23,13 +23,13 @@ PERMANENT_SETUP_FIELDS = {"label", "card", "tapped", "counters"}
 
 
 def _card_names(cards: str) -> list[str]:
-    names = [name.strip() for name in cards.split(",")]
+    names = [name.strip() for name in cards.split(";")]
     if (
         not names
         or any(not name for name in names)
         or cards.strip().casefold() == "none"
     ):
-        raise ValueError("cards must be a comma-separated list of card names")
+        raise ValueError("cards must be a semicolon-separated list of card names")
     return names
 
 
@@ -180,7 +180,7 @@ def main() -> int:
     parser.add_argument("specs", nargs="*", type=Path)
     parser.add_argument(
         "--cards",
-        help="comma-separated card names; resolves oracle/scenarios/<card>.toml",
+        help="semicolon-separated card names; resolves oracle/scenarios/<card>.toml",
     )
     parser.add_argument(
         "--check-changed-suites",
