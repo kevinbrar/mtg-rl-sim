@@ -87,7 +87,10 @@ graveyard = []
 name = "S4 legal targets"
 active_player = 0
 step = "precombat_main"
-script = []
+script = [
+  { action = "cast", card = "Shock", targets = ["p1.bf.0"] },
+  { action = "pass_until_resolved" },
+]
 legal_targets_of = "Essence Burn"
 
 [scenarios.setup.P0]
@@ -96,7 +99,7 @@ battlefield = [
   { label = "p0.bf.0", card = "Mountain" },
   { label = "p0.bf.1", card = "Mountain" },
 ]
-hand = ["Essence Burn"]
+hand = ["Essence Burn", "Shock"]
 library_top = []
 graveyard = []
 
