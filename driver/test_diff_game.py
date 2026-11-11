@@ -17,6 +17,7 @@ from diff_game import (
     _legal_action_diff,
     _matching_trivial_priority_stop,
     _phase_activation_set,
+    _phase_ability_key,
     _phase_hand_card,
     _phase_target_key,
     _xmage_hand_choice,
@@ -27,6 +28,7 @@ from diff_game import (
     _phase_blocker_key,
     _xmage_activation_choice,
     _xmage_activation_set,
+    _xmage_ability_key,
     _xmage_target_key,
     _xmage_target_choice,
     _advance_xmage_to_terminal,
@@ -125,6 +127,39 @@ def _xmage_signature_state(battlefields: dict[str, list[dict]]) -> dict:
             for name, permanents in battlefields.items()
         ],
     }
+
+
+def _add_xmage_rules(xmage_state: dict, card_name: str, rules: list[str]) -> None:
+    matches = 0
+    for player in xmage_state["players"]:
+        for cards in player.values():
+            if not isinstance(cards, list):
+                continue
+            for card in cards:
+                if card.get("name") == card_name:
+                    card["rules"] = list(rules)
+                    matches += 1
+    assert matches > 0
+
+
+def _xmage_state_with_rules(
+    xmage_result: dict, rules_by_name: dict[str, list[str]]
+) -> dict:
+    players = []
+    for player in xmage_result.get("board", []):
+        state_player = {"name": player.get("name")}
+        for zone in ("battlefield", "hand", "graveyard", "exile", "command"):
+            cards = player.get(zone)
+            if not isinstance(cards, list):
+                continue
+            state_player[zone] = []
+            for card in cards:
+                state_card = dict(card)
+                if state_card.get("name") in rules_by_name:
+                    state_card["rules"] = list(rules_by_name[state_card["name"]])
+                state_player[zone].append(state_card)
+        players.append(state_player)
+    return {"available": True, "players": players}
 
 
 def _combat_permanent(
@@ -1001,9 +1036,19 @@ def test_duplicate_activation_matches_are_unmapped_with_both_choice_lists() -> N
     prompt = fixture["prompts"]["activation"]
     decision = prompt["phase"]
     xmage = prompt["xmage"]
+    xmage_state = _xmage_signature_state(
+        {
+            "DiffA": [
+                {"id": "p3", "name": "Basilisk Collar"},
+                {"id": "p4", "name": "Basilisk Collar"},
+            ],
+            "DiffB": [],
+        }
+    )
+    _add_xmage_rules(xmage_state, "Basilisk Collar", ["Equip {2}"])
 
-    assert _phase_activation_set(decision) == _xmage_activation_set(xmage)
-    assert _legal_action_diff(decision, xmage) == {}
+    assert _phase_activation_set(decision) == _xmage_activation_set(xmage, xmage_state)
+    assert _legal_action_diff(decision, xmage, xmage_state) == {}
     assert fixture["source_run"]["phase_candidates"] == [
         candidate
         for candidate in decision["candidates"]
@@ -1016,12 +1061,12 @@ def test_duplicate_activation_matches_are_unmapped_with_both_choice_lists() -> N
         and candidate["data"]["source_id"] == 45
     )
     with pytest.raises(UnmappedPromptError) as error:
-        _xmage_activation_choice(action, decision, xmage)
+        _xmage_activation_choice(action, decision, xmage, xmage_state=xmage_state)
     assert "phase_choices=" in str(error.value)
     assert "xmage_choices=" in str(error.value)
     assert "Basilisk Collar" in str(error.value)
     xmage["choices"][0]["playable_abilities"] = ["Equip {1}"]
-    assert _legal_action_diff(decision, xmage)
+    assert _legal_action_diff(decision, xmage, xmage_state)
 
 
 def test_duplicate_battlefield_collars_bind_and_reuse_ids() -> None:
@@ -1048,6 +1093,7 @@ def test_duplicate_battlefield_collars_bind_and_reuse_ids() -> None:
             "DiffB": [],
         }
     )
+    _add_xmage_rules(xmage_state, "Basilisk Collar", ["Equip {2}"])
     bindings = ObjectBindings()
 
     def activation(phase_id: int) -> dict:
@@ -1138,6 +1184,7 @@ def test_unbound_attachment_hosts_use_full_signature() -> None:
             "DiffB": [],
         }
     )
+    _add_xmage_rules(xmage_state, "Basilisk Collar", ["Equip {2}"])
     bindings = ObjectBindings()
     action = next(
         item
@@ -1210,6 +1257,7 @@ def test_bound_collar_attached_to_different_host_fails_signature_reuse() -> None
             "DiffB": [],
         }
     )
+    _add_xmage_rules(xmage_state, "Basilisk Collar", ["Equip {2}"])
     bindings = ObjectBindings()
     bindings.bind(2, 0, "p5")
     bindings.bind(23, 0, "p28")
@@ -1646,6 +1694,150 @@ def test_activation_with_multiple_playable_abilities_is_unmapped() -> None:
         _xmage_activation_choice(action, decision, xmage)
 
 
+def _reef_ability_case(rules: list[str]) -> tuple[dict, dict, dict, dict, str]:
+    phase_text = (
+        "{2}{u}{b}: until end of turn, ~ becomes a 4/4 blue and black shark "
+        "creature with deathtouch. it's still a land."
+    )
+    action = {
+        "type": "ActivateAbility",
+        "data": {"ability_index": 0, "source_id": 27},
+    }
+    decision = {
+        "waiting_for": {"type": "Priority"},
+        "objects": {
+            "27": {
+                "name": "Restless Reef",
+                "controller": 0,
+                "zone": "Battlefield",
+                "abilities": [{"index": 0, "text": phase_text}],
+            }
+        },
+        "candidates": [action],
+    }
+    choice = {
+        "id": "p3",
+        "index": 0,
+        "name": "Restless Reef",
+        "action": "activate",
+        "playable_abilities": ["{2}{u}{b}: until end of turn, {this} becomes a 4/..."],
+    }
+    result = {
+        "action_type": "GAME_SELECT",
+        "board": [
+            {
+                "name": "DiffA",
+                "is_you": True,
+                "battlefield": [{"id": "p3", "name": "Restless Reef"}],
+            },
+            {"name": "DiffB", "is_you": False, "battlefield": []},
+        ],
+        "choices": [choice],
+    }
+    xmage_state = _xmage_signature_state(
+        {
+            "DiffA": [{"id": "p3", "name": "Restless Reef"}],
+            "DiffB": [],
+        }
+    )
+    _add_xmage_rules(xmage_state, "Restless Reef", rules)
+    return action, decision, result, xmage_state, phase_text
+
+
+def test_truncated_reef_ability_uses_matching_rule_and_maps_activation() -> None:
+    full_rule = (
+        "{2}{U}{B}: Until end of turn, {this} becomes a 4/4 blue and black "
+        "Shark creature with deathtouch. It's still a land. "
+        "<i>(This permanent remains a land.)</i>"
+    )
+    action, decision, result, xmage_state, _ = _reef_ability_case([full_rule])
+    choice = result["choices"][0]
+
+    key = _xmage_ability_key(
+        choice, result, choice["playable_abilities"][0], xmage_state
+    )
+    assert key == _phase_ability_key(action, decision)
+    assert "~" in key[3]
+    assert (
+        _xmage_activation_choice(action, decision, result, xmage_state=xmage_state)
+        == choice
+    )
+
+
+def test_truncated_ability_with_ambiguous_rules_is_unmapped() -> None:
+    action, decision, result, xmage_state, _ = _reef_ability_case(
+        [
+            "{2}{U}{B}: Until end of turn, {this} becomes a 4/4 blue Shark.",
+            "{2}{U}{B}: Until end of turn, {this} becomes a 4/4 black Shark.",
+        ]
+    )
+    choice = result["choices"][0]
+
+    with pytest.raises(UnmappedPromptError) as error:
+        _xmage_ability_key(choice, result, choice["playable_abilities"][0], xmage_state)
+
+    message = str(error.value)
+    assert "Restless Reef" in message
+    assert "prefix=" in message
+    assert "rules=" in message
+
+
+def test_truncated_ability_without_matching_rule_is_unmapped() -> None:
+    action, decision, result, xmage_state, _ = _reef_ability_case(["{T}: Add {C}."])
+    choice = result["choices"][0]
+
+    with pytest.raises(UnmappedPromptError) as error:
+        _xmage_ability_key(choice, result, choice["playable_abilities"][0], xmage_state)
+
+    message = str(error.value)
+    assert "Restless Reef" in message
+    assert "prefix=" in message
+    assert "rules=" in message
+
+
+@pytest.mark.parametrize(
+    ("use_state", "rules", "error"),
+    [
+        (
+            False,
+            ["{2}{U}{B}: Until end of turn, {this} becomes a 4/4."],
+            "no xmage_state",
+        ),
+        (True, [], "no usable rules"),
+    ],
+)
+def test_truncated_ability_requires_xmage_rules(
+    use_state: bool, rules: list[str], error: str
+) -> None:
+    _, _, result, xmage_state, _ = _reef_ability_case(rules)
+    choice = result["choices"][0]
+
+    with pytest.raises(UnmappedPromptError, match=error):
+        _xmage_ability_key(
+            choice,
+            result,
+            choice["playable_abilities"][0],
+            xmage_state if use_state else None,
+        )
+
+
+def test_untruncated_this_reference_maps_to_phase_tilde() -> None:
+    action, decision, result, xmage_state, _ = _reef_ability_case(
+        ["{2}{U}{B}: Until end of turn, {this} becomes a 4/4."]
+    )
+    choice = result["choices"][0]
+    choice["playable_abilities"] = [
+        "{2}{u}{b}: until end of turn, {this} becomes a 4/4 blue and black shark "
+        "creature with deathtouch. it's still a land."
+    ]
+
+    key = _xmage_ability_key(
+        choice, result, choice["playable_abilities"][0], xmage_state
+    )
+    assert key == _phase_ability_key(action, decision)
+    assert "~" in key[3]
+
+
 def test_duplicate_hand_land_choices_are_fungible() -> None:
     fixture = json.loads(HAND_DUPLICATE_FIXTURE.read_text())
     decision = fixture["prompts"]["phase"]
@@ -1699,7 +1891,8 @@ def test_activation_key_uses_the_choice_source_zone() -> None:
     xmage = fixture["prompts"]["xmage"]
 
     assert fixture["source_artifact"] == "runs/20261110T044740750318Z/divergence.json"
-    assert _legal_action_diff(decision, xmage) == {}
+    xmage_state = _xmage_state_with_rules(xmage, {"Basilisk Collar": ["Equip {2}"]})
+    assert _legal_action_diff(decision, xmage, xmage_state) == {}
 
 
 def test_duplicate_target_without_board_ids_fails_closed() -> None:
