@@ -138,9 +138,7 @@ def test_deleted_unlisted_scenario_suite_fails(
 ) -> None:
     monkeypatch.setattr("scripts.run_card_scenarios.ROOT", tmp_path)
     with pytest.raises(ValueError, match="not listed") as error:
-        check_changed_scenario_suites(
-            "essence burn", ["oracle/scenarios/deleted.toml"]
-        )
+        check_changed_scenario_suites("essence burn", ["oracle/scenarios/deleted.toml"])
     assert "oracle/scenarios/deleted.toml" in str(error.value)
 
 
