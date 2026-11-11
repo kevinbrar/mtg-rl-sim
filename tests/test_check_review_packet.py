@@ -235,7 +235,11 @@ def test_engine_path_without_cards_line_fails() -> None:
 
 @pytest.mark.parametrize(
     "cards",
-    ("cards: Bringer of the Last Gift, Firebender Ascension", "Cards: none"),
+    (
+        "cards: Bringer of the Last Gift; Firebender Ascension",
+        "cards: Ms. Marvel, Kamala Khan",
+        "Cards: none",
+    ),
 )
 def test_cards_line_accepts_names_or_none_case_insensitively(cards: str) -> None:
     body = packet(
@@ -286,23 +290,27 @@ def test_card_names_are_allowed_for_phase_patch_changes() -> None:
     "cards",
     (
         "cards:",
-        "cards: Bringer of the Last Gift,, Firebender Ascension",
-        "cards: none, Firebender Ascension",
+        "cards: Bringer of the Last Gift;; Firebender Ascension",
+        "cards: none; Firebender Ascension",
     ),
 )
-def test_cards_line_must_be_none_or_comma_separated_names(cards: str) -> None:
+def test_cards_line_must_be_none_or_semicolon_separated_names(cards: str) -> None:
     body = packet(
         cards=cards,
         evidence_rows=(DEFAULT_ROW.replace(" | N", " | Y, mutants"),),
     )
     errors = validate_review_packet(body, ["phase-patches/0001-example.patch"])
-    assert "cards: must be `none` or a comma-separated list of card names" in errors
+    assert "cards: must be `none` or a semicolon-separated list of card names" in errors
 
 
 @pytest.mark.parametrize(
     ("body", "expected"),
     (
         ("cards: none", "none"),
+        (
+            "cards: Ms. Marvel, Kamala Khan; Vren, the Relentless",
+            "Ms. Marvel, Kamala Khan; Vren, the Relentless",
+        ),
         ("## Surfaces\nCards: Forest", "Forest"),
         ("cards: Forest\ncards: none", "Forest"),
         ("## Surfaces\nNo card claim", None),

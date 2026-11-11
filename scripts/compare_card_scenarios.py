@@ -2,9 +2,36 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import sys
 from pathlib import Path
+
+
+def _json_sort_key(value: object) -> str:
+    return json.dumps(value, sort_keys=True)
+
+
+def _normalize_unordered_zones(projection: object) -> object:
+    if not isinstance(projection, dict):
+        return projection
+    normalized = copy.deepcopy(projection)
+    for zone in ("battlefield", "exile", "hand"):
+        values = normalized.get(zone)
+        if isinstance(values, list):
+            normalized[zone] = sorted(values, key=_json_sort_key)
+
+    players = normalized.get("players")
+    if isinstance(players, dict):
+        for player in players.values():
+            if not isinstance(player, dict):
+                continue
+            for zone in ("battlefield", "exile", "hand"):
+                values = player.get(zone)
+                if isinstance(values, list):
+                    player[zone] = sorted(values, key=_json_sort_key)
+
+    return normalized
 
 
 def read_results(path: Path) -> dict[str, dict]:
@@ -37,7 +64,9 @@ def compare(left: dict[str, dict], right: dict[str, dict]) -> list[str]:
             differences.append(f"{name} missing projection on right")
         elif not a.get("reach", False) or not b.get("reach", False):
             differences.append(f"{name} (reach failed)")
-        elif a["projection"] != b["projection"]:
+        elif _normalize_unordered_zones(a["projection"]) != _normalize_unordered_zones(
+            b["projection"]
+        ):
             differences.append(name)
     return differences
 

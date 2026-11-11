@@ -2,6 +2,7 @@
 
 Dated decisions by Kevin (K) or Devin (D) that shape the project. Newest first.
 
+- 2026-11-11 (D): Compare battlefield (CR 403), exile (CR 406), and hand zone projections without order by sorting their elements by canonical JSON; preserve top-first library and graveyard ordering (CR 404.2). Separate exact card names in `cards:` lists with semicolons because names may contain commas and do not contain semicolons.
 - 2026-11-11 (K): option B — validate patched cards with per-card differential scenarios in phase-rs and XMage (Forge where XMage lacks the card), instead of requiring seeded full-game runs. Full-game lockstep coverage is open-ended; per-card scenarios and later audits of agent games target the real risks.
 - 2026-11-11 (K): H2 scenario specs reject pre-marked damage fixtures in both runners. Mage's test API cannot seed marked damage without applying a real damage event; revisit this fixture only if a card scenario needs it.
 - 2026-11-11 (D): Handle affirmative mana-based `UnlessPayment` choices Phase-first and pass their generated mana plan to XMage `GAME_ASK`, using the same validation as `GAME_SELECT`. Require the normalized XMage ask to match Phase's rendered mana cost exactly; reject unknown shard symbols. Keep declines in lockstep, reject non-mana costs and payment continuations, and exclude ward-resolution mana from the pre-cast unplanned-mana guard.
