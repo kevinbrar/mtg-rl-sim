@@ -96,6 +96,32 @@ fn project(
     })
 }
 
+fn apply_configured_permanents(
+    state: &mut GameState,
+    configured: &[(ObjectId, Value)],
+) -> Result<(), String> {
+    let mut has_counters = false;
+    for (id, item) in configured {
+        let object = state.objects.get_mut(id).expect("setup object exists");
+        object.tapped = item["tapped"].as_bool().unwrap_or(false);
+        object.damage_marked = item["damage"].as_u64().unwrap_or(0) as u32;
+        if let Some(counters) = item["counters"].as_object() {
+            has_counters |= !counters.is_empty();
+            for (name, count) in counters {
+                object.counters.insert(
+                    parse_counter_type(name),
+                    count.as_u64().ok_or("counter count must be non-negative")? as u32,
+                );
+            }
+        }
+    }
+    if has_counters {
+        engine::game::layers::mark_layers_full(state);
+        engine::game::layers::flush_layers(state);
+    }
+    Ok(())
+}
+
 fn advance_to_next_turn(runner: &mut GameRunner) -> Result<(), String> {
     let turn = runner.state().turn_number;
     for _ in 0..64 {
@@ -190,19 +216,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
             player.life = setup["life"].as_i64().unwrap_or(20) as i32;
             player.library = player_library_top.iter().copied().collect();
         }
-        for (id, item) in &configured {
-            let object = state.objects.get_mut(id).expect("setup object exists");
-            object.tapped = item["tapped"].as_bool().unwrap_or(false);
-            object.damage_marked = item["damage"].as_u64().unwrap_or(0) as u32;
-            if let Some(counters) = item["counters"].as_object() {
-                for (name, count) in counters {
-                    object.counters.insert(
-                        parse_counter_type(name),
-                        count.as_u64().ok_or("counter count must be non-negative")? as u32,
-                    );
-                }
-            }
-        }
+        apply_configured_permanents(state, &configured)?;
     }
     let mut legal = None;
     if let Some(card) = spec["legal_targets_of"].as_str() {
@@ -368,5 +382,22 @@ mod tests {
         advance_to_next_turn(&mut runner).unwrap();
 
         assert_ne!(runner.state().turn_number, turn);
+    }
+
+    #[test]
+    fn setup_plus_one_counter_recomputes_effective_power_and_toughness() {
+        let mut scenario = GameScenario::new();
+        let creature = scenario
+            .add_creature(PlayerId(0), "Counter Bear", 2, 2)
+            .id();
+        let mut runner = scenario.build();
+        let configured = vec![(creature, json!({"counters": {"+1/+1": 1}}))];
+
+        apply_configured_permanents(runner.state_mut(), &configured).unwrap();
+
+        let labels = HashMap::from([(creature, "p0.bf.0".to_string())]);
+        let value = project(runner.state(), &labels, None, true);
+        assert_eq!(value["battlefield"][0]["power"], json!(3));
+        assert_eq!(value["battlefield"][0]["toughness"], json!(3));
     }
 }
