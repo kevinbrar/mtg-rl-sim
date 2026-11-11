@@ -1,0 +1,309 @@
+diff --git a/Mage.Server/src/main/java/mage/server/AuthorizedUserRepository.java b/Mage.Server/src/main/java/mage/server/AuthorizedUserRepository.java
+index 6ccc5812..d36dcf49 100644
+--- a/Mage.Server/src/main/java/mage/server/AuthorizedUserRepository.java
++++ b/Mage.Server/src/main/java/mage/server/AuthorizedUserRepository.java
+@@ -19,7 +19,6 @@ import org.apache.shiro.crypto.hash.Hash;
+ import org.apache.shiro.crypto.hash.Sha256Hash;
+ import org.apache.shiro.crypto.hash.SimpleHash;
+ 
+-import java.io.File;
+ import java.sql.SQLException;
+ import java.util.List;
+ 
+@@ -40,14 +39,12 @@ public class AuthorizedUserRepository {
+     private Dao<AuthorizedUser, Object> usersDao;
+ 
+     public AuthorizedUserRepository(String connectionString) {
+-        File file = new File("db");
+-        if (!file.exists()) {
+-            file.mkdirs();
+-        }
+         try {
+-            ConnectionSource connectionSource = DatabaseUtils.openH2ConnectionWithRetry(connectionString);
+-            TableUtils.createTableIfNotExists(connectionSource, AuthorizedUser.class);
+-            usersDao = DaoManager.createDao(connectionSource, AuthorizedUser.class);
++            DatabaseUtils.withH2InitializationLock(connectionString, () -> {
++                ConnectionSource connectionSource = DatabaseUtils.openH2ConnectionWithRetry(connectionString);
++                TableUtils.createTableIfNotExists(connectionSource, AuthorizedUser.class);
++                usersDao = DaoManager.createDao(connectionSource, AuthorizedUser.class);
++            });
+         } catch (SQLException ex) {
+             LOGGER.error("Error creating / assigning authorized_user repository - ", ex);
+         }
+diff --git a/Mage.Tests/src/test/java/org/mage/test/serverside/ConcurrentH2RepositoryInitializationTest.java b/Mage.Tests/src/test/java/org/mage/test/serverside/ConcurrentH2RepositoryInitializationTest.java
+new file mode 100644
+index 00000000..2b987bd6
+--- /dev/null
++++ b/Mage.Tests/src/test/java/org/mage/test/serverside/ConcurrentH2RepositoryInitializationTest.java
+@@ -0,0 +1,117 @@
++package org.mage.test.serverside;
++
++import mage.cards.repository.CardRepository;
++import mage.cards.repository.ExpansionRepository;
++import mage.server.AuthorizedUserRepository;
++import org.junit.Assert;
++import org.junit.Rule;
++import org.junit.Test;
++import org.junit.rules.TemporaryFolder;
++
++import java.io.File;
++import java.io.IOException;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.concurrent.TimeUnit;
++
++public final class ConcurrentH2RepositoryInitializationTest {
++
++    @Rule
++    public TemporaryFolder temporaryFolder = new TemporaryFolder();
++
++    @Test
++    public void concurrentRepositoryInitializationAcrossJvmProcesses() throws Exception {
++        String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
++        String classPath = absoluteClassPath(System.getProperty("surefire.test.class.path"));
++
++        for (int round = 0; round < 5; round++) {
++            Path workingDirectory = temporaryFolder.newFolder("round-" + round).toPath();
++            Path rendezvous = workingDirectory.resolve("rendezvous");
++            Files.createDirectories(rendezvous);
++
++            Process first = startChild(java, classPath, workingDirectory, rendezvous, "first", "second");
++            Process second = startChild(java, classPath, workingDirectory, rendezvous, "second", "first");
++
++            boolean firstFinished = first.waitFor(60, TimeUnit.SECONDS);
++            boolean secondFinished = second.waitFor(60, TimeUnit.SECONDS);
++            if (!firstFinished || !secondFinished) {
++                first.destroyForcibly();
++                second.destroyForcibly();
++                Assert.fail("child JVM timed out in round " + round);
++            }
++            String firstOutput = Files.readString(workingDirectory.resolve("first.log"));
++            String secondOutput = Files.readString(workingDirectory.resolve("second.log"));
++            Assert.assertEquals("round " + round + " first JVM output:\n" + firstOutput, 0, first.exitValue());
++            Assert.assertEquals("round " + round + " second JVM output:\n" + secondOutput, 0, second.exitValue());
++            Assert.assertFalse(firstOutput, firstOutput.contains("already exists"));
++            Assert.assertFalse(secondOutput, secondOutput.contains("already exists"));
++            Assert.assertTrue(firstOutput, firstOutput.contains("repositories initialized"));
++            Assert.assertTrue(secondOutput, secondOutput.contains("repositories initialized"));
++        }
++    }
++
++    private static Process startChild(
++            String java,
++            String classPath,
++            Path workingDirectory,
++            Path rendezvous,
++            String childName,
++            String otherName
++    ) throws IOException {
++        Path output = workingDirectory.resolve(childName + ".log");
++        return new ProcessBuilder(
++                java,
++                "-cp",
++                classPath,
++                Initializer.class.getName(),
++                rendezvous.toString(),
++                childName,
++                otherName
++        )
++                .directory(workingDirectory.toFile())
++                .redirectErrorStream(true)
++                .redirectOutput(output.toFile())
++                .start();
++    }
++
++    private static String absoluteClassPath(String classPath) {
++        if (classPath == null || classPath.isBlank()) {
++            throw new IllegalStateException("Surefire test classpath is unavailable");
++        }
++        String[] entries = classPath.split(java.util.regex.Pattern.quote(File.pathSeparator));
++        StringBuilder result = new StringBuilder();
++        for (String entry : entries) {
++            if (result.length() > 0) {
++                result.append(File.pathSeparator);
++            }
++            result.append(Path.of(entry).toAbsolutePath().normalize());
++        }
++        return result.toString();
++    }
++
++    public static final class Initializer {
++
++        public static void main(String[] args) throws Exception {
++            Path rendezvous = Path.of(args[0]);
++            String childName = args[1];
++            String otherName = args[2];
++            Files.createFile(rendezvous.resolve(childName));
++
++            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
++            while (!Files.exists(rendezvous.resolve(otherName))) {
++                if (System.nanoTime() >= deadline) {
++                    throw new IllegalStateException("other child JVM did not reach initialization barrier");
++                }
++                Thread.sleep(10);
++            }
++
++            CardRepository.instance.findCard("Forest");
++            if (!ExpansionRepository.instance.instanceInitialized) {
++                throw new IllegalStateException("ExpansionRepository did not initialize");
++            }
++            ExpansionRepository.instance.getAll();
++            AuthorizedUserRepository.getInstance().getByName("initialization-probe");
++            System.out.println("repositories initialized");
++        }
++    }
++}
+diff --git a/Mage/src/main/java/mage/cards/repository/CardRepository.java b/Mage/src/main/java/mage/cards/repository/CardRepository.java
+index 5df8b445..fef1fd9a 100644
+--- a/Mage/src/main/java/mage/cards/repository/CardRepository.java
++++ b/Mage/src/main/java/mage/cards/repository/CardRepository.java
+@@ -17,7 +17,6 @@ import mage.constants.SuperType;
+ import mage.util.RandomUtil;
+ import org.apache.log4j.Logger;
+ 
+-import java.io.File;
+ import java.sql.SQLException;
+ import java.util.*;
+ import java.util.concurrent.atomic.AtomicInteger;
+@@ -56,22 +55,18 @@ public enum CardRepository {
+     ));
+ 
+     CardRepository() {
+-        File file = new File("db");
+-        if (!file.exists()) {
+-            file.mkdirs();
+-        }
+         try {
+-            ConnectionSource connectionSource = DatabaseUtils.openH2ConnectionWithRetry(DatabaseUtils.prepareH2Connection(DatabaseUtils.DB_NAME_CARDS, true));
+-
+-            boolean isObsolete = RepositoryUtil.isDatabaseObsolete(connectionSource, VERSION_ENTITY_NAME, CARD_DB_VERSION);
+-            boolean isNewBuild = RepositoryUtil.isNewBuildRun(connectionSource, VERSION_ENTITY_NAME, CardRepository.class); // recreate db on new build
+-            if (isObsolete || isNewBuild) {
+-                //System.out.println("Local cards db is outdated, cleaning...");
+-                TableUtils.dropTable(connectionSource, CardInfo.class, true);
+-            }
+-
+-            TableUtils.createTableIfNotExists(connectionSource, CardInfo.class);
+-            cardsDao = DaoManager.createDao(connectionSource, CardInfo.class);
++            String connectionUrl = DatabaseUtils.prepareH2Connection(DatabaseUtils.DB_NAME_CARDS, true);
++            DatabaseUtils.withH2InitializationLock(connectionUrl, () -> {
++                ConnectionSource connectionSource = DatabaseUtils.openH2ConnectionWithRetry(connectionUrl);
++                boolean isObsolete = RepositoryUtil.isDatabaseObsolete(connectionSource, VERSION_ENTITY_NAME, CARD_DB_VERSION);
++                boolean isNewBuild = RepositoryUtil.isNewBuildRun(connectionSource, VERSION_ENTITY_NAME, CardRepository.class);
++                if (isObsolete || isNewBuild) {
++                    TableUtils.dropTable(connectionSource, CardInfo.class, true);
++                }
++                TableUtils.createTableIfNotExists(connectionSource, CardInfo.class);
++                cardsDao = DaoManager.createDao(connectionSource, CardInfo.class);
++            });
+         } catch (SQLException e) {
+             Logger.getLogger(CardRepository.class).error("Error creating card repository - " + e, e);
+             processMemoryErrors(e);
+diff --git a/Mage/src/main/java/mage/cards/repository/DatabaseUtils.java b/Mage/src/main/java/mage/cards/repository/DatabaseUtils.java
+index 6420d4f1..60d1d312 100644
+--- a/Mage/src/main/java/mage/cards/repository/DatabaseUtils.java
++++ b/Mage/src/main/java/mage/cards/repository/DatabaseUtils.java
+@@ -6,8 +6,14 @@ import com.j256.ormlite.support.DatabaseConnection;
+ import mage.util.DebugUtil;
+ import org.apache.log4j.Logger;
+ 
++import java.io.IOException;
++import java.io.UncheckedIOException;
++import java.nio.channels.FileChannel;
++import java.nio.channels.FileLock;
++import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.nio.file.Paths;
++import java.nio.file.StandardOpenOption;
+ import java.sql.SQLException;
+ 
+ /**
+@@ -19,6 +25,12 @@ public class DatabaseUtils {
+ 
+     private static final Logger logger = Logger.getLogger(DatabaseUtils.class);
+     private static final String H2_FILE_PREFIX = "jdbc:h2:file:";
++    private static final Object H2_INITIALIZATION_MONITOR = new Object();
++
++    @FunctionalInterface
++    public interface H2InitializationBlock {
++        void run() throws SQLException;
++    }
+ 
+     // warning, do not change names or db format
+     // h2
+@@ -68,6 +80,27 @@ public class DatabaseUtils {
+         return res;
+     }
+ 
++    public static void withH2InitializationLock(String url, H2InitializationBlock initialization) throws SQLException {
++        Path dbPath = getH2FilePath(url);
++        if (dbPath == null || dbPath.getFileName() == null) {
++            throw new IllegalArgumentException("H2 initialization lock requires a file database URL: " + url);
++        }
++        Path dbDirectory = dbPath.toAbsolutePath().normalize().getParent();
++        Path lockPath = dbDirectory.resolve(dbPath.getFileName() + ".init.lock");
++
++        synchronized (H2_INITIALIZATION_MONITOR) {
++            try {
++                Files.createDirectories(dbDirectory);
++                try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
++                     FileLock lock = channel.lock()) {
++                    initialization.run();
++                }
++            } catch (IOException e) {
++                throw new UncheckedIOException("Failed to lock H2 initialization for " + url, e);
++            }
++        }
++    }
++
+     /**
+      * Open an H2 database connection, retrying on lock contention.
+      *
+diff --git a/Mage/src/main/java/mage/cards/repository/ExpansionRepository.java b/Mage/src/main/java/mage/cards/repository/ExpansionRepository.java
+index b282bb60..b8edbb9c 100644
+--- a/Mage/src/main/java/mage/cards/repository/ExpansionRepository.java
++++ b/Mage/src/main/java/mage/cards/repository/ExpansionRepository.java
+@@ -11,7 +11,6 @@ import com.j256.ormlite.table.TableUtils;
+ import mage.game.events.Listener;
+ import org.apache.log4j.Logger;
+ 
+-import java.io.File;
+ import java.sql.SQLException;
+ import java.util.ArrayList;
+ import java.util.Collections;
+@@ -37,24 +36,19 @@ public enum ExpansionRepository {
+     public boolean instanceInitialized = false;
+ 
+     ExpansionRepository() {
+-        File file = new File("db");
+-        if (!file.exists()) {
+-            file.mkdirs();
+-        }
+         try {
+-            ConnectionSource connectionSource = DatabaseUtils.openH2ConnectionWithRetry(DatabaseUtils.prepareH2Connection(DatabaseUtils.DB_NAME_CARDS, true));
+-
+-            boolean isObsolete = RepositoryUtil.isDatabaseObsolete(connectionSource, VERSION_ENTITY_NAME, EXPANSION_DB_VERSION);
+-            boolean isNewBuild = RepositoryUtil.isNewBuildRun(connectionSource, VERSION_ENTITY_NAME, ExpansionRepository.class); // recreate db on new build
+-            if (isObsolete || isNewBuild) {
+-                //System.out.println("Local sets db is outdated, cleaning...");
+-                TableUtils.dropTable(connectionSource, ExpansionInfo.class, true);
+-            }
+-
+-            TableUtils.createTableIfNotExists(connectionSource, ExpansionInfo.class);
+-            expansionDao = DaoManager.createDao(connectionSource, ExpansionInfo.class);
++            String connectionUrl = DatabaseUtils.prepareH2Connection(DatabaseUtils.DB_NAME_CARDS, true);
++            DatabaseUtils.withH2InitializationLock(connectionUrl, () -> {
++                ConnectionSource connectionSource = DatabaseUtils.openH2ConnectionWithRetry(connectionUrl);
++                boolean isObsolete = RepositoryUtil.isDatabaseObsolete(connectionSource, VERSION_ENTITY_NAME, EXPANSION_DB_VERSION);
++                boolean isNewBuild = RepositoryUtil.isNewBuildRun(connectionSource, VERSION_ENTITY_NAME, ExpansionRepository.class);
++                if (isObsolete || isNewBuild) {
++                    TableUtils.dropTable(connectionSource, ExpansionInfo.class, true);
++                }
++                TableUtils.createTableIfNotExists(connectionSource, ExpansionInfo.class);
++                expansionDao = DaoManager.createDao(connectionSource, ExpansionInfo.class);
++            });
+             instanceInitialized = true;
+-
+             eventSource.fireRepositoryDbLoaded();
+         } catch (SQLException e) {
+             // TODO: add app close?
