@@ -3,7 +3,7 @@ new file mode 100644
 index 00000000000..91bff5c8b87
 --- /dev/null
 +++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-@@ -0,0 +1,685 @@
+@@ -0,0 +1,688 @@
 +package org.mage.test.testapi;
 +
 +import com.google.gson.Gson;
@@ -452,49 +452,11 @@ index 00000000000..91bff5c8b87
 +            return false;
 +        }
 +        if (zone.equals("battlefield")) {
-+            Permanent permanent = currentGame.getBattlefield().getAllActivePermanents().stream()
++            boolean matchingPermanent = currentGame.getBattlefield().getAllActivePermanents().stream()
 +                    .filter(candidate -> candidate.getControllerId().equals(player.getId()))
 +                    .filter(candidate -> projectedName(candidate).equals(card))
-+                    .findFirst()
-+                    .orElseThrow();
-+            if (!matchesCharacteristicList(reach, "types", permanent.getCardType(currentGame).stream()
-+                    .map(type -> normalizeCharacteristic(type.toString()))
-+                    .toList())
-+                    || !matchesCharacteristicList(reach, "subtypes", permanent.getSubtype(currentGame).stream()
-+                    .map(subtype -> normalizeCharacteristic(subtype.getDescription()))
-+                    .toList())
-+                    || !matchesCharacteristicList(reach, "colors", colorCodes(permanent.getColor(currentGame)))) {
-+                return false;
-+            }
-+            if (reach.has("creature")) {
-+                boolean expected = reach.get("creature").getAsBoolean();
-+                if (permanent.isCreature(currentGame) != expected) {
-+                    return false;
-+                }
-+            }
-+            if (reach.has("power")) {
-+                if (!characteristicMatches(reach.get("power"), permanent.isCreature(currentGame)
-+                        ? permanent.getPower() : null)) {
-+                    return false;
-+                }
-+            }
-+            if (reach.has("toughness")) {
-+                if (!characteristicMatches(reach.get("toughness"), permanent.isCreature(currentGame)
-+                        ? permanent.getToughness() : null)) {
-+                    return false;
-+                }
-+            }
-+            if (reach.has("power_is_null")
-+                    && reach.get("power_is_null").getAsBoolean()
-+                    != (!permanent.isCreature(currentGame) || permanent.getPower() == null)) {
-+                return false;
-+            }
-+            if (reach.has("toughness_is_null")
-+                    && reach.get("toughness_is_null").getAsBoolean()
-+                    != (!permanent.isCreature(currentGame) || permanent.getToughness() == null)) {
-+                return false;
-+            }
-+            if (reach.has("tapped") && reach.get("tapped").getAsBoolean() != permanent.isTapped()) {
++                    .anyMatch(candidate -> matchesReachCharacteristics(reach, candidate));
++            if (!matchingPermanent) {
 +                return false;
 +            }
 +        }
@@ -509,6 +471,47 @@ index 00000000000..91bff5c8b87
 +            }
 +        }
 +        return true;
++    }
++
++    private boolean matchesReachCharacteristics(JsonObject reach, Permanent permanent) {
++        if (!matchesCharacteristicList(reach, "types", permanent.getCardType(currentGame).stream()
++                .map(type -> normalizeCharacteristic(type.toString()))
++                .toList())
++                || !matchesCharacteristicList(reach, "subtypes", permanent.getSubtype(currentGame).stream()
++                .map(subtype -> normalizeCharacteristic(subtype.getDescription()))
++                .toList())
++                || !matchesCharacteristicList(reach, "colors", colorCodes(permanent.getColor(currentGame)))) {
++            return false;
++        }
++        if (reach.has("creature")) {
++            boolean expected = reach.get("creature").getAsBoolean();
++            if (permanent.isCreature(currentGame) != expected) {
++                return false;
++            }
++        }
++        if (reach.has("power")) {
++            if (!characteristicMatches(reach.get("power"), permanent.isCreature(currentGame)
++                    ? permanent.getPower() : null)) {
++                return false;
++            }
++        }
++        if (reach.has("toughness")) {
++            if (!characteristicMatches(reach.get("toughness"), permanent.isCreature(currentGame)
++                    ? permanent.getToughness() : null)) {
++                return false;
++            }
++        }
++        if (reach.has("power_is_null")
++                && reach.get("power_is_null").getAsBoolean()
++                != (!permanent.isCreature(currentGame) || permanent.getPower() == null)) {
++            return false;
++        }
++        if (reach.has("toughness_is_null")
++                && reach.get("toughness_is_null").getAsBoolean()
++                != (!permanent.isCreature(currentGame) || permanent.getToughness() == null)) {
++            return false;
++        }
++        return !reach.has("tapped") || reach.get("tapped").getAsBoolean() == permanent.isTapped();
 +    }
 +
 +    private String labelOf(Permanent permanent) {

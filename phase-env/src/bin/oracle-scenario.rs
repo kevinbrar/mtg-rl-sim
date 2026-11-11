@@ -1,5 +1,6 @@
 use engine::database::CardDatabase;
 use engine::game::ability_utils::build_target_slots;
+use engine::game::game_object::GameObject;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::types::{
@@ -613,17 +614,7 @@ fn check_reach(
             }
         }
     }
-    let Some(object) = (zone == "battlefield")
-        .then(|| {
-            state.battlefield.iter().find_map(|id| {
-                state
-                    .objects
-                    .get(id)
-                    .filter(|object| object.controller.0 as usize == index && object.name == card)
-            })
-        })
-        .flatten()
-    else {
+    if zone != "battlefield" {
         return Ok(![
             "types",
             "subtypes",
@@ -635,8 +626,22 @@ fn check_reach(
         ]
         .iter()
         .any(|key| reach.get(key).is_some()));
-    };
+    }
 
+    for id in &state.battlefield {
+        let Some(object) = state.objects.get(id).filter(|object| {
+            object.controller.0 as usize == index && object.name == card
+        }) else {
+            continue;
+        };
+        if matches_reach_characteristics(object, reach)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn matches_reach_characteristics(object: &GameObject, reach: &Value) -> Result<bool, String> {
     for (key, actual) in [
         (
             "types",
@@ -687,7 +692,7 @@ fn check_reach(
                         })
                         .ok_or_else(|| format!("reach.{key} values must be strings"))
                 })
-                .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?;
             expected.sort();
             if expected != actual {
                 return Ok(false);
@@ -944,6 +949,26 @@ mod tests {
             "card": "Normalized fixture",
             "types": ["creature"],
             "subtypes": ["human"]
+        });
+
+        assert_eq!(
+            check_reach(runner.state(), &HashMap::new(), Some(&reach)),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn reach_matches_any_same_name_permanent_with_expected_characteristics() {
+        let mut scenario = GameScenario::new();
+        scenario.add_creature(PlayerId(0), "Duplicate fixture", 1, 1);
+        scenario.add_creature(PlayerId(0), "Duplicate fixture", 3, 3);
+        let runner = scenario.build();
+        let reach = json!({
+            "player": "P0",
+            "zone": "battlefield",
+            "card": "Duplicate fixture",
+            "power": 3,
+            "toughness": 3
         });
 
         assert_eq!(
