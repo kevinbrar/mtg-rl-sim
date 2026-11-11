@@ -39,7 +39,9 @@ MANA_SYMBOLS = {
     "Green": "G",
     "Colorless": "C",
 }
-MANA_RULE_PATTERN = re.compile(r"^\{T\}:\s*Add\s*\{([WUBRGC])\}\.$")
+MANA_RULE_PATTERN = re.compile(
+    r"^\{T\}:\s*Add\s*(\{[WUBRGC]\}(?:\s+or\s+\{[WUBRGC]\})*)\.$"
+)
 COUNTER_NAMES = {
     "+1/+1": "+1/+1",
     "p1p1": "+1/+1",
@@ -989,8 +991,9 @@ def _mana_plan_from_events(
                     f"Unsupported mana-ability line for XMage permanent "
                     f"{permanent}: {normalized!r}; rules={rules}"
                 )
-            mana_lines.append(match_rule.group(1))
-            if match_rule.group(1) == symbol:
+            line_symbols = re.findall(r"\{([WUBRGC])\}", match_rule.group(1))
+            mana_lines.append(line_symbols)
+            if symbol in line_symbols:
                 matching_indices.append(len(mana_lines) - 1)
         if len(matching_indices) != 1:
             raise UnmappedPromptError(
@@ -2747,6 +2750,139 @@ def _map_blockers(
     return mapped
 
 
+_MANA_PAYMENT_CONTINUATION_TYPES = {
+    "ManaPayment",
+    "ManaSourceSelection",
+    "PayManaAbilityMana",
+    "ManaAbilityManaPayment",
+    "ChooseManaColor",
+    "ReplacementChoice",
+}
+
+
+def _validate_unless_payment_prompt(
+    decision: dict, xmage_result: dict, owner: int
+) -> None:
+    waiting_for = decision.get("waiting_for", {})
+    waiting_data = waiting_for.get("data", {})
+    if waiting_for.get("type") != "UnlessPayment":
+        raise UnmappedPromptError(
+            f"PayUnlessCost requires Phase UnlessPayment: {decision}"
+        )
+    if (
+        decision.get("owner") != owner
+        or waiting_data.get("player") != owner
+    ):
+        raise UnmappedPromptError(
+            f"Unless-payment actor does not match Phase owner {owner}: {decision}"
+        )
+    cost = waiting_data.get("cost")
+    if not isinstance(cost, dict) or cost.get("type") != "Mana":
+        raise UnmappedPromptError(
+            f"Non-mana unless payment is unsupported: {cost}"
+        )
+    if xmage_result.get("action_type") != "GAME_ASK":
+        raise UnmappedPromptError(
+            f"Unless payment requires an XMage GAME_ASK: {xmage_result}"
+        )
+    try:
+        xmage_owner, _ = _xmage_hand_owner(xmage_result)
+    except UnmappedPromptError as exc:
+        raise UnmappedPromptError(
+            f"Could not identify XMage unless-payment actor: {xmage_result}"
+        ) from exc
+    if xmage_owner != owner:
+        raise UnmappedPromptError(
+            f"Unless-payment owners differ: Phase={owner}, XMage={xmage_owner}"
+        )
+
+
+def _is_unless_payment_continuation(decision: dict) -> bool:
+    waiting_for = decision.get("waiting_for", {})
+    return (
+        decision.get("type") == "decision"
+        and waiting_for.get("type") in _MANA_PAYMENT_CONTINUATION_TYPES
+    )
+
+
+def _unless_payment_payload(pay: bool, mana_plan: list[str]) -> dict:
+    if not pay:
+        return {"choice": "no"}
+    payload = {"choice": "yes", "auto_tap": not mana_plan}
+    if mana_plan:
+        payload["mana_plan"] = ",".join(mana_plan)
+    return payload
+
+
+async def _phase_unless_payment_to_xmage(
+    phase,
+    index: int,
+    action: dict,
+    decision: dict,
+    xmage_result: dict,
+    sessions: list,
+    owner: int,
+    bindings: ObjectBindings,
+    xmage_state: dict,
+) -> tuple[dict, dict, dict]:
+    _validate_unless_payment_prompt(decision, xmage_result, owner)
+    pay = action.get("data", {}).get("pay")
+    if not isinstance(pay, bool) or not pay:
+        raise UnmappedPromptError(
+            f"Phase-first unless-payment requires pay=true: {action}"
+        )
+
+    applied = await asyncio.to_thread(phase.choose, index)
+    if applied.get("type") != "applied" or not applied.get("ok"):
+        raise RuntimeError(
+            f"Phase rejected policy unless-payment action {action}: {applied}"
+        )
+    mana_events = _mana_added_from_applied(applied, decision)
+    next_decision = await asyncio.to_thread(phase._read)
+    if _is_unless_payment_continuation(next_decision):
+        raise UnmappedPromptError(
+            f"Unless-payment mana continuation is unsupported: {next_decision}"
+        )
+
+    mana_plan = _mana_plan_from_current_state(
+        mana_events,
+        owner,
+        bindings,
+        decision["state"],
+        xmage_state,
+    )
+    baseline_log = await _call(sessions[owner], "get_game_log")
+    cursor = baseline_log.get("cursor")
+    if not isinstance(cursor, int) or isinstance(cursor, bool):
+        raise RuntimeError(
+            f"XMage game log omitted a valid cursor: {baseline_log}"
+        )
+    pending_log_check = {
+        "owner": owner,
+        "cursor": cursor,
+        "macro_decision": next_decision,
+        "mana_plan": mana_plan,
+    }
+    result = await _call(
+        sessions[owner],
+        "choose_action",
+        _unless_payment_payload(pay, mana_plan),
+    )
+    issue = _mana_plan_ack_error(result, mana_plan)
+    if issue is not None:
+        raise DifferentialDivergenceError(
+            "mana_plan",
+            {
+                "reason": issue,
+                "phase_decision": next_decision,
+                "action": action,
+                "mana_plan": mana_plan,
+                "xmage_result": result,
+            },
+        )
+    return result, pending_log_check, next_decision
+
+
 async def _apply_xmage_action(
     session,
     action: dict,
@@ -2757,6 +2893,18 @@ async def _apply_xmage_action(
 ) -> asyncio.Task:
     kind = action["type"]
     data = action.get("data", {})
+    if kind == "PayUnlessCost":
+        _validate_unless_payment_prompt(
+            decision, xmage_result, decision.get("owner")
+        )
+        pay = data.get("pay")
+        if not isinstance(pay, bool) or pay:
+            raise UnmappedPromptError(
+                f"Only pay=false uses the lockstep unless-payment path: {action}"
+            )
+        return asyncio.create_task(
+            _call(session, "choose_action", _unless_payment_payload(False, []))
+        )
     if kind == "PassPriority":
         return asyncio.create_task(_call(session, "pass_priority"))
     if kind in {"PlayLand", "CastSpell"}:
@@ -3172,6 +3320,29 @@ async def run_game(args: argparse.Namespace) -> dict:
                             exc,
                         )
                     pending_mana_check = None
+                if (
+                    decision.get("waiting_for", {}).get("type") == "UnlessPayment"
+                    and xmage_result is not None
+                ):
+                    try:
+                        _validate_unless_payment_prompt(
+                            decision, xmage_result, owner
+                        )
+                    except UnmappedPromptError as exc:
+                        xmage_states = await asyncio.gather(
+                            *(_get_state(session) for session in sessions)
+                        )
+                        return _unmapped_prompt_result(
+                            run_dir,
+                            run_id,
+                            args.seed,
+                            steps,
+                            str(exc),
+                            decision,
+                            xmage_result,
+                            projection_from_phase(decision["state"]),
+                            projection_from_xmage(xmage_states),
+                        )
                 if xmage_result is None:
                     report = {
                         "run_id": run_id,
@@ -3427,6 +3598,39 @@ async def run_game(args: argparse.Namespace) -> dict:
                         last_action = action
                         expected_combat_batches.pop(owner, None)
                         steps += _cast_macro_step_increment(target_records)
+                        decision = await _phase_advance_to_meaningful(
+                            phase,
+                            macro_decision,
+                            skipped_stops,
+                            normalization_events,
+                            phase_attack_records,
+                            phase_blocker_decisions,
+                            unplanned_mana,
+                        )
+                    elif (
+                        action.get("type") == "PayUnlessCost"
+                        and action.get("data", {}).get("pay") is True
+                    ):
+                        pending_results.pop(owner, None)
+                        (
+                            last_xmage_pending,
+                            pending_mana_check,
+                            macro_decision,
+                        ) = await _phase_unless_payment_to_xmage(
+                            phase,
+                            index,
+                            action,
+                            decision,
+                            xmage_result,
+                            sessions,
+                            owner,
+                            object_bindings,
+                            xmage_states[owner],
+                        )
+                        pending_results[owner] = last_xmage_pending
+                        last_action = action
+                        expected_combat_batches.pop(owner, None)
+                        steps += 1
                         decision = await _phase_advance_to_meaningful(
                             phase,
                             macro_decision,

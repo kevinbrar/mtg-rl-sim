@@ -2432,7 +2432,6 @@ def test_single_ability_land_mana_plan_omits_ability_index() -> None:
             "Red",
             ["{T}: Add {C}.", "{T}, Pay 1 life: Add {R}."],
         ),
-        ("Red", ["{T}: Add {R} or {W}."]),
     ),
 )
 def test_mana_plan_rejects_unsupported_mana_ability_lines(
@@ -2469,6 +2468,295 @@ def test_mana_plan_rejects_unsupported_mana_ability_lines(
     message = str(error.value)
     assert "Synthetic Land" in message
     assert all(line in message for line in rules)
+
+
+def _unless_payment_decision(permanents: list[dict]) -> dict:
+    decision = _mana_source_decision(permanents, waiting_type="UnlessPayment")
+    decision["type"] = "decision"
+    decision["waiting_for"] = {
+        "type": "UnlessPayment",
+        "data": {
+            "player": 0,
+            "cost": {"type": "Mana", "cost": {"generic": 1}},
+        },
+    }
+    decision["candidates"] = [
+        {"type": "PayUnlessCost", "data": {"pay": True}},
+        {"type": "PayUnlessCost", "data": {"pay": False}},
+    ]
+    return decision
+
+
+def _unless_xmage_ask(owner: int = 0) -> dict:
+    return {
+        "action_type": "GAME_ASK",
+        "message": "Pay {1}?",
+        "board": [
+            {
+                "name": diff_game.PLAYER_NAMES[owner],
+                "is_you": True,
+                "battlefield": [],
+            }
+        ],
+    }
+
+
+def test_unless_payment_pay_false_maps_to_no(monkeypatch) -> None:
+    calls = []
+
+    async def call(_session, method, arguments=None):
+        calls.append((method, arguments))
+        return {"action_pending": True}
+
+    monkeypatch.setattr(diff_game, "_call", call)
+    decision = _unless_payment_decision([])
+    action = {"type": "PayUnlessCost", "data": {"pay": False}}
+
+    async def apply() -> None:
+        task = await diff_game._apply_xmage_action(
+            object(), action, decision, _unless_xmage_ask()
+        )
+        await task
+
+    asyncio.run(apply())
+
+    assert calls == [("choose_action", {"choice": "no"})]
+
+
+def test_unless_payment_pay_true_sends_dual_land_plan_and_requires_ack(
+    monkeypatch,
+) -> None:
+    source = _mana_permanent(7, "Inspiring Vantage", None)
+    source["rules"] = ["{T}: Add {R} or {W}."]
+    decision = _unless_payment_decision([source])
+    event = {"source_id": 7, "mana_type": "Red", "player_id": 0}
+    applied = {
+        "type": "applied",
+        "ok": True,
+        "mana_added": [event],
+        "state": _mana_applied_state(decision, {7}),
+    }
+    next_decision = {
+        "type": "decision",
+        "waiting_for": {"type": "Priority", "data": {"player": 0}},
+    }
+
+    class FakePhase:
+        def choose(self, _index: int) -> dict:
+            return applied
+
+        def _read(self) -> dict:
+            return next_decision
+
+    calls = []
+
+    async def call(_session, method, arguments=None):
+        calls.append((method, arguments))
+        if method == "get_game_log":
+            return {"cursor": 19}
+        return {
+            "action_pending": True,
+            "mana_plan_set": True,
+            "mana_plan_size": 1,
+        }
+
+    monkeypatch.setattr(diff_game, "_call", call)
+    xmage_state = {
+        "players": [
+            {
+                "name": "DiffA",
+                "battlefield": [
+                    {
+                        "id": "p7",
+                        "name": "Inspiring Vantage",
+                        "tapped": False,
+                        "damage": 0,
+                        "rules": ["{T}: Add {R} or {W}."],
+                    }
+                ],
+            }
+        ]
+    }
+
+    result, pending_check, final_decision = asyncio.run(
+        diff_game._phase_unless_payment_to_xmage(
+            FakePhase(),
+            1,
+            decision["candidates"][0],
+            decision,
+            _unless_xmage_ask(),
+            [object()],
+            0,
+            ObjectBindings(),
+            xmage_state,
+        )
+    )
+
+    assert result["mana_plan_set"] is True
+    assert final_decision is next_decision
+    assert pending_check["cursor"] == 19
+    assert pending_check["mana_plan"] == ["p7"]
+    assert calls == [
+        ("get_game_log", None),
+        (
+            "choose_action",
+            {"choice": "yes", "auto_tap": False, "mana_plan": "p7"},
+        ),
+    ]
+
+    async def reject_missing_ack(_session, method, _arguments=None):
+        if method == "get_game_log":
+            return {"cursor": 20}
+        return {"action_pending": True}
+
+    monkeypatch.setattr(diff_game, "_call", reject_missing_ack)
+    with pytest.raises(diff_game.DifferentialDivergenceError) as error:
+        asyncio.run(
+            diff_game._phase_unless_payment_to_xmage(
+                FakePhase(),
+                1,
+                decision["candidates"][0],
+                decision,
+                _unless_xmage_ask(),
+                [object()],
+                0,
+                ObjectBindings(),
+                xmage_state,
+            )
+        )
+    assert error.value.kind == "mana_plan"
+
+
+def test_unless_payment_pay_true_without_mana_uses_auto_tap(monkeypatch) -> None:
+    decision = _unless_payment_decision([])
+    next_decision = {
+        "type": "decision",
+        "waiting_for": {"type": "Priority", "data": {"player": 0}},
+    }
+
+    class FakePhase:
+        def choose(self, _index: int) -> dict:
+            return {
+                "type": "applied",
+                "ok": True,
+                "mana_added": [],
+                "state": _mana_applied_state(decision),
+            }
+
+        def _read(self) -> dict:
+            return next_decision
+
+    calls = []
+
+    async def call(_session, method, arguments=None):
+        calls.append((method, arguments))
+        if method == "get_game_log":
+            return {"cursor": 20}
+        return {"action_pending": True}
+
+    monkeypatch.setattr(diff_game, "_call", call)
+    asyncio.run(
+        diff_game._phase_unless_payment_to_xmage(
+            FakePhase(),
+            0,
+            decision["candidates"][0],
+            decision,
+            _unless_xmage_ask(),
+            [object()],
+            0,
+            ObjectBindings(),
+            {"players": [{"name": "DiffA", "battlefield": []}]},
+        )
+    )
+
+    assert calls == [
+        ("get_game_log", None),
+        ("choose_action", {"choice": "yes", "auto_tap": True}),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("decision_update", "xmage_update", "message"),
+    (
+        (
+            {
+                "waiting_for": {
+                    "type": "UnlessPayment",
+                    "data": {"player": 0, "cost": {"type": "Life", "amount": 2}},
+                }
+            },
+            None,
+            "Non-mana unless payment",
+        ),
+        (None, {"action_type": "GAME_SELECT"}, "GAME_ASK"),
+        (
+            None,
+            {
+                "action_type": "GAME_ASK",
+                "board": [{"name": "DiffB", "is_you": True, "battlefield": []}],
+            },
+            "owners differ",
+        ),
+    ),
+)
+def test_unless_payment_requires_mana_cost_and_same_player_game_ask(
+    decision_update: dict | None,
+    xmage_update: dict | None,
+    message: str,
+) -> None:
+    decision = _unless_payment_decision([])
+    if decision_update is not None:
+        decision.update(decision_update)
+    xmage_result = _unless_xmage_ask()
+    if xmage_update is not None:
+        xmage_result.update(xmage_update)
+
+    with pytest.raises(UnmappedPromptError, match=message):
+        diff_game._validate_unless_payment_prompt(decision, xmage_result, 0)
+
+
+def test_unless_payment_continuation_prompt_fails_closed(monkeypatch) -> None:
+    decision = _unless_payment_decision([])
+    continuation = {
+        "type": "decision",
+        "waiting_for": {"type": "ManaPayment", "data": {"player": 0}},
+    }
+
+    class FakePhase:
+        def choose(self, _index: int) -> dict:
+            return {
+                "type": "applied",
+                "ok": True,
+                "mana_added": [],
+                "state": _mana_applied_state(decision),
+            }
+
+        def _read(self) -> dict:
+            return continuation
+
+    calls = []
+
+    async def call(_session, method, arguments=None):
+        calls.append((method, arguments))
+        return {"cursor": 21}
+
+    monkeypatch.setattr(diff_game, "_call", call)
+    with pytest.raises(UnmappedPromptError, match="mana continuation"):
+        asyncio.run(
+            diff_game._phase_unless_payment_to_xmage(
+                FakePhase(),
+                0,
+                decision["candidates"][0],
+                decision,
+                _unless_xmage_ask(),
+                [object()],
+                0,
+                ObjectBindings(),
+                {"players": [{"name": "DiffA", "battlefield": []}]},
+            )
+        )
+
+    assert calls == []
 
 
 @pytest.mark.parametrize(
