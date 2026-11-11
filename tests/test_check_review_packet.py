@@ -254,7 +254,7 @@ def test_cards_line_accepts_names_or_none_case_insensitively(cards: str) -> None
         "oracle/scenarios/essence-burn.toml",
     ),
 )
-def test_cards_none_is_rejected_for_patches_and_card_data(path: str) -> None:
+def test_cards_none_is_rejected_for_per_card_paths(path: str) -> None:
     body = packet(
         cards="cards: none",
         evidence_rows=(DEFAULT_ROW.replace(" | N", " | Y, mutants"),),

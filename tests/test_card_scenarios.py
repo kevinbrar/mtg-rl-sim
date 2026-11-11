@@ -9,6 +9,7 @@ import pytest
 from scripts.compare_card_scenarios import compare, read_results
 from scripts.run_card_scenarios import (
     load_specs,
+    main,
     parse_mage_report,
     scenario_paths_for_cards,
 )
@@ -80,6 +81,19 @@ def test_card_names_resolve_to_scenario_specs() -> None:
     assert scenario_paths_for_cards("essence burn") == [
         root / "oracle/scenarios/essence-burn.toml"
     ]
+
+
+def test_card_scenario_runner_fails_when_mapped_spec_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("scripts.run_card_scenarios.ROOT", tmp_path)
+    monkeypatch.setattr(
+        "sys.argv", ["run_card_scenarios.py", "--cards", "essence burn"]
+    )
+    assert main() == 2
+    assert (
+        str(tmp_path / "oracle/scenarios/essence-burn.toml") in capsys.readouterr().err
+    )
 
 
 def test_parse_mage_report_extracts_projection_records() -> None:

@@ -10,7 +10,7 @@ def test_ci_scope_regexes_cover_engine_and_xmage_paths() -> None:
         r"^\s*engine_path_regex='([^']+)'$", workflow, flags=re.MULTILINE
     )
     xmage_match = re.search(
-        r'if ! grep -Eiq \'([^\']+)\' "\$RUNNER_TEMP/changed-files\.txt"; then',
+        r'(?:if|elif) ! grep -Eiq \'([^\']+)\' "\$RUNNER_TEMP/changed-files\.txt"; then',
         workflow,
     )
     assert engine_match is not None
@@ -38,3 +38,14 @@ def test_ci_scope_regexes_cover_engine_and_xmage_paths() -> None:
 
     for path in ("driver/test_diff_game.py", "docs/x.md"):
         assert not engine_regex.search(path), path
+
+
+def test_listed_packet_cards_route_before_changed_path_skip() -> None:
+    workflow = WORKFLOW.read_text()
+    scope = workflow.split("- name: Detect XMage scope", 1)[1].split(
+        "- name: Fail closed", 1
+    )[0]
+    listed_cards = scope.index('if [[ -n "$cards" && "${cards,,}" != "none" ]]')
+    changed_path_check = scope.index("grep -Eiq", listed_cards)
+    per_card_mode = scope.index('echo "mode=per-card"', listed_cards)
+    assert listed_cards < per_card_mode < changed_path_check

@@ -309,12 +309,7 @@ jobs:
             git fetch origin main
             git diff --name-only --no-renames origin/main...HEAD > "$RUNNER_TEMP/changed-files.txt"
           fi
-          if ! grep -Eiq '^(phase-patches/|phase(/|$)|phase-env/|oracle/|driver/diff_game\.py$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
-            echo "mode=skip" >> "$GITHUB_OUTPUT"
-            echo "No XMage-gated paths changed."
-          elif [[ "$EVENT_NAME" != "pull_request" ]]; then
-            echo "mode=smoke" >> "$GITHUB_OUTPUT"
-          else
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
             cards="$(python3 - <<'PY'
           import os
 
@@ -324,7 +319,13 @@ jobs:
           print(cards or "")
           PY
           )"
-            if [[ -z "$cards" ]]; then
+            if [[ -n "$cards" && "${cards,,}" != "none" ]]; then
+              echo "mode=per-card" >> "$GITHUB_OUTPUT"
+              echo "cards=$cards" >> "$GITHUB_OUTPUT"
+            elif ! grep -Eiq '^(phase-patches/|phase(/|$)|phase-env/|oracle/|driver/diff_game\.py$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
+              echo "mode=skip" >> "$GITHUB_OUTPUT"
+              echo "No XMage-gated paths changed."
+            elif [[ -z "$cards" ]]; then
               echo "mode=fail-closed" >> "$GITHUB_OUTPUT"
               echo "reason=cards-missing" >> "$GITHUB_OUTPUT"
             elif [[ "${cards,,}" == "none" ]]; then
@@ -334,10 +335,12 @@ jobs:
               else
                 echo "mode=smoke" >> "$GITHUB_OUTPUT"
               fi
-            else
-              echo "mode=per-card" >> "$GITHUB_OUTPUT"
-              echo "cards=$cards" >> "$GITHUB_OUTPUT"
             fi
+          elif grep -Eiq '^(phase-patches/|phase(/|$)|phase-env/|oracle/|driver/diff_game\.py$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
+            echo "mode=smoke" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+            echo "No XMage-gated paths changed."
           fi
       - name: Fail closed for missing or required per-card scenario scope
         if: steps.scope.outputs.mode == 'fail-closed'
