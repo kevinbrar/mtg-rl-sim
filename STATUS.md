@@ -70,6 +70,7 @@ _Updated 2026-11-11._
 ## Merged / done
 - PR #21 merged: canonical unordered-zone comparison and semicolon-separated card lists.
 - PR #22 merged: deterministic XMage library fixtures, token projections, and forced scenario mana payments.
+- 2026-11-11 (D): Ms. Marvel, Kamala Khan M1–M5 locally matched Phase and XMage with reach in all five; scratch-reverting patches 0024/0026/0027 diverged in M1, M2, M4, and M5 (M3 matched). CI `xmage-diff` remains pending. Evidence: `runs/card-scenarios/ms-marvel-patched-canonical-v2-20261111/` and `runs/card-scenarios/ms-marvel-scratch-revert-20261111/`.
 
 ## Next
 - Backburner: full-game lockstep coverage (plan A). Per-card differential scenarios are the card-correctness gate; retain full-game lockstep as CI smoke coverage and later agent-game audit tooling.
