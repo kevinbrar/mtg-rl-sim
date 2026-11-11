@@ -2481,7 +2481,10 @@ def _unless_payment_decision(permanents: list[dict]) -> dict:
         "type": "UnlessPayment",
         "data": {
             "player": 0,
-            "cost": {"type": "Mana", "cost": {"generic": 1}},
+            "cost": {
+                "type": "Mana",
+                "cost": {"type": "Cost", "generic": 1, "shards": []},
+            },
         },
     }
     decision["candidates"] = [
@@ -2717,6 +2720,46 @@ def test_unless_payment_requires_mana_cost_and_same_player_game_ask(
 
     with pytest.raises(UnmappedPromptError, match=message):
         diff_game._validate_unless_payment_prompt(decision, xmage_result, 0)
+
+
+def test_unless_payment_prompt_matches_generic_mana_cost() -> None:
+    decision = _unless_payment_decision([])
+
+    diff_game._validate_unless_payment_prompt(decision, _unless_xmage_ask(), 0)
+
+
+@pytest.mark.parametrize("message", ("Pay {2}?", "Use Basilisk Collar?"))
+def test_unless_payment_rejects_mismatched_game_ask(message: str) -> None:
+    decision = _unless_payment_decision([])
+    xmage_result = _unless_xmage_ask()
+    xmage_result["message"] = message
+
+    with pytest.raises(UnmappedPromptError, match="prompt mismatch") as error:
+        diff_game._validate_unless_payment_prompt(decision, xmage_result, 0)
+
+    assert "Phase cost=" in str(error.value)
+    assert message in str(error.value)
+
+
+def test_unless_payment_prompt_formats_colored_shards_and_html() -> None:
+    decision = _unless_payment_decision([])
+    decision["waiting_for"]["data"]["cost"]["cost"]["shards"] = ["Blue"]
+    xmage_result = _unless_xmage_ask()
+    xmage_result["message"] = "<b>Pay</b>&nbsp;{1}<i>{U}</i>?"
+
+    diff_game._validate_unless_payment_prompt(decision, xmage_result, 0)
+
+
+def test_unless_payment_rejects_unrenderable_mana_shard() -> None:
+    decision = _unless_payment_decision([])
+    decision["waiting_for"]["data"]["cost"]["cost"]["shards"] = ["UnknownShard"]
+    xmage_result = _unless_xmage_ask()
+
+    with pytest.raises(UnmappedPromptError, match="Cannot render") as error:
+        diff_game._validate_unless_payment_prompt(decision, xmage_result, 0)
+
+    assert "Phase cost=" in str(error.value)
+    assert "XMage message='Pay {1}?'" in str(error.value)
 
 
 def test_unless_payment_continuation_prompt_fails_closed(monkeypatch) -> None:

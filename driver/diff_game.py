@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import json
 import os
 import random
@@ -38,6 +39,52 @@ MANA_SYMBOLS = {
     "Red": "R",
     "Green": "G",
     "Colorless": "C",
+}
+MANA_COST_SHARD_SYMBOLS = {
+    "White": "W",
+    "Blue": "U",
+    "Black": "B",
+    "Red": "R",
+    "Green": "G",
+    "Colorless": "C",
+    "Snow": "S",
+    "X": "X",
+    "TwoOrMoreColorSource": "Z",
+    "WhiteBlue": "W/U",
+    "WhiteBlack": "W/B",
+    "BlueBlack": "U/B",
+    "BlueRed": "U/R",
+    "BlackRed": "B/R",
+    "BlackGreen": "B/G",
+    "RedWhite": "R/W",
+    "RedGreen": "R/G",
+    "GreenWhite": "G/W",
+    "GreenBlue": "G/U",
+    "TwoWhite": "2/W",
+    "TwoBlue": "2/U",
+    "TwoBlack": "2/B",
+    "TwoRed": "2/R",
+    "TwoGreen": "2/G",
+    "PhyrexianWhite": "W/P",
+    "PhyrexianBlue": "U/P",
+    "PhyrexianBlack": "B/P",
+    "PhyrexianRed": "R/P",
+    "PhyrexianGreen": "G/P",
+    "PhyrexianWhiteBlue": "W/U/P",
+    "PhyrexianWhiteBlack": "W/B/P",
+    "PhyrexianBlueBlack": "U/B/P",
+    "PhyrexianBlueRed": "U/R/P",
+    "PhyrexianBlackRed": "B/R/P",
+    "PhyrexianBlackGreen": "B/G/P",
+    "PhyrexianRedWhite": "R/W/P",
+    "PhyrexianRedGreen": "R/G/P",
+    "PhyrexianGreenWhite": "G/W/P",
+    "PhyrexianGreenBlue": "G/U/P",
+    "ColorlessWhite": "C/W",
+    "ColorlessBlue": "C/U",
+    "ColorlessBlack": "C/B",
+    "ColorlessRed": "C/R",
+    "ColorlessGreen": "C/G",
 }
 MANA_RULE_PATTERN = re.compile(r"^\{T\}:\s*Add\s*\{([WUBRGC])\}\.$")
 COUNTER_NAMES = {
@@ -2783,6 +2830,22 @@ def _validate_unless_payment_prompt(
         raise UnmappedPromptError(
             f"Unless payment requires an XMage GAME_ASK: {xmage_result}"
         )
+    xmage_message = xmage_result.get("message")
+    try:
+        mana_string = _phase_mana_cost_string(cost.get("cost"))
+    except ValueError as exc:
+        raise UnmappedPromptError(
+            f"Cannot render unless-payment prompt: Phase cost={cost!r}; "
+            f"XMage message={xmage_message!r}; {exc}"
+        ) from exc
+    expected_message = f"Pay {mana_string}?"
+    normalized_message = _normalize_xmage_prompt_message(xmage_message)
+    if normalized_message != expected_message:
+        raise UnmappedPromptError(
+            f"Unless-payment prompt mismatch: Phase cost={cost!r} "
+            f"(expected {expected_message!r}); XMage message={xmage_message!r} "
+            f"(normalized {normalized_message!r})"
+        )
     try:
         xmage_owner, _ = _xmage_hand_owner(xmage_result)
     except UnmappedPromptError as exc:
@@ -2793,6 +2856,36 @@ def _validate_unless_payment_prompt(
         raise UnmappedPromptError(
             f"Unless-payment owners differ: Phase={owner}, XMage={xmage_owner}"
         )
+
+
+def _phase_mana_cost_string(cost: object) -> str:
+    if not isinstance(cost, dict) or cost.get("type") != "Cost":
+        raise ValueError(f"unsupported mana-cost shape: {cost!r}")
+    generic = cost.get("generic")
+    shards = cost.get("shards")
+    if (
+        not isinstance(generic, int)
+        or isinstance(generic, bool)
+        or generic < 0
+        or not isinstance(shards, list)
+    ):
+        raise ValueError(f"invalid mana-cost fields: {cost!r}")
+    symbols = []
+    if generic:
+        symbols.append(f"{{{generic}}}")
+    for shard in shards:
+        symbol = MANA_COST_SHARD_SYMBOLS.get(shard) if isinstance(shard, str) else None
+        if symbol is None:
+            raise ValueError(f"unsupported mana-cost shard: {shard!r}")
+        symbols.append(f"{{{symbol}}}")
+    return "".join(symbols) or "{0}"
+
+
+def _normalize_xmage_prompt_message(message: object) -> str | None:
+    if not isinstance(message, str):
+        return None
+    text = re.sub(r"<[^>]*>", "", message)
+    return " ".join(html.unescape(text).split())
 
 
 def _is_unless_payment_continuation(decision: dict) -> bool:
