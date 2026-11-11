@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from scripts.compare_card_scenarios import compare, read_results
-from scripts.run_card_scenarios import load_specs
+from scripts.run_card_scenarios import (
+    load_specs,
+    parse_mage_report,
+    scenario_paths_for_cards,
+)
 
 
 def test_essence_burn_spec_contains_five_engine_computed_scenarios() -> None:
@@ -27,10 +31,70 @@ def test_essence_burn_spec_contains_five_engine_computed_scenarios() -> None:
 def test_load_specs_rejects_duplicate_names(tmp_path: Path) -> None:
     first = tmp_path / "first.toml"
     second = tmp_path / "second.toml"
-    first.write_text('[[scenarios]]\nname = "same"\n', encoding="utf-8")
-    second.write_text('[[scenarios]]\nname = "same"\n', encoding="utf-8")
+    first.write_text(
+        '[[scenarios]]\nname = "same"\n[scenarios.setup.P0]\n',
+        encoding="utf-8",
+    )
+    second.write_text(
+        '[[scenarios]]\nname = "same"\n[scenarios.setup.P0]\n',
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match="unique"):
         load_specs([first, second])
+
+
+def test_load_specs_rejects_damage_setup(tmp_path: Path) -> None:
+    spec = tmp_path / "damage.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "damage fixture"
+
+[scenarios.setup.P0]
+battlefield = [{ label = "p0.bf.0", card = "Walking Corpse", damage = 0 }]
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="damage is unsupported"):
+        load_specs([spec])
+
+
+def test_load_specs_rejects_unrepresentable_setup_fields(tmp_path: Path) -> None:
+    spec = tmp_path / "unsupported.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "unsupported setup"
+
+[scenarios.setup.P0]
+exile = ["Walking Corpse"]
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="setup.P0.exile is unsupported"):
+        load_specs([spec])
+
+
+def test_card_names_resolve_to_scenario_specs() -> None:
+    root = Path(__file__).parents[1]
+    assert scenario_paths_for_cards("essence burn") == [
+        root / "oracle/scenarios/essence-burn.toml"
+    ]
+
+
+def test_parse_mage_report_extracts_projection_records() -> None:
+    report = """
+<testsuite>
+  <testcase>
+    <system-out><![CDATA[
+CARD_SCENARIO_RESULT:{"scenario":"S1","projection":{"reach":true},"reach":true}
+]]></system-out>
+  </testcase>
+</testsuite>
+"""
+    assert parse_mage_report(report) == [
+        {"scenario": "S1", "projection": {"reach": True}, "reach": True}
+    ]
 
 
 def test_projection_comparator_requires_equal_projections_and_reach() -> None:

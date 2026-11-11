@@ -13,7 +13,6 @@ life = 20
 battlefield = [
   { label = "p0.bf.0", card = "Mountain" },
   { label = "p0.bf.1", card = "Mountain" },
-  { label = "p0.bf.2", card = "Mountain" },
 ]
 hand = ["Essence Burn"]
 library_top = []
@@ -72,7 +71,6 @@ life = 20
 battlefield = [
   { label = "p0.bf.0", card = "Mountain" },
   { label = "p0.bf.1", card = "Mountain" },
-  { label = "p0.bf.2", card = "Mountain" },
 ]
 hand = ["Essence Burn"]
 library_top = []
@@ -97,7 +95,6 @@ life = 20
 battlefield = [
   { label = "p0.bf.0", card = "Mountain" },
   { label = "p0.bf.1", card = "Mountain" },
-  { label = "p0.bf.2", card = "Mountain" },
 ]
 hand = ["Essence Burn"]
 library_top = []
@@ -132,7 +129,6 @@ life = 20
 battlefield = [
   { label = "p0.bf.0", card = "Mountain" },
   { label = "p0.bf.1", card = "Mountain" },
-  { label = "p0.bf.2", card = "Mountain" },
 ]
 hand = ["Essence Burn"]
 library_top = []

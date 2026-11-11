@@ -1,19 +1,104 @@
 #!/usr/bin/env python3
-"""Run TOML card scenarios against the Phase oracle-scenario binary."""
+"""Run TOML card scenarios against Phase and XMage."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
+import unicodedata
+import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
+MAGE_RESULT_PREFIX = "CARD_SCENARIO_RESULT:"
+PLAYER_SETUP_FIELDS = {"life", "battlefield", "hand", "library_top", "graveyard"}
+PERMANENT_SETUP_FIELDS = {"label", "card", "tapped", "counters"}
+
+
+def scenario_paths_for_cards(cards: str) -> list[Path]:
+    names = [name.strip() for name in cards.split(",")]
+    if not names or any(not name for name in names) or cards.casefold() == "none":
+        raise ValueError("cards must be a comma-separated list of card names")
+    paths = []
+    for name in names:
+        normalized = (
+            unicodedata.normalize("NFKD", name)
+            .encode("ascii", "ignore")
+            .decode("ascii")
+            .casefold()
+        )
+        slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
+        if not slug:
+            raise ValueError(f"cannot derive a scenario filename for card {name!r}")
+        paths.append(ROOT / "oracle/scenarios" / f"{slug}.toml")
+    return paths
+
+
+def parse_mage_report(report: str) -> list[dict]:
+    root = ET.fromstring(report)
+    results = []
+    for output in root.iter("system-out"):
+        for line in (output.text or "").splitlines():
+            if line.startswith(MAGE_RESULT_PREFIX):
+                results.append(json.loads(line[len(MAGE_RESULT_PREFIX) :]))
+    return results
+
+
+def _validate_setup(scenario: dict) -> None:
+    name = scenario.get("name", "<unnamed>")
+    setup = scenario.get("setup")
+    if not isinstance(setup, dict):
+        raise TypeError(f"{name}: setup must be a table")
+    for player, player_setup in setup.items():
+        if player not in {"P0", "P1"}:
+            raise ValueError(f"{name}: setup.{player} is unsupported")
+        if not isinstance(player_setup, dict):
+            raise TypeError(f"{name}: setup.{player} must be a table")
+        unknown = player_setup.keys() - PLAYER_SETUP_FIELDS
+        if unknown:
+            raise ValueError(f"{name}: setup.{player}.{min(unknown)} is unsupported")
+        for field in ("hand", "library_top", "graveyard"):
+            cards = player_setup.get(field, [])
+            if not isinstance(cards, list):
+                raise TypeError(f"{name}: setup.{player}.{field} must be an array")
+            for index, card in enumerate(cards):
+                if isinstance(card, dict):
+                    if card.keys() != {"card"}:
+                        raise ValueError(
+                            f"{name}: setup.{player}.{field}[{index}] only supports card"
+                        )
+                elif not isinstance(card, str):
+                    raise TypeError(
+                        f"{name}: setup.{player}.{field}[{index}] must name a card"
+                    )
+        battlefield = player_setup.get("battlefield", [])
+        if not isinstance(battlefield, list):
+            raise TypeError(f"{name}: setup.{player}.battlefield must be an array")
+        for index, permanent in enumerate(battlefield):
+            context = f"{name}: {player}.battlefield[{index}]"
+            if not isinstance(permanent, dict):
+                raise TypeError(f"{context} must be a table")
+            if "damage" in permanent:
+                raise ValueError(
+                    f"{context}.damage is unsupported by the XMage scenario test API"
+                )
+            unknown = permanent.keys() - PERMANENT_SETUP_FIELDS
+            if unknown:
+                raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            if not isinstance(permanent.get("label"), str) or not isinstance(
+                permanent.get("card"), str
+            ):
+                raise TypeError(f"{context} needs label and card")
+            if "tapped" in permanent and not isinstance(permanent["tapped"], bool):
+                raise ValueError(f"{context}.tapped must be a boolean")
+            if "counters" in permanent and not isinstance(permanent["counters"], dict):
+                raise TypeError(f"{context}.counters must be a table")
 
 
 def load_specs(paths: list[Path]) -> dict:
@@ -21,18 +106,51 @@ def load_specs(paths: list[Path]) -> dict:
     for path in paths:
         with path.open("rb") as source:
             data = tomllib.load(source)
-        scenarios.extend(data.get("scenarios", []))
+        for scenario in data.get("scenarios", []):
+            _validate_setup(scenario)
+            scenarios.append(scenario)
     names = [scenario["name"] for scenario in scenarios]
     if len(names) != len(set(names)):
         raise ValueError("scenario names must be unique across spec files")
     return {"scenarios": scenarios}
 
 
+def _print_differences(
+    differences: list[str],
+    phase_results: dict[str, dict],
+    mage_results: dict[str, dict],
+) -> None:
+    for name in differences:
+        scenario = (
+            name.split(" missing from ", 1)[0]
+            .split(" missing projection on ", 1)[0]
+            .split(" (", 1)[0]
+        )
+        print(f"DIVERGENCE {name}")
+        for engine, results in (("phase-rs", phase_results), ("XMage", mage_results)):
+            result = results.get(scenario)
+            projection = (
+                result.get("projection")
+                if result is not None and result.get("projection") is not None
+                else result
+            )
+            print(f"{engine}: {json.dumps(projection, sort_keys=True)}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("specs", nargs="+", type=Path)
+    parser.add_argument("specs", nargs="*", type=Path)
+    parser.add_argument(
+        "--cards",
+        help="comma-separated card names; resolves oracle/scenarios/<card>.toml",
+    )
     parser.add_argument(
         "--phase-bin", type=Path, default=ROOT / "target/release/oracle-scenario"
+    )
+    parser.add_argument(
+        "--mage-bench-root",
+        type=Path,
+        default=Path(os.environ.get("MAGE_BENCH_ROOT", ROOT / "mage-bench")),
     )
     parser.add_argument(
         "--card-data",
@@ -46,7 +164,18 @@ def main() -> int:
     parser.add_argument("--outdir", type=Path)
     args = parser.parse_args()
 
-    paths = [path if path.is_absolute() else ROOT / path for path in args.specs]
+    if args.cards and args.specs:
+        print("spec paths and --cards cannot be used together", file=sys.stderr)
+        return 2
+    try:
+        paths = scenario_paths_for_cards(args.cards) if args.cards else args.specs
+    except ValueError as error:
+        print(f"invalid card list: {error}", file=sys.stderr)
+        return 2
+    if not paths:
+        print("provide one or more spec paths or --cards", file=sys.stderr)
+        return 2
+    paths = [path if path.is_absolute() else ROOT / path for path in paths]
     missing = [str(path) for path in paths if not path.is_file()]
     if missing:
         print(f"missing card scenario spec(s): {', '.join(missing)}", file=sys.stderr)
@@ -54,7 +183,7 @@ def main() -> int:
 
     try:
         spec = load_specs(paths)
-    except (OSError, ValueError, KeyError, tomllib.TOMLDecodeError) as error:
+    except (OSError, TypeError, ValueError, KeyError, tomllib.TOMLDecodeError) as error:
         print(f"invalid scenario spec: {error}", file=sys.stderr)
         return 2
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
@@ -81,33 +210,114 @@ def main() -> int:
         check=False,
     )
     (outdir / "phase.log").write_text(phase.stdout + phase.stderr, encoding="utf-8")
+    phase_results = []
+    try:
+        phase_results = json.loads(phase.stdout)
+    except json.JSONDecodeError as error:
+        print(f"Phase runner emitted invalid JSON: {error}", file=sys.stderr)
+    mage_root = args.mage_bench_root
+    if not mage_root.is_absolute():
+        mage_root = ROOT / mage_root
+    if not mage_root.is_dir():
+        print(f"missing mage-bench checkout: {mage_root}", file=sys.stderr)
+        return 2
+    mage = subprocess.run(
+        [
+            "mvn",
+            "-B",
+            "-pl",
+            "Mage.Tests",
+            "-Dsurefire.useFile=false",
+            "-Dtest=CardScenarioProjectionTest",
+            f"-DoracleScenarioSpec={spec_path}",
+            "test",
+        ],
+        cwd=mage_root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    (outdir / "mage.log").write_text(mage.stdout + mage.stderr, encoding="utf-8")
+    report_path = (
+        mage_root
+        / "Mage.Tests/target/surefire-reports/"
+        / "TEST-org.mage.test.testapi.CardScenarioProjectionTest.xml"
+    )
+    try:
+        report = report_path.read_text(encoding="utf-8")
+        (outdir / "mage-surefire-report.xml").write_text(report, encoding="utf-8")
+        mage_results = parse_mage_report(report)
+    except (OSError, ET.ParseError, json.JSONDecodeError) as error:
+        print(f"Could not read XMage scenario results: {error}", file=sys.stderr)
+        mage_results = []
+    (outdir / "phase-projection.json").write_text(
+        json.dumps(phase_results, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (outdir / "mage-projection.json").write_text(
+        json.dumps(mage_results, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    expected = [scenario["name"] for scenario in spec["scenarios"]]
+    phase_names = [result.get("scenario") for result in phase_results]
+    mage_names = [result.get("scenario") for result in mage_results]
+    if phase_names != expected:
+        print("Phase runner returned unexpected scenario names", file=sys.stderr)
+    if mage_names != expected:
+        print("XMage runner returned unexpected scenario names", file=sys.stderr)
+    comparison = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/compare_card_scenarios.py"),
+            str(outdir / "phase-projection.json"),
+            str(outdir / "mage-projection.json"),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    comparison_log = comparison.stdout + comparison.stderr
+    (outdir / "compare.log").write_text(comparison_log, encoding="utf-8")
+    print(comparison_log, end="")
+    if comparison.returncode:
+        try:
+            phase_values = json.loads(
+                (outdir / "phase-projection.json").read_text(encoding="utf-8")
+            )
+            mage_values = json.loads(
+                (outdir / "mage-projection.json").read_text(encoding="utf-8")
+            )
+            phase_map = {value["scenario"]: value for value in phase_values}
+            mage_map = {value["scenario"]: value for value in mage_values}
+            line = comparison.stdout.strip()
+            names = line.removeprefix("DIFF: ").split(", ")
+            _print_differences(names, phase_map, mage_map)
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+            print(f"Could not load projections for divergence report: {error}")
+    for engine, results in (("PHASE", phase_results), ("XMAGE", mage_results)):
+        for result in results:
+            if result.get("projection") is not None:
+                print(
+                    f"{engine} {result['scenario']} "
+                    f"{json.dumps(result['projection'], separators=(',', ':'))}"
+                )
     if phase.returncode:
         print(
             f"Phase runner exited {phase.returncode}; see {outdir / 'phase.log'}",
             file=sys.stderr,
         )
-        return phase.returncode
-    try:
-        phase_results = json.loads(phase.stdout)
-    except json.JSONDecodeError as error:
-        print(f"Phase runner emitted invalid JSON: {error}", file=sys.stderr)
-        return 2
-    (outdir / "phase-projection.json").write_text(
-        json.dumps(phase_results, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    expected = [scenario["name"] for scenario in spec["scenarios"]]
-    if [result.get("scenario") for result in phase_results] != expected:
-        print("Phase runner returned unexpected scenario names", file=sys.stderr)
-        return 1
-    for result in phase_results:
-        if "error" in result or not result.get("reach", False):
-            print(json.dumps(result, sort_keys=True), file=sys.stderr)
-            return 1
+    if mage.returncode:
         print(
-            f"PASS {result['scenario']} {json.dumps(result['projection'], separators=(',', ':'))}"
+            f"XMage runner exited {mage.returncode}; see {outdir / 'mage.log'}",
+            file=sys.stderr,
         )
     print(f"Artifacts: {outdir}")
-    return 0
+    return int(
+        phase.returncode != 0
+        or mage.returncode != 0
+        or comparison.returncode != 0
+        or phase_names != expected
+        or mage_names != expected
+    )
 
 
 if __name__ == "__main__":

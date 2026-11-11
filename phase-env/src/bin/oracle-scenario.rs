@@ -108,7 +108,6 @@ fn apply_configured_permanents(
     for (id, item) in configured {
         let object = state.objects.get_mut(id).expect("setup object exists");
         object.tapped = item["tapped"].as_bool().unwrap_or(false);
-        object.damage_marked = item["damage"].as_u64().unwrap_or(0) as u32;
         if let Some(counters) = item["counters"].as_object() {
             has_counters |= !counters.is_empty();
             for (name, count) in counters {
@@ -122,6 +121,90 @@ fn apply_configured_permanents(
     if has_counters {
         engine::game::layers::mark_layers_full(state);
         engine::game::layers::flush_layers(state);
+    }
+    Ok(())
+}
+
+fn validate_setup(scenario: &Value) -> Result<(), String> {
+    let setup = scenario["setup"]
+        .as_object()
+        .ok_or("setup must be an object")?;
+    for (player, player_setup) in setup {
+        if player != "P0" && player != "P1" {
+            return Err(format!("setup.{player} is unsupported"));
+        }
+        let player_setup = player_setup
+            .as_object()
+            .ok_or_else(|| format!("setup.{player} must be an object"))?;
+        for field in player_setup.keys() {
+            if !["life", "battlefield", "hand", "library_top", "graveyard"]
+                .contains(&field.as_str())
+            {
+                return Err(format!("setup.{player}.{field} is unsupported"));
+            }
+        }
+        for field in ["hand", "library_top", "graveyard"] {
+            let Some(value) = player_setup.get(field) else {
+                continue;
+            };
+            let items = value
+                .as_array()
+                .ok_or_else(|| format!("setup.{player}.{field} must be an array"))?;
+            for (index, item) in items.iter().enumerate() {
+                if let Some(card) = item.as_str() {
+                    if card.is_empty() {
+                        return Err(format!("setup.{player}.{field}[{index}] needs a card"));
+                    }
+                    continue;
+                }
+                let card = item
+                    .as_object()
+                    .ok_or_else(|| format!("setup.{player}.{field}[{index}] needs a card"))?;
+                if card.len() != 1 || !card.contains_key("card") || !card["card"].is_string() {
+                    return Err(format!(
+                        "setup.{player}.{field}[{index}] only supports card"
+                    ));
+                }
+            }
+        }
+        if let Some(value) = player_setup.get("battlefield") {
+            let battlefield = value
+                .as_array()
+                .ok_or_else(|| format!("setup.{player}.battlefield must be an array"))?;
+            for (index, permanent) in battlefield.iter().enumerate() {
+                let context = format!("{player}.battlefield[{index}]");
+                let permanent = permanent
+                    .as_object()
+                    .ok_or_else(|| format!("{context} must be an object"))?;
+                if permanent.contains_key("damage") {
+                    return Err(format!(
+                        "{context}.damage is unsupported by the XMage scenario test API"
+                    ));
+                }
+                for field in permanent.keys() {
+                    if !["label", "card", "tapped", "counters"].contains(&field.as_str()) {
+                        return Err(format!("{context}.{field} is unsupported"));
+                    }
+                }
+                if !permanent.get("label").is_some_and(Value::is_string)
+                    || !permanent.get("card").is_some_and(Value::is_string)
+                {
+                    return Err(format!("{context} needs label and card"));
+                }
+                if permanent
+                    .get("tapped")
+                    .is_some_and(|value| !value.is_boolean())
+                {
+                    return Err(format!("{context}.tapped must be a boolean"));
+                }
+                if permanent
+                    .get("counters")
+                    .is_some_and(|value| !value.is_object())
+                {
+                    return Err(format!("{context}.counters must be an object"));
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -156,6 +239,7 @@ fn advance_to_next_turn(runner: &mut GameRunner) -> Result<(), String> {
 }
 
 fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
+    validate_setup(spec)?;
     let name = spec["name"].as_str().ok_or("scenario name is required")?;
     let active_index = spec["active_player"].as_u64().unwrap_or(0);
     if active_index > 1 {
@@ -340,9 +424,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     let database = CardDatabase::from_export(Path::new(&data_path))?;
     let spec: Value = serde_json::from_slice(&std::fs::read(spec_path)?)?;
-    let results = spec["scenarios"]
+    let scenarios = spec["scenarios"]
         .as_array()
-        .ok_or("scenarios must be an array")?
+        .ok_or("scenarios must be an array")?;
+    for scenario in scenarios {
+        validate_setup(scenario)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    }
+    let results = scenarios
         .iter()
         .map(|scenario| match run_one(scenario, &database) {
             Ok(result) => result,
@@ -365,6 +454,37 @@ mod tests {
         assert_eq!(value["players"]["P1"]["graveyard"], json!([]));
         assert_eq!(value["exile"], json!([]));
         assert_eq!(value["reach"], json!(true));
+    }
+
+    #[test]
+    fn rejects_setup_damage_fixtures() {
+        let scenario = json!({
+            "setup": {
+                "P0": {
+                    "battlefield": [
+                        {"label": "p0.bf.0", "card": "Walking Corpse", "damage": 0}
+                    ]
+                }
+            }
+        });
+
+        let error = validate_setup(&scenario).unwrap_err();
+
+        assert!(error.contains("P0.battlefield[0].damage is unsupported"));
+    }
+
+    #[test]
+    fn rejects_setup_fields_the_runners_cannot_express() {
+        let scenario = json!({
+            "name": "unsupported setup",
+            "setup": {
+                "P0": {"exile": ["Walking Corpse"]}
+            }
+        });
+
+        let error = validate_setup(&scenario).unwrap_err();
+
+        assert!(error.contains("setup.P0.exile is unsupported"));
     }
 
     #[test]
