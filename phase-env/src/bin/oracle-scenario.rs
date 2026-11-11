@@ -147,14 +147,10 @@ fn advance_to_next_turn(runner: &mut GameRunner) -> Result<(), String> {
                 assignments: Vec::new(),
             },
             other => {
-                return Err(format!(
-                    "cannot advance turn while waiting for {other:?}"
-                ));
+                return Err(format!("cannot advance turn while waiting for {other:?}"));
             }
         };
-        runner
-            .act(action)
-            .map_err(|error| error.to_string())?;
+        runner.act(action).map_err(|error| error.to_string())?;
     }
     Err("turn did not advance within 64 actions".to_string())
 }
@@ -373,19 +369,26 @@ mod tests {
 
     #[test]
     fn turn_advancement_declares_no_attackers_with_ready_creature() {
-        let mut scenario = GameScenario::new();
-        scenario.at_phase(Phase::PreCombatMain);
-        let creature = scenario
-            .add_creature(PlayerId(0), "Untapped Bear", 2, 2)
-            .id();
-        let mut runner = scenario.build();
-        assert!(!runner.state().objects[&creature].tapped);
-        assert!(!runner.state().objects[&creature].summoning_sick);
-        let turn = runner.state().turn_number;
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let creature = scenario
+                    .add_creature(PlayerId(0), "Untapped Bear", 2, 2)
+                    .id();
+                let mut runner = scenario.build();
+                assert!(!runner.state().objects[&creature].tapped);
+                assert!(!runner.state().objects[&creature].summoning_sick);
+                let turn = runner.state().turn_number;
 
-        advance_to_next_turn(&mut runner).unwrap();
+                advance_to_next_turn(&mut runner).unwrap();
 
-        assert_ne!(runner.state().turn_number, turn);
+                assert_ne!(runner.state().turn_number, turn);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
