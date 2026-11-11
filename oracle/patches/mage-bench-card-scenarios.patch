@@ -1,0 +1,497 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+new file mode 100644
+index 00000000000..91bff5c8b87
+--- /dev/null
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -0,0 +1,491 @@
++package org.mage.test.testapi;
++
++import com.google.gson.Gson;
++import com.google.gson.GsonBuilder;
++import com.google.gson.JsonArray;
++import com.google.gson.JsonElement;
++import com.google.gson.JsonNull;
++import com.google.gson.JsonObject;
++import com.google.gson.JsonParser;
++import mage.MageInt;
++import mage.abilities.SpellAbility;
++import mage.cards.Card;
++import mage.constants.PhaseStep;
++import mage.constants.Zone;
++import mage.counters.Counter;
++import mage.counters.CounterType;
++import mage.game.Game;
++import mage.game.GameImpl;
++import mage.game.permanent.Permanent;
++import mage.target.Target;
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.junit.runners.Parameterized;
++import org.mage.test.player.TestPlayer;
++import org.mage.test.serverside.base.CardTestPlayerBase;
++
++import java.io.IOException;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.ArrayList;
++import java.util.Collection;
++import java.util.Comparator;
++import java.util.LinkedHashMap;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++import java.util.UUID;
++
++@RunWith(Parameterized.class)
++public final class CardScenarioProjectionTest extends CardTestPlayerBase {
++
++    private static final Gson GSON = new GsonBuilder().serializeNulls().create();
++    private static final String RESULT_PREFIX = "CARD_SCENARIO_RESULT:";
++    private final String scenarioName;
++    private final JsonObject scenario;
++    private final Map<String, UUID> labels = new LinkedHashMap<>();
++    private final Map<String, Map<String, Integer>> counters = new LinkedHashMap<>();
++    private JsonArray initialLegalTargets;
++
++    public CardScenarioProjectionTest(String scenarioName, JsonObject scenario) {
++        this.scenarioName = scenarioName;
++        this.scenario = scenario;
++    }
++
++    @Parameterized.Parameters(name = "{0}")
++    public static Collection<Object[]> scenarios() throws IOException {
++        String path = System.getProperty("oracleScenarioSpec");
++        if (path == null || path.isBlank()) {
++            throw new IllegalArgumentException("-DoracleScenarioSpec is required");
++        }
++        JsonObject root;
++        try (var reader = Files.newBufferedReader(Path.of(path))) {
++            root = JsonParser.parseReader(reader).getAsJsonObject();
++        }
++        JsonArray values = root.getAsJsonArray("scenarios");
++        if (values == null || values.isEmpty()) {
++            throw new IllegalArgumentException("scenario spec must contain scenarios");
++        }
++        List<Object[]> result = new ArrayList<>();
++        for (JsonElement value : values) {
++            JsonObject item = value.getAsJsonObject();
++            result.add(new Object[]{requiredString(item, "name"), item});
++        }
++        return result;
++    }
++
++    @Test
++    public void runScenario() {
++        int initialActive = integer(scenario, "active_player", 0);
++        if (initialActive < 0 || initialActive > 1) {
++            throw new IllegalArgumentException("active_player must be 0 or 1");
++        }
++        String stepName = string(scenario, "step", "precombat_main");
++        if (!stepName.equals("precombat_main")) {
++            throw new IllegalArgumentException("unsupported step " + stepName);
++        }
++        PhaseStep step = PhaseStep.PRECOMBAT_MAIN;
++        TestPlayer active = player(initialActive);
++        activePlayer = active;
++        addScenarioSetup();
++        scheduleCounterSetup(active);
++        if (scenario.has("legal_targets_of")) {
++            runCode("capture initial legal targets", 1, step, active, (info, player, game) -> {
++                initialLegalTargets = legalTargets();
++            });
++        }
++        int finalTurn = scheduleScript(initialActive, step);
++        PhaseStep finalStep = finalTurn == 1 ? step : lastStep;
++        setStrictChooseMode(true);
++        setStopAt(finalTurn, finalStep);
++        execute();
++        System.out.println(RESULT_PREFIX + GSON.toJson(result()));
++    }
++
++    private PhaseStep lastStep = PhaseStep.PRECOMBAT_MAIN;
++
++    private int scheduleScript(int initialActive, PhaseStep step) {
++        int turn = 1;
++        int activeIndex = initialActive;
++        for (JsonElement item : array(scenario, "script")) {
++            JsonObject action = item.getAsJsonObject();
++            String kind = requiredString(action, "action");
++            TestPlayer actingPlayer = player(activeIndex);
++            switch (kind) {
++                case "cast" -> {
++                    String card = requiredString(action, "card");
++                    List<String> targets = strings(array(action, "targets"));
++                    for (int index = 0; index < targets.size(); index++) {
++                        String label = targets.get(index);
++                        if (!labels.containsKey(label)) {
++                            throw new IllegalArgumentException("unknown target label " + label);
++                        }
++                        targets.set(index, "@" + label);
++                    }
++                    if (targets.isEmpty()) {
++                        castSpell(turn, step, actingPlayer, card);
++                    } else {
++                        castSpell(turn, step, actingPlayer, card, String.join("^", targets));
++                    }
++                    lastStep = step;
++                }
++                case "pass_until_resolved" -> {
++                    waitStackResolved(turn, step, actingPlayer);
++                    lastStep = step;
++                }
++                case "end_turn", "next_turn" -> {
++                    turn++;
++                    activeIndex = 1 - activeIndex;
++                    lastStep = PhaseStep.UNTAP;
++                }
++                default -> throw new IllegalArgumentException("unsupported action " + kind);
++            }
++        }
++        return turn;
++    }
++
++    private void addScenarioSetup() {
++        JsonObject setup = object(scenario, "setup");
++        rejectUnknownKeys(setup, Set.of("P0", "P1"), "setup");
++        for (int index = 0; index < 2; index++) {
++            String playerName = "P" + index;
++            JsonObject playerSetup = object(setup, playerName);
++            TestPlayer player = player(index);
++            getCommands(player).put(Zone.HAND, "clear");
++            getCommands(player).put(Zone.LIBRARY, "clear");
++            setLife(player, integer(playerSetup, "life", 20));
++            rejectUnknownKeys(
++                    playerSetup,
++                    Set.of("life", "battlefield", "hand", "library_top", "graveyard"),
++                    playerName
++            );
++            addBattlefield(playerName, player, array(playerSetup, "battlefield"));
++            addCards(Zone.HAND, player, array(playerSetup, "hand"));
++            List<JsonElement> library = new ArrayList<>();
++            array(playerSetup, "library_top").forEach(library::add);
++            for (int cardIndex = library.size() - 1; cardIndex >= 0; cardIndex--) {
++                addCard(Zone.LIBRARY, player, cardName(library.get(cardIndex)));
++            }
++            addCards(Zone.GRAVEYARD, player, array(playerSetup, "graveyard"));
++        }
++    }
++
++    private void addBattlefield(String playerName, TestPlayer player, JsonArray permanents) {
++        for (int index = 0; index < permanents.size(); index++) {
++            JsonObject item = permanents.get(index).getAsJsonObject();
++            rejectUnknownKeys(item, Set.of("label", "card", "tapped", "counters", "damage"),
++                    playerName + ".battlefield[" + index + "]");
++            if (item.has("damage")) {
++                throw new IllegalArgumentException(
++                        playerName + ".battlefield[" + index + "].damage is unsupported by the XMage scenario test API"
++                );
++            }
++            String label = requiredString(item, "label");
++            if (labels.containsKey(label)) {
++                throw new IllegalArgumentException("duplicate setup label " + label);
++            }
++            String card = requiredString(item, "card");
++            boolean tapped = bool(item, "tapped", false);
++            addCard(Zone.BATTLEFIELD, player, card + "@" + label, 1, tapped);
++            UUID objectId = player.getAliasByName(label);
++            if (objectId == null) {
++                throw new IllegalArgumentException("XMage did not register setup label " + label);
++            }
++            labels.put(label, objectId);
++            JsonObject cardCounters = object(item, "counters");
++            if (!cardCounters.entrySet().isEmpty()) {
++                Map<String, Integer> parsed = new LinkedHashMap<>();
++                for (Map.Entry<String, JsonElement> counter : cardCounters.entrySet()) {
++                    int count = exactInteger(counter.getValue(), label + ".counters." + counter.getKey());
++                    if (count < 0) {
++                        throw new IllegalArgumentException("counter counts must be non-negative");
++                    }
++                    parsed.put(counter.getKey(), count);
++                }
++                counters.put(label, parsed);
++            }
++        }
++    }
++
++    private void addCards(Zone zone, TestPlayer player, JsonArray cards) {
++        for (JsonElement card : cards) {
++            addCard(zone, player, cardName(card));
++        }
++    }
++
++    private void scheduleCounterSetup(TestPlayer active) {
++        if (counters.isEmpty()) {
++            return;
++        }
++        runCode("apply scenario counter fixtures", 1, PhaseStep.UPKEEP, active, (info, player, game) -> {
++            for (Map.Entry<String, Map<String, Integer>> fixture : counters.entrySet()) {
++                Permanent permanent = game.getPermanent(labels.get(fixture.getKey()));
++                if (permanent == null) {
++                    throw new IllegalStateException("missing battlefield permanent " + fixture.getKey());
++                }
++                for (Map.Entry<String, Integer> counter : fixture.getValue().entrySet()) {
++                    CounterType type = CounterType.findByName(counter.getKey());
++                    if (type == null) {
++                        throw new IllegalArgumentException("unsupported counter type " + counter.getKey());
++                    }
++                    Counter value = type.createInstance(counter.getValue());
++                    permanent.getCounters(game).put(type.getName(), value);
++                }
++            }
++            ((GameImpl) game).applyEffects();
++        });
++    }
++
++    private JsonObject result() {
++        boolean reached = checkReach();
++        JsonObject projection = new JsonObject();
++        JsonObject players = new JsonObject();
++        players.add("P0", projectPlayer(playerA));
++        players.add("P1", projectPlayer(playerB));
++        projection.add("players", players);
++
++        List<Permanent> permanents = new ArrayList<>(currentGame.getBattlefield().getAllActivePermanents());
++        permanents.sort(Comparator.comparing(permanent -> labelOf(permanent) == null ? "" : labelOf(permanent)));
++        JsonArray battlefield = new JsonArray();
++        for (Permanent permanent : permanents) {
++            JsonObject item = new JsonObject();
++            String label = labelOf(permanent);
++            if (label == null) {
++                item.add("label", JsonNull.INSTANCE);
++            } else {
++                item.addProperty("label", label);
++            }
++            item.addProperty("name", permanent.getName());
++            item.addProperty("controller", playerName(permanent.getControllerId()));
++            item.addProperty("tapped", permanent.isTapped());
++            item.addProperty("damage", permanent.getDamage());
++            JsonObject counterValues = new JsonObject();
++            permanent.getCounters(currentGame).entrySet().stream()
++                    .sorted(Map.Entry.comparingByKey())
++                    .forEach(entry -> counterValues.addProperty(entry.getKey(), entry.getValue().getCount()));
++            item.add("counters", counterValues);
++            if (permanent.isCreature(currentGame)) {
++                addCharacteristic(item, "power", permanent.getPower());
++                addCharacteristic(item, "toughness", permanent.getToughness());
++            } else {
++                item.add("power", JsonNull.INSTANCE);
++                item.add("toughness", JsonNull.INSTANCE);
++            }
++            Counter loyalty = permanent.getCounters(currentGame).get(CounterType.LOYALTY.getName());
++            if (loyalty == null) {
++                item.add("loyalty", JsonNull.INSTANCE);
++            } else {
++                item.addProperty("loyalty", loyalty.getCount());
++            }
++            battlefield.add(item);
++        }
++        projection.add("battlefield", battlefield);
++        List<String> exile = new ArrayList<>();
++        currentGame.getExile().getAllCards(currentGame).forEach(card -> exile.add(card.getName()));
++        exile.sort(String::compareTo);
++        projection.add("exile", strings(exile));
++        JsonArray legalTargets = initialLegalTargets;
++        if (legalTargets == null) {
++            projection.add("legal_targets", JsonNull.INSTANCE);
++        } else {
++            projection.add("legal_targets", legalTargets);
++        }
++        projection.addProperty("reach", reached);
++        JsonObject result = new JsonObject();
++        result.addProperty("scenario", scenarioName);
++        result.add("projection", projection);
++        result.addProperty("reach", reached);
++        return result;
++    }
++
++    private JsonObject projectPlayer(TestPlayer player) {
++        JsonObject result = new JsonObject();
++        result.addProperty("life", player.getLife());
++        List<String> battlefield = new ArrayList<>();
++        for (Permanent permanent : currentGame.getBattlefield().getAllActivePermanents()) {
++            if (permanent.getControllerId().equals(player.getId())) {
++                battlefield.add(permanent.getName());
++            }
++        }
++        battlefield.sort(String::compareTo);
++        result.add("battlefield", strings(battlefield));
++        result.add("hand", strings(sortedNames(player.getHand().getCards(currentGame))));
++        result.add("library", strings(names(player.getLibrary().getCards(currentGame))));
++        result.add("graveyard", strings(sortedNames(player.getGraveyard().getCards(currentGame))));
++        return result;
++    }
++
++    private JsonArray legalTargets() {
++        if (!scenario.has("legal_targets_of")) {
++            return null;
++        }
++        String cardName = requiredString(scenario, "legal_targets_of");
++        TestPlayer active = player(integer(scenario, "active_player", 0));
++        Card card = active.getHand().getCards(currentGame).stream()
++                .filter(candidate -> candidate.getName().equals(cardName))
++                .findFirst()
++                .orElseThrow(() -> new IllegalArgumentException(cardName + " is not in the active player's hand"));
++        SpellAbility ability = card.getSpellAbility();
++        if (ability == null || ability.getTargets().size() != 1) {
++            throw new IllegalArgumentException(cardName + " must have exactly one target slot");
++        }
++        ability.setControllerId(active.getId());
++        Target target = ability.getTargets().get(0);
++        List<String> values = new ArrayList<>();
++        for (UUID id : target.possibleTargets(active.getId(), ability, currentGame)) {
++            String label = labelOf(currentGame.getPermanent(id));
++            if (label == null) {
++                throw new IllegalArgumentException("legal target has no setup label: " + id);
++            }
++            values.add(label);
++        }
++        values.sort(String::compareTo);
++        return strings(values);
++    }
++
++    private boolean checkReach() {
++        if (!scenario.has("reach")) {
++            return true;
++        }
++        JsonObject reach = scenario.getAsJsonObject("reach");
++        String playerName = string(reach, "player", "P0");
++        if (!playerName.equals("P0") && !playerName.equals("P1")) {
++            throw new IllegalArgumentException("reach player must be P0 or P1");
++        }
++        TestPlayer player = player(playerName.equals("P0") ? 0 : 1);
++        String zone = string(reach, "zone", "graveyard");
++        String card = requiredString(reach, "card");
++        List<String> names = switch (zone) {
++            case "hand" -> names(player.getHand().getCards(currentGame));
++            case "library" -> names(player.getLibrary().getCards(currentGame));
++            case "graveyard" -> names(player.getGraveyard().getCards(currentGame));
++            case "battlefield" -> {
++                List<String> values = new ArrayList<>();
++                for (Permanent permanent : currentGame.getBattlefield().getAllActivePermanents()) {
++                    if (permanent.getControllerId().equals(player.getId())) {
++                        values.add(permanent.getName());
++                    }
++                }
++                yield values;
++            }
++            default -> throw new IllegalArgumentException("unsupported reach zone " + zone);
++        };
++        return names.contains(card);
++    }
++
++    private String labelOf(Permanent permanent) {
++        if (permanent == null) {
++            return null;
++        }
++        for (Map.Entry<String, UUID> label : labels.entrySet()) {
++            if (label.getValue().equals(permanent.getId())) {
++                return label.getKey();
++            }
++        }
++        return null;
++    }
++
++    private String playerName(UUID playerId) {
++        if (playerId.equals(playerA.getId())) {
++            return "P0";
++        }
++        if (playerId.equals(playerB.getId())) {
++            return "P1";
++        }
++        throw new IllegalArgumentException("unknown permanent controller " + playerId);
++    }
++
++    private TestPlayer player(int index) {
++        return index == 0 ? playerA : playerB;
++    }
++
++    private static void addCharacteristic(JsonObject item, String key, MageInt characteristic) {
++        if (characteristic == null) {
++            item.add(key, JsonNull.INSTANCE);
++        } else {
++            item.addProperty(key, characteristic.getValue());
++        }
++    }
++
++    private static void rejectUnknownKeys(JsonObject object, Set<String> allowed, String context) {
++        for (String key : object.keySet()) {
++            if (!allowed.contains(key)) {
++                throw new IllegalArgumentException(context + "." + key + " is unsupported");
++            }
++        }
++    }
++
++    private static JsonObject object(JsonObject parent, String key) {
++        JsonElement value = parent.get(key);
++        return value == null || value.isJsonNull() ? new JsonObject() : value.getAsJsonObject();
++    }
++
++    private static JsonArray array(JsonObject parent, String key) {
++        JsonElement value = parent.get(key);
++        return value == null || value.isJsonNull() ? new JsonArray() : value.getAsJsonArray();
++    }
++
++    private static String cardName(JsonElement value) {
++        if (value.isJsonPrimitive()) {
++            return value.getAsString();
++        }
++        JsonObject card = value.getAsJsonObject();
++        rejectUnknownKeys(card, Set.of("card"), "card setup");
++        return requiredString(card, "card");
++    }
++
++    private static List<String> strings(JsonArray values) {
++        List<String> result = new ArrayList<>();
++        values.forEach(value -> result.add(value.getAsString()));
++        return result;
++    }
++
++    private static JsonArray strings(Collection<String> values) {
++        JsonArray result = new JsonArray();
++        values.forEach(result::add);
++        return result;
++    }
++
++    private static List<String> names(Collection<? extends Card> cards) {
++        List<String> result = new ArrayList<>();
++        cards.forEach(card -> result.add(card.getName()));
++        return result;
++    }
++
++    private static List<String> sortedNames(Collection<? extends Card> cards) {
++        List<String> result = names(cards);
++        result.sort(String::compareTo);
++        return result;
++    }
++
++    private static String requiredString(JsonObject object, String key) {
++        JsonElement value = object.get(key);
++        if (value == null || !value.isJsonPrimitive()) {
++            throw new IllegalArgumentException(key + " is required");
++        }
++        return value.getAsString();
++    }
++
++    private static String string(JsonObject object, String key, String fallback) {
++        JsonElement value = object.get(key);
++        return value == null || value.isJsonNull() ? fallback : value.getAsString();
++    }
++
++    private static int integer(JsonObject object, String key, int fallback) {
++        JsonElement value = object.get(key);
++        return value == null || value.isJsonNull() ? fallback : exactInteger(value, key);
++    }
++
++    private static int exactInteger(JsonElement value, String context) {
++        try {
++            return value.getAsBigDecimal().intValueExact();
++        } catch (ArithmeticException | NumberFormatException error) {
++            throw new IllegalArgumentException(context + " must be an integer", error);
++        }
++    }
++
++    private static boolean bool(JsonObject object, String key, boolean fallback) {
++        JsonElement value = object.get(key);
++        return value == null || value.isJsonNull() ? fallback : value.getAsBoolean();
++    }
++}
