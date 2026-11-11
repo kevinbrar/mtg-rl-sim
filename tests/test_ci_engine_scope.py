@@ -1,7 +1,6 @@
 import re
 from pathlib import Path
 
-
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
 
 
@@ -11,7 +10,7 @@ def test_ci_scope_regexes_cover_engine_and_xmage_paths() -> None:
         r"^\s*engine_path_regex='([^']+)'$", workflow, flags=re.MULTILINE
     )
     xmage_match = re.search(
-        r'elif ! grep -Eiq \'([^\']+)\' "\$RUNNER_TEMP/changed-files\.txt"; then',
+        r'if ! grep -Eiq \'([^\']+)\' "\$RUNNER_TEMP/changed-files\.txt"; then',
         workflow,
     )
     assert engine_match is not None
@@ -29,7 +28,11 @@ def test_ci_scope_regexes_cover_engine_and_xmage_paths() -> None:
     ):
         assert engine_regex.search(path), path
 
-    for path in ("oracle/x", "driver/diff_game.py"):
+    for path in (
+        "oracle/x",
+        "oracle/scenarios/essence-burn.toml",
+        "driver/diff_game.py",
+    ):
         assert not engine_regex.search(path), path
         assert xmage_regex.search(path), path
 
