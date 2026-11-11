@@ -1,6 +1,6 @@
 use engine::database::CardDatabase;
 use engine::game::ability_utils::build_target_slots;
-use engine::game::scenario::GameScenario;
+use engine::game::scenario::{GameRunner, GameScenario};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::types::{
     actions::GameAction, parse_counter_type, AbilityKind, GameState, ObjectId, Phase, PlayerId,
@@ -94,6 +94,39 @@ fn project(
         "legal_targets": legal_targets,
         "reach": reached,
     })
+}
+
+fn advance_to_next_turn(runner: &mut GameRunner) -> Result<(), String> {
+    let turn = runner.state().turn_number;
+    for _ in 0..64 {
+        if runner.state().turn_number != turn {
+            return Ok(());
+        }
+        let waiting_for = runner.state().waiting_for.clone();
+        if matches!(waiting_for, WaitingFor::Priority { .. }) && !runner.state().stack.is_empty() {
+            runner.advance_until_stack_empty();
+            continue;
+        }
+        let action = match waiting_for {
+            WaitingFor::Priority { .. } => GameAction::PassPriority,
+            WaitingFor::DeclareAttackers { .. } => GameAction::DeclareAttackers {
+                attacks: Vec::new(),
+                bands: Vec::new(),
+            },
+            WaitingFor::DeclareBlockers { .. } => GameAction::DeclareBlockers {
+                assignments: Vec::new(),
+            },
+            other => {
+                return Err(format!(
+                    "cannot advance turn while waiting for {other:?}"
+                ));
+            }
+        };
+        runner
+            .act(action)
+            .map_err(|error| error.to_string())?;
+    }
+    Err("turn did not advance within 64 actions".to_string())
 }
 
 fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
@@ -254,22 +287,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 runner.advance_until_stack_empty();
             }
             "end_turn" | "next_turn" => {
-                let turn = runner.state().turn_number;
-                for _ in 0..64 {
-                    if runner.state().turn_number != turn {
-                        break;
-                    }
-                    if !runner.state().stack.is_empty() {
-                        runner.advance_until_stack_empty();
-                    } else {
-                        runner
-                            .act(GameAction::PassPriority)
-                            .map_err(|error| error.to_string())?;
-                    }
-                }
-                if runner.state().turn_number == turn {
-                    return Err("turn did not advance within 64 priority passes".to_string());
-                }
+                advance_to_next_turn(&mut runner)?;
             }
             other => return Err(format!("unsupported action {other}")),
         }
@@ -333,5 +351,22 @@ mod tests {
         assert_eq!(value["players"]["P1"]["graveyard"], json!([]));
         assert_eq!(value["exile"], json!([]));
         assert_eq!(value["reach"], json!(true));
+    }
+
+    #[test]
+    fn turn_advancement_declares_no_attackers_with_ready_creature() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let creature = scenario
+            .add_creature(PlayerId(0), "Untapped Bear", 2, 2)
+            .id();
+        let mut runner = scenario.build();
+        assert!(!runner.state().objects[&creature].tapped);
+        assert!(!runner.state().objects[&creature].summoning_sick);
+        let turn = runner.state().turn_number;
+
+        advance_to_next_turn(&mut runner).unwrap();
+
+        assert_ne!(runner.state().turn_number, turn);
     }
 }
