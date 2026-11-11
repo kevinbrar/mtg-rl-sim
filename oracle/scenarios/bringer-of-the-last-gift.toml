@@ -1,0 +1,100 @@
+[[scenarios]]
+name = "B1 sacrificed creatures stay in graveyards"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Bringer of the Last Gift" },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Colossal Dreadmaw" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "swamp-1", card = "Swamp" },
+  { label = "swamp-2", card = "Swamp" },
+  { label = "swamp-3", card = "Swamp" },
+  { label = "swamp-4", card = "Swamp" },
+  { label = "swamp-5", card = "Swamp" },
+  { label = "swamp-6", card = "Swamp" },
+  { label = "swamp-7", card = "Swamp" },
+  { label = "swamp-8", card = "Swamp" },
+  { label = "walking-corpse", card = "Walking Corpse" },
+]
+hand = ["Bringer of the Last Gift"]
+library_top = ["Forest", "Forest", "Forest"]
+graveyard = ["Colossal Dreadmaw", "Shock"]
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "llanowar-elves", card = "Llanowar Elves" }]
+hand = []
+library_top = ["Forest", "Forest", "Forest"]
+graveyard = ["Grizzly Bears"]
+
+[[scenarios]]
+name = "B2 no preexisting graveyard creatures"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Bringer of the Last Gift" },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "graveyard", card = "Walking Corpse" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "swamp-1", card = "Swamp" },
+  { label = "swamp-2", card = "Swamp" },
+  { label = "swamp-3", card = "Swamp" },
+  { label = "swamp-4", card = "Swamp" },
+  { label = "swamp-5", card = "Swamp" },
+  { label = "swamp-6", card = "Swamp" },
+  { label = "swamp-7", card = "Swamp" },
+  { label = "swamp-8", card = "Swamp" },
+  { label = "walking-corpse", card = "Walking Corpse" },
+]
+hand = ["Bringer of the Last Gift"]
+library_top = ["Forest", "Forest", "Forest"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "grizzly-bears", card = "Grizzly Bears" }]
+hand = []
+library_top = ["Forest", "Forest", "Forest"]
+graveyard = []
+
+[[scenarios]]
+name = "B3 preexisting graveyard creatures return"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Bringer of the Last Gift" },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Walking Corpse" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "swamp-1", card = "Swamp" },
+  { label = "swamp-2", card = "Swamp" },
+  { label = "swamp-3", card = "Swamp" },
+  { label = "swamp-4", card = "Swamp" },
+  { label = "swamp-5", card = "Swamp" },
+  { label = "swamp-6", card = "Swamp" },
+  { label = "swamp-7", card = "Swamp" },
+  { label = "swamp-8", card = "Swamp" },
+]
+hand = ["Bringer of the Last Gift"]
+library_top = ["Forest", "Forest", "Forest"]
+graveyard = ["Walking Corpse"]
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = ["Forest", "Forest", "Forest"]
+graveyard = ["Grizzly Bears"]
