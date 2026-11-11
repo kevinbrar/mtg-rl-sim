@@ -66,6 +66,7 @@ _Updated 2026-11-11._
 - Branch protection is enabled on the public repository: all six required checks, `enforce_admins` on, no approvals required.
 
 ## Next
+- Backburner: full-game lockstep coverage (plan A). Per-card differential scenarios are the card-correctness gate; retain full-game lockstep as CI smoke coverage and later agent-game audit tooling.
 - Batched Python training environment over phase-env; then agent/training research.
 
 ## Dead ends

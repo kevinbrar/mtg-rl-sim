@@ -1,0 +1,146 @@
+[[scenarios]]
+name = "S1 lethal black creature"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Essence Burn", targets = ["p1.bf.0"] },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "graveyard", card = "Essence Burn" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "p0.bf.0", card = "Mountain" },
+  { label = "p0.bf.1", card = "Mountain" },
+  { label = "p0.bf.2", card = "Mountain" },
+]
+hand = ["Essence Burn"]
+library_top = []
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "p1.bf.0", card = "Walking Corpse" }]
+hand = []
+library_top = []
+graveyard = []
+
+[[scenarios]]
+name = "S2 later same-turn death is exiled"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Essence Burn", targets = ["p1.bf.0"] },
+  { action = "pass_until_resolved" },
+  { action = "cast", card = "Shock", targets = ["p1.bf.0"] },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "graveyard", card = "Essence Burn" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "p0.bf.0", card = "Mountain" },
+  { label = "p0.bf.1", card = "Mountain" },
+  { label = "p0.bf.2", card = "Mountain" },
+]
+hand = ["Essence Burn", "Shock"]
+library_top = []
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "p1.bf.0", card = "Colossal Dreadmaw" }]
+hand = []
+library_top = []
+graveyard = []
+
+[[scenarios]]
+name = "S3 damage wears off at end of turn"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Essence Burn", targets = ["p1.bf.0"] },
+  { action = "pass_until_resolved" },
+  { action = "end_turn" },
+]
+reach = { player = "P0", zone = "graveyard", card = "Essence Burn" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "p0.bf.0", card = "Mountain" },
+  { label = "p0.bf.1", card = "Mountain" },
+  { label = "p0.bf.2", card = "Mountain" },
+]
+hand = ["Essence Burn"]
+library_top = []
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "p1.bf.0", card = "Colossal Dreadmaw" }]
+hand = []
+library_top = []
+graveyard = []
+
+[[scenarios]]
+name = "S4 legal targets"
+active_player = 0
+step = "precombat_main"
+script = []
+legal_targets_of = "Essence Burn"
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "p0.bf.0", card = "Mountain" },
+  { label = "p0.bf.1", card = "Mountain" },
+  { label = "p0.bf.2", card = "Mountain" },
+]
+hand = ["Essence Burn"]
+library_top = []
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [
+  { label = "p1.bf.0", card = "Walking Corpse" },
+  { label = "p1.bf.1", card = "Grizzly Bears" },
+  { label = "p1.bf.2", card = "Raging Goblin" },
+  { label = "p1.bf.3", card = "Ornithopter" },
+  { label = "p1.bf.4", card = "Bolas's Citadel" },
+  { label = "p1.bf.5", card = "Liliana of the Veil" },
+]
+hand = []
+library_top = []
+graveyard = []
+
+[[scenarios]]
+name = "S5 lethal black planeswalker"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Essence Burn", targets = ["p1.bf.0"] },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "graveyard", card = "Essence Burn" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "p0.bf.0", card = "Mountain" },
+  { label = "p0.bf.1", card = "Mountain" },
+  { label = "p0.bf.2", card = "Mountain" },
+]
+hand = ["Essence Burn"]
+library_top = []
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "p1.bf.0", card = "Liliana of the Veil" }]
+hand = []
+library_top = []
+graveyard = []
