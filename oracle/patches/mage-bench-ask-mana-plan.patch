@@ -1,0 +1,181 @@
+diff --git a/Mage.Client.Bridge/src/main/java/mage/client/bridge/processor/BridgeDecisionFlowService.java b/Mage.Client.Bridge/src/main/java/mage/client/bridge/processor/BridgeDecisionFlowService.java
+index 28381fb7f65..bfcc96bb2dc 100644
+--- a/Mage.Client.Bridge/src/main/java/mage/client/bridge/processor/BridgeDecisionFlowService.java
++++ b/Mage.Client.Bridge/src/main/java/mage/client/bridge/processor/BridgeDecisionFlowService.java
+@@ -361,6 +361,17 @@ public final class BridgeDecisionFlowService {
+                     if (resolvedIndex != null) {
+                         logger.warn("[" + username + "] choose_action: ignoring index=" + resolvedIndex + " for GAME_ASK (boolean-only)");
+                     }
++                    if (!answer && effectiveManaPlan != null) {
++                        return chooseActionDone(buildChooseActionError(result, "invalid_mana_plan",
++                            "Mana plan is only valid for a yes answer to GAME_ASK.", true, action));
++                    }
++                    if (answer) {
++                        ChooseActionTool.Result manaPlanError = applyManaPlan(
++                            result, effectiveManaPlan, autoTap, action);
++                        if (manaPlanError != null) {
++                            return chooseActionDone(manaPlanError);
++                        }
++                    }
+                     sendBooleanOrDie(gameId, answer, "chooseAction:GAME_ASK");
+                     result.action_taken = answer ? "yes" : "no";
+                 }
+@@ -381,27 +392,10 @@ public final class BridgeDecisionFlowService {
+                         } else {
+                             Object chosen = choiceBackings.get(resolvedIndex);
+                             if (chosen instanceof UUID chosenUuid) {
+-                                if (effectiveManaPlan != null) {
+-                                    List<BridgeManaPlanEntry> parsedPlan;
+-                                    try {
+-                                        parsedPlan = parseManaPlan(effectiveManaPlan);
+-                                    } catch (IllegalArgumentException e) {
+-                                        return chooseActionDone(buildChooseActionError(result, "invalid_mana_plan",
+-                                            "Invalid mana_plan: " + e.getMessage()
+-                                                + ". Expected: [\"p1\",\"p2:0\",\"RED\"]", true, action));
+-                                    }
+-                                    for (BridgeManaPlanEntry entry : parsedPlan) {
+-                                        if ("tap".equals(entry.type()) && processorServices.shortIds().tryResolve(entry.value()) == null) {
+-                                            return chooseActionDone(buildChooseActionError(result, "invalid_mana_plan",
+-                                                "Mana plan references unknown permanent '" + entry.value()
+-                                                    + "'. Check the board state for correct permanent IDs.", true, action));
+-                                        }
+-                                    }
+-                                    processorState.interactionState().setManaPlan(parsedPlan, !(autoTap != null && !autoTap));
+-                                    result.mana_plan_set = true;
+-                                    result.mana_plan_size = parsedPlan.size();
+-                                } else if (autoTap != null && autoTap) {
+-                                    processorState.interactionState().clearManaPlan();
++                                ChooseActionTool.Result manaPlanError = applyManaPlan(
++                                    result, effectiveManaPlan, autoTap, action);
++                                if (manaPlanError != null) {
++                                    return chooseActionDone(manaPlanError);
+                                 }
+                                 sendUuidOrDie(gameId, chosenUuid, "chooseAction:GAME_SELECT_index");
+                                 result.action_taken = "selected_" + resolvedIndex;
+@@ -1497,6 +1491,40 @@ public final class BridgeDecisionFlowService {
+         return orderedChoices;
+     }
+
++    private ChooseActionTool.Result applyManaPlan(
++            ChooseActionTool.Result result,
++            String[] effectiveManaPlan,
++            Boolean autoTap,
++            PendingAction action) {
++        if (effectiveManaPlan == null) {
++            if (autoTap != null && autoTap) {
++                processorState.interactionState().clearManaPlan();
++            }
++            return null;
++        }
++        List<BridgeManaPlanEntry> parsedPlan;
++        try {
++            parsedPlan = parseManaPlan(effectiveManaPlan);
++        } catch (IllegalArgumentException e) {
++            return buildChooseActionError(result, "invalid_mana_plan",
++                "Invalid mana_plan: " + e.getMessage()
++                    + ". Expected: [\"p1\",\"p2:0\",\"RED\"]", true, action);
++        }
++        for (BridgeManaPlanEntry entry : parsedPlan) {
++            if ("tap".equals(entry.type())
++                    && processorServices.shortIds().tryResolve(entry.value()) == null) {
++                return buildChooseActionError(result, "invalid_mana_plan",
++                    "Mana plan references unknown permanent '" + entry.value()
++                        + "'. Check the board state for correct permanent IDs.", true, action);
++            }
++        }
++        processorState.interactionState().setManaPlan(
++            parsedPlan, !(autoTap != null && !autoTap));
++        result.mana_plan_set = true;
++        result.mana_plan_size = parsedPlan.size();
++        return null;
++    }
++
+     private List<BridgeManaPlanEntry> parseManaPlan(String[] arr) {
+         var plan = new ArrayList<BridgeManaPlanEntry>();
+         for (String entry : arr) {
+diff --git a/Mage.Client.Bridge/src/test/java/mage/client/bridge/BridgeCallbackHandlerTest.java b/Mage.Client.Bridge/src/test/java/mage/client/bridge/BridgeCallbackHandlerTest.java
+index e173c7aa8fd..3f6ff0caca3 100644
+--- a/Mage.Client.Bridge/src/test/java/mage/client/bridge/BridgeCallbackHandlerTest.java
++++ b/Mage.Client.Bridge/src/test/java/mage/client/bridge/BridgeCallbackHandlerTest.java
+@@ -1145,6 +1145,81 @@ class BridgeCallbackHandlerTest {
+         assertThat(result.message).isEqualTo("Play spells and abilities");
+     }
+
++    @Test
++    void chooseActionAppliesManaPlanToYesGameAsk() throws Exception {
++        BridgeMageClient client = new BridgeMageClient("TestPlayer");
++        BridgeCallbackHandler handler = client.getCallbackHandler();
++
++        UUID gameId = UUID.randomUUID();
++        AtomicInteger sendPlayerBooleanCalls = new AtomicInteger();
++        GameView askView = gameView(10);
++        GameView nextDecisionView = gameView(11);
++        GameClientMessage nextDecisionMessage = new GameClientMessage(
++            nextDecisionView,
++            Collections.<String, Serializable>emptyMap(),
++            "Play spells and abilities"
++        );
++
++        addActiveGame(handler, gameId);
++        setField(handler, "currentGameId", gameId);
++        setField(handler, "lastGameView", askView);
++        client.setSession((Session) Proxy.newProxyInstance(
++            Session.class.getClassLoader(),
++            new Class<?>[]{Session.class},
++            (proxy, method, args) -> {
++                if ("sendPlayerBoolean".equals(method.getName())) {
++                    sendPlayerBooleanCalls.incrementAndGet();
++                    assertThat(args[0]).isEqualTo(gameId);
++                    assertThat(args[1]).isEqualTo(true);
++                    enqueueCallback(handler, ClientCallbackMethod.GAME_SELECT, gameId, nextDecisionMessage);
++                    return true;
++                }
++                return defaultReturnValue(method.getReturnType());
++            }
++        ));
++        setField(handler, "pendingAction", new PendingAction(
++            gameId,
++            ClientCallbackMethod.GAME_ASK,
++            new GameClientMessage(askView, Collections.<String, Serializable>emptyMap(), "Pay {1}?"),
++            "Pay {1}?",
++            10
++        ));
++
++        var result = handler.chooseAction(
++            null, null, true, null, null, null, null, new String[]{"RED"}, false, null, null
++        );
++
++        assertThat(sendPlayerBooleanCalls.get()).isEqualTo(1);
++        assertThat(result.success).isTrue();
++        assertThat(result.action_taken).isEqualTo("yes");
++        assertThat(result.mana_plan_set).isTrue();
++        assertThat(result.mana_plan_size).isEqualTo(1);
++    }
++
++    @Test
++    void chooseActionRejectsManaPlanForNoGameAsk() throws Exception {
++        BridgeMageClient client = new BridgeMageClient("TestPlayer");
++        BridgeCallbackHandler handler = client.getCallbackHandler();
++
++        UUID gameId = UUID.randomUUID();
++        GameView askView = gameView(10);
++        setField(handler, "lastGameView", askView);
++        setField(handler, "pendingAction", new PendingAction(
++            gameId,
++            ClientCallbackMethod.GAME_ASK,
++            new GameClientMessage(askView, Collections.<String, Serializable>emptyMap(), "Pay {1}?"),
++            "Pay {1}?",
++            10
++        ));
++
++        var result = handler.chooseAction(
++            null, null, false, null, null, null, null, new String[]{"RED"}, false, null, null
++        );
++
++        assertThat(result.success).isFalse();
++        assertThat(result.error_code).isEqualTo("invalid_mana_plan");
++    }
++
+     @Test
+     void chooseActionWaitsThroughMultipleAutoResolvedFollowups() throws Exception {
+         BridgeMageClient client = new BridgeMageClient("TestPlayer");
