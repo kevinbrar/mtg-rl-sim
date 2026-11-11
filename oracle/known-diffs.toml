@@ -1,1 +1,8 @@
 # Add one [[diff]] entry per card with fields: card, category (engine-bug | xmage-bug | unsupported), rationale, link, regression_test.
+
+[[diff]]
+card = "Vren, the Relentless"
+category = "engine-bug"
+rationale = "V2 creates two Rat tokens while Vren is on the battlefield. Vren is a Rat Rogue, so under CR 613 each token's continuous effect counts Vren and the other Rat, making both 3/3; CR 608.2h requires checking the resulting state after resolution. Phase remains 2/2 after mark_layers_full plus flush_layers immediately before projection. The parsed Vren token ability contains only constant AddPower(1)/AddToughness(1) modifiers and no other-Rat quantity. Patch 0005 only changes opponent-creature exile counting."
+link = "https://scryfall.com/search?q=%21%22Vren%2C+the+Relentless%22"
+regression_test = "runs/card-scenarios/vren-fixed-production-20261111/phase-projection.json and runs/card-scenarios/vren-layer-recompute-20261111/phase-projection.json"

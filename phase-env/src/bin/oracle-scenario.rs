@@ -79,6 +79,7 @@ fn project(
             Some(json!({
                 "label": labels.get(id),
                 "name": &object.name,
+                "token": object.is_token,
                 "controller": format!("P{}", object.controller.0),
                 "tapped": object.tapped,
                 "damage": object.damage_marked,
@@ -541,5 +542,18 @@ mod tests {
             value["players"]["P0"]["library"],
             json!(["Top Card", "Bottom Card"])
         );
+    }
+
+    #[test]
+    fn projection_identifies_tokens_without_changing_their_name() {
+        let mut scenario = GameScenario::new();
+        let rat = scenario.add_creature(PlayerId(0), "Rat", 1, 1).id();
+        let mut runner = scenario.build();
+        runner.state_mut().objects.get_mut(&rat).unwrap().is_token = true;
+
+        let value = project(runner.state(), &HashMap::new(), None, true);
+
+        assert_eq!(value["battlefield"][0]["name"], json!("Rat"));
+        assert_eq!(value["battlefield"][0]["token"], json!(true));
     }
 }
