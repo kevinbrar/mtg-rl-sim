@@ -8,7 +8,6 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-
 REQUIRED_SECTIONS = (
     "## Brief / decision reference",
     "## Surfaces",
@@ -25,8 +24,8 @@ ENGINE_PATHS = (
     "driver/diff_game.py",
 )
 REQUIRED_EVIDENCE_COLUMNS = ("claim", "check", "result", "artifact", "independent")
-CARDS_NONE_PATCH_OR_DATA_ERROR = (
-    "phase-patches/card-data changes need per-card XMage diffs (harness v1); "
+CARDS_NONE_PER_CARD_ERROR = (
+    "phase-patches/card-data/oracle-scenarios changes need per-card XMage scenarios; "
     "cards: none is not accepted for them"
 )
 
@@ -52,10 +51,7 @@ def _split_table_row(line: str) -> list[str] | None:
     stripped = line.strip()
     if "|" not in stripped:
         return None
-    if stripped.startswith("|"):
-        stripped = stripped[1:]
-    if stripped.endswith("|"):
-        stripped = stripped[:-1]
+    stripped = stripped.removeprefix("|").removesuffix("|")
     return [cell.strip() for cell in stripped.split("|")]
 
 
@@ -81,7 +77,9 @@ def _is_card_data_path(path: str) -> bool:
 
 
 def _is_per_card_xmage_path(path: str) -> bool:
-    return path.startswith("phase-patches/") or _is_card_data_path(path)
+    return path.startswith(
+        ("phase-patches/", "oracle/scenarios/")
+    ) or _is_card_data_path(path)
 
 
 def _result_has_evidence(result: str) -> bool:
@@ -206,7 +204,7 @@ def validate_review_packet(body: str, changed_files: Sequence[str]) -> list[str]
             if cards.casefold() == "none" and any(
                 _is_per_card_xmage_path(path) for path in changed_files
             ):
-                errors.append(CARDS_NONE_PATCH_OR_DATA_ERROR)
+                errors.append(CARDS_NONE_PER_CARD_ERROR)
 
     return errors
 

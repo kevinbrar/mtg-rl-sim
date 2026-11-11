@@ -5,7 +5,7 @@ Read `MISSION.md`, `DECISIONS.md`, `STATUS.md` first. CI enforces this file; if 
 ## Oracle: XMage (mandatory)
 XMage via mage-bench (`oracle/README.md`) is the correctness oracle; Kevin named it, so it is a gate.
 - Applies to any change under `phase-patches/`, `phase/`, `phase-env/`, `oracle/`, `driver/diff_game.py`, or card data. Such PRs carry a `cards:` line (`cards: none` only if no card logic is touched; the lint checks).
-- Per listed card: ≥ N seeded `diff_game.py` games (N in `oracle/diff-config.json`) with a deck that casts the card; every divergence triaged in `oracle/known-diffs.toml` as `engine-bug | xmage-bug | unsupported` with rationale + link. `unsupported` is never a pass; list growth is tracked in `STATUS.md`.
+- Per listed card, the card's `oracle/scenarios/<card>.toml` suite must pass in phase-rs and XMage (Forge where XMage lacks the card); scenarios are derived from Oracle text and official rulings. Triage every divergence in `oracle/known-diffs.toml` as `engine-bug | xmage-bug | unsupported` with rationale + link. `unsupported` is never a pass; list growth is tracked in `STATUS.md`.
 - If the harness can't exercise a card, extending the harness is part of the task. Own tests, the engine audit tool and smoke games are not substitutes. If infeasible in this PR: don't merge, record the gap in `STATUS.md`, escalate per below.
 
 ## Required checks (`main`: required, no admin bypass, 0 approvers)
