@@ -23,11 +23,15 @@ fn names(state: &GameState, ids: impl IntoIterator<Item = ObjectId>) -> Vec<Stri
     names
 }
 
+fn ordered_names(state: &GameState, ids: impl IntoIterator<Item = ObjectId>) -> Vec<String> {
+    ids.into_iter().map(|id| card_name(state, id)).collect()
+}
+
 fn cards(state: &GameState, player: usize, zone: &str) -> Vec<String> {
     let p = &state.players[player];
     match zone {
         "hand" => names(state, p.hand.iter().copied()),
-        "library" => names(state, p.library.iter().copied()),
+        "library" => ordered_names(state, p.library.iter().copied()),
         "graveyard" => names(state, p.graveyard.iter().copied()),
         "battlefield" => names(
             state,
@@ -399,5 +403,20 @@ mod tests {
         let value = project(runner.state(), &labels, None, true);
         assert_eq!(value["battlefield"][0]["power"], json!(3));
         assert_eq!(value["battlefield"][0]["toughness"], json!(3));
+    }
+
+    #[test]
+    fn projection_preserves_library_order_with_top_first() {
+        let mut scenario = GameScenario::new();
+        scenario.add_spell_to_library_top(PlayerId(0), "Bottom Card", true);
+        scenario.add_spell_to_library_top(PlayerId(0), "Top Card", true);
+        let runner = scenario.build();
+
+        let value = project(runner.state(), &HashMap::new(), None, true);
+
+        assert_eq!(
+            value["players"]["P0"]["library"],
+            json!(["Top Card", "Bottom Card"])
+        );
     }
 }
