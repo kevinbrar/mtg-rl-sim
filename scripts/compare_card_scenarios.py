@@ -19,12 +19,26 @@ def read_results(path: Path) -> dict[str, dict]:
 
 def compare(left: dict[str, dict], right: dict[str, dict]) -> list[str]:
     differences = []
+    if not left:
+        differences.append("left side has no scenarios")
+    if not right:
+        differences.append("right side has no scenarios")
+    if differences:
+        return differences
     for name in sorted(left.keys() | right.keys()):
         a, b = left.get(name), right.get(name)
-        if a is None or b is None or a.get("projection") != b.get("projection"):
-            differences.append(name)
+        if a is None:
+            differences.append(f"{name} missing from left")
+        elif b is None:
+            differences.append(f"{name} missing from right")
+        elif "projection" not in a or a["projection"] is None:
+            differences.append(f"{name} missing projection on left")
+        elif "projection" not in b or b["projection"] is None:
+            differences.append(f"{name} missing projection on right")
         elif not a.get("reach", False) or not b.get("reach", False):
             differences.append(f"{name} (reach failed)")
+        elif a["projection"] != b["projection"]:
+            differences.append(name)
     return differences
 
 

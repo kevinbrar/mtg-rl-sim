@@ -43,6 +43,41 @@ def test_projection_comparator_requires_equal_projections_and_reach() -> None:
     assert compare(left, right) == ["S1 (reach failed)"]
 
 
+def test_projection_comparator_rejects_empty_sides() -> None:
+    projection = {"S1": {"scenario": "S1", "projection": {}, "reach": True}}
+    assert compare({}, projection) == ["left side has no scenarios"]
+    assert compare(projection, {}) == ["right side has no scenarios"]
+
+
+def test_projection_comparator_rejects_scenarios_missing_from_one_side() -> None:
+    left = {"S1": {"scenario": "S1", "projection": {}, "reach": True}}
+    right = {"S2": {"scenario": "S2", "projection": {}, "reach": True}}
+    assert compare(left, right) == ["S1 missing from right", "S2 missing from left"]
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "difference"),
+    [
+        ({"S1": {"reach": True}}, {"S1": {"projection": {}, "reach": True}}, "left"),
+        ({"S1": {"projection": {}, "reach": True}}, {"S1": {"reach": True}}, "right"),
+        (
+            {"S1": {"projection": None, "reach": True}},
+            {"S1": {"projection": {}, "reach": True}},
+            "left",
+        ),
+        (
+            {"S1": {"projection": {}, "reach": True}},
+            {"S1": {"projection": None, "reach": True}},
+            "right",
+        ),
+    ],
+)
+def test_projection_comparator_rejects_missing_or_null_projection(
+    left: dict[str, dict], right: dict[str, dict], difference: str
+) -> None:
+    assert compare(left, right) == [f"S1 missing projection on {difference}"]
+
+
 def test_projection_file_rejects_duplicate_names(tmp_path: Path) -> None:
     path = tmp_path / "projection.json"
     path.write_text(
