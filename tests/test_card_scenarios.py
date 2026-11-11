@@ -275,6 +275,33 @@ def test_projection_comparator_rejects_battlefield_content_difference() -> None:
     assert compare(left, right) == ["S1"]
 
 
+def test_projection_comparator_compares_battlefield_characteristics() -> None:
+    left = {
+        "S1": {
+            "scenario": "S1",
+            "projection": {
+                "battlefield": [
+                    {
+                        "name": "Restless Prairie",
+                        "types": ["Creature", "Land"],
+                        "subtypes": ["Llama"],
+                        "colors": ["G", "W"],
+                    }
+                ]
+            },
+            "reach": True,
+        }
+    }
+    for field, changed in (
+        ("types", ["Land"]),
+        ("subtypes", []),
+        ("colors", ["G"]),
+    ):
+        right = copy.deepcopy(left)
+        right["S1"]["projection"]["battlefield"][0][field] = changed
+        assert compare(left, right) == ["S1"]
+
+
 @pytest.mark.parametrize("zone", ("graveyard", "library"))
 def test_projection_comparator_preserves_ordered_zone_permutations(
     zone: str,

@@ -1,0 +1,60 @@
+[[scenarios]]
+name = "R1 activation becomes a creature"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "activate", source = "restless-prairie", ability = "{2}{G}{W}:" },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Restless Prairie", types = ["Creature", "Land"], subtypes = ["Llama"], colors = ["G", "W"], creature = true, power = 3, toughness = 3, tapped = true, tapped_labels = ["forest", "plains", "swamp", "island"] }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "restless-prairie", card = "Restless Prairie", tapped = true },
+  { label = "forest", card = "Forest" },
+  { label = "plains", card = "Plains" },
+  { label = "swamp", card = "Swamp" },
+  { label = "island", card = "Island" },
+]
+hand = []
+library_top = []
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = []
+graveyard = []
+
+[[scenarios]]
+name = "R2 activation reverts at end of turn"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "activate", source = "restless-prairie", ability = "{2}{G}{W}:" },
+  { action = "pass_until_resolved" },
+  { action = "end_turn" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Restless Prairie", types = ["Land"], subtypes = [], colors = [], creature = false, power_is_null = true, toughness_is_null = true }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "restless-prairie", card = "Restless Prairie", tapped = true },
+  { label = "forest", card = "Forest" },
+  { label = "plains", card = "Plains" },
+  { label = "swamp", card = "Swamp" },
+  { label = "island", card = "Island" },
+]
+hand = []
+library_top = []
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = []
+graveyard = []

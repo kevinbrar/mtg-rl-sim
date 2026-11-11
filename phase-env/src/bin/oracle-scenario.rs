@@ -3,8 +3,8 @@ use engine::game::ability_utils::build_target_slots;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::types::{
-    actions::GameAction, parse_counter_type, AbilityKind, GameState, ObjectId, Phase, PlayerId,
-    ResolvedAbility, TargetRef, WaitingFor, Zone,
+    actions::GameAction, parse_counter_type, AbilityKind, GameState, ManaColor, ObjectId, Phase,
+    PlayerId, ResolvedAbility, TargetRef, WaitingFor, Zone,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -82,6 +82,15 @@ fn project(
                 "token": object.is_token,
                 "controller": format!("P{}", object.controller.0),
                 "tapped": object.tapped,
+                "types": sorted(object.card_types.core_types.iter().map(|kind| normalize_characteristic(&kind.to_string()))),
+                "subtypes": sorted(object.card_types.subtypes.iter().map(|kind| normalize_characteristic(kind))),
+                "colors": sorted(object.effective_colors().iter().map(|color| match color {
+                    ManaColor::White => "W".to_string(),
+                    ManaColor::Blue => "U".to_string(),
+                    ManaColor::Black => "B".to_string(),
+                    ManaColor::Red => "R".to_string(),
+                    ManaColor::Green => "G".to_string(),
+                })),
                 "damage": object.damage_marked,
                 "counters": counters,
                 "power": object.power,
@@ -99,6 +108,186 @@ fn project(
         "legal_targets": legal_targets,
         "reach": reached,
     })
+}
+
+fn sorted(values: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    values.sort();
+    values
+}
+
+fn normalize_characteristic(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            chars
+                .next()
+                .map(|first| {
+                    format!(
+                        "{}{}",
+                        first.to_uppercase().collect::<String>(),
+                        chars.as_str().to_lowercase()
+                    )
+                })
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn resolve_label(labels: &HashMap<ObjectId, String>, label: &str) -> Result<ObjectId, String> {
+    labels
+        .iter()
+        .find(|(_, value)| value.as_str() == label)
+        .map(|(id, _)| *id)
+        .ok_or_else(|| format!("unknown battlefield label {label}"))
+}
+
+fn normalize_ability_text(text: &str) -> String {
+    let text = text.split("<i>").next().unwrap_or(text);
+    let mut stripped = String::new();
+    let mut in_tag = false;
+    for character in text.chars() {
+        match character {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => stripped.push(character),
+            _ => {}
+        }
+    }
+    stripped
+        .to_lowercase()
+        .replace("{this}", "~")
+        .trim()
+        .to_string()
+}
+
+fn select_activation_ability(
+    candidates: impl IntoIterator<Item = (usize, AbilityKind, Option<String>)>,
+    prefix: &str,
+) -> Result<usize, String> {
+    let prefix = normalize_ability_text(prefix);
+    if prefix.is_empty() {
+        return Err("activate needs a non-empty ability cost prefix".to_string());
+    }
+    let mut matches = Vec::new();
+    for (index, kind, description) in candidates {
+        if kind != AbilityKind::Activated {
+            continue;
+        }
+        let description = description
+            .ok_or_else(|| format!("activated ability {index} is missing a description"))?;
+        if normalize_ability_text(&description).starts_with(&prefix) {
+            matches.push(index);
+        }
+    }
+    match matches.as_slice() {
+        [index] => Ok(*index),
+        [] => Err(format!("no activated ability starts with {prefix}")),
+        _ => Err(format!(
+            "multiple activated abilities start with {prefix}: {matches:?}"
+        )),
+    }
+}
+
+fn resolve_target_labels(
+    action: &Value,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<Vec<ObjectId>, String> {
+    action["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|label| {
+            let label = label.as_str().ok_or("target label must be a string")?;
+            resolve_label(labels, label).map_err(|_| format!("unknown target label {label}"))
+        })
+        .collect()
+}
+
+fn activate(
+    runner: &mut GameRunner,
+    labels: &HashMap<ObjectId, String>,
+    action: &Value,
+) -> Result<(), String> {
+    let source_label = action["source"].as_str().ok_or("activate needs source")?;
+    let source_id = resolve_label(labels, source_label)?;
+    let prefix = action["ability"].as_str().ok_or("activate needs ability")?;
+    let object = runner
+        .state()
+        .objects
+        .get(&source_id)
+        .ok_or_else(|| format!("source label {source_label} is not on the battlefield"))?;
+    let ability_index = select_activation_ability(
+        object
+            .abilities
+            .iter()
+            .enumerate()
+            .map(|(index, ability)| (index, ability.kind, ability.description.clone())),
+        prefix,
+    )?;
+    let target_ids = resolve_target_labels(action, labels)?;
+    let stack_size = runner.state().stack.len();
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id,
+            ability_index,
+            payment_mode: engine::types::game_state::CastPaymentMode::Auto,
+        })
+        .map_err(|error| error.to_string())?;
+
+    let mut target_index = 0;
+    for _ in 0..64 {
+        match runner.state().waiting_for.clone() {
+            WaitingFor::TargetSelection {
+                target_slots,
+                selection,
+                ..
+            } => {
+                let slot = target_slots
+                    .get(selection.current_slot)
+                    .ok_or("activation target slot is missing")?;
+                let target = target_ids.get(target_index).copied().map(TargetRef::Object);
+                if target
+                    .as_ref()
+                    .is_some_and(|target| !slot.legal_targets.contains(target))
+                {
+                    return Err(format!(
+                        "target label {} is not legal for activation slot {}",
+                        labels[&target_ids[target_index]], selection.current_slot
+                    ));
+                }
+                let selected = target.is_some();
+                runner
+                    .act(GameAction::ChooseTarget { target })
+                    .map_err(|error| error.to_string())?;
+                if selected {
+                    target_index += 1;
+                }
+            }
+            WaitingFor::Priority { .. } => break,
+            WaitingFor::ManaPayment { .. } => {
+                return Err("CastPaymentMode::Auto did not pay the activation cost".to_string());
+            }
+            other => {
+                return Err(format!("activation cannot handle waiting state {other:?}"));
+            }
+        }
+    }
+    if target_index != target_ids.len() {
+        return Err(format!(
+            "activation received {} targets but used {target_index}",
+            target_ids.len()
+        ));
+    }
+    if runner.state().stack.len() <= stack_size {
+        return Err("activated ability did not commit to the stack".to_string());
+    }
+    if !matches!(&runner.state().waiting_for, WaitingFor::Priority { .. }) {
+        return Err("activation did not finish target selection".to_string());
+    }
+    Ok(())
 }
 
 fn apply_configured_permanents(
@@ -367,21 +556,10 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                             .is_some_and(|object| object.name == card)
                     })
                     .ok_or_else(|| format!("{card} is not in the active player's hand"))?;
-                let target_ids = action["targets"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .map(|label| {
-                        let label = label.as_str().ok_or("target label must be a string")?;
-                        labels
-                            .iter()
-                            .find(|(_, value)| value == &label)
-                            .map(|(id, _)| *id)
-                            .ok_or_else(|| format!("unknown target label {label}"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                let target_ids = resolve_target_labels(action, &labels)?;
                 let _ = runner.cast(spell).target_objects(&target_ids).commit();
             }
+            "activate" => activate(&mut runner, &labels, action)?,
             "pass_until_resolved" => {
                 runner.advance_until_stack_empty();
             }
@@ -391,28 +569,159 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
             other => return Err(format!("unsupported action {other}")),
         }
     }
-    let reached = if let Some(reach) = spec.get("reach") {
-        let player = reach["player"].as_str().unwrap_or("P0");
-        let zone = reach["zone"].as_str().unwrap_or("graveyard");
-        let card = reach["card"].as_str().ok_or("reach needs card")?;
-        let index = player
-            .strip_prefix('P')
-            .and_then(|value| value.parse::<usize>().ok())
-            .ok_or("reach player must be P0 or P1")?;
-        if index > 1 {
-            return Err("reach player must be P0 or P1".to_string());
-        }
-        cards(runner.state(), index, zone)
-            .iter()
-            .any(|name| name == card)
-    } else {
-        true
-    };
+    let reached = check_reach(runner.state(), &labels, spec.get("reach"))?;
     Ok(json!({
         "scenario": name,
         "projection": project(runner.state(), &labels, legal, reached),
         "reach": reached,
     }))
+}
+
+fn check_reach(
+    state: &GameState,
+    labels: &HashMap<ObjectId, String>,
+    reach: Option<&Value>,
+) -> Result<bool, String> {
+    let Some(reach) = reach else {
+        return Ok(true);
+    };
+    let player = reach["player"].as_str().unwrap_or("P0");
+    let zone = reach["zone"].as_str().unwrap_or("graveyard");
+    let card = reach["card"].as_str().ok_or("reach needs card")?;
+    let index = player
+        .strip_prefix('P')
+        .and_then(|value| value.parse::<usize>().ok())
+        .ok_or("reach player must be P0 or P1")?;
+    if index > 1 {
+        return Err("reach player must be P0 or P1".to_string());
+    }
+    let in_zone = cards(state, index, zone).iter().any(|name| name == card);
+    if !in_zone {
+        return Ok(false);
+    }
+    let Some(object) = (zone == "battlefield")
+        .then(|| {
+            state.battlefield.iter().find_map(|id| {
+                state
+                    .objects
+                    .get(id)
+                    .filter(|object| object.controller.0 as usize == index && object.name == card)
+            })
+        })
+        .flatten()
+    else {
+        return Ok(![
+            "types",
+            "subtypes",
+            "colors",
+            "power",
+            "toughness",
+            "creature",
+            "tapped",
+        ]
+        .iter()
+        .any(|key| reach.get(key).is_some()));
+    };
+
+    for (key, actual) in [
+        (
+            "types",
+            sorted(object.card_types.core_types.iter().map(ToString::to_string)),
+        ),
+        (
+            "subtypes",
+            sorted(object.card_types.subtypes.iter().cloned()),
+        ),
+        (
+            "colors",
+            sorted(object.effective_colors().iter().map(|color| match color {
+                ManaColor::White => "W".to_string(),
+                ManaColor::Blue => "U".to_string(),
+                ManaColor::Black => "B".to_string(),
+                ManaColor::Red => "R".to_string(),
+                ManaColor::Green => "G".to_string(),
+            })),
+        ),
+    ] {
+        if let Some(expected) = reach.get(key) {
+            let Some(expected) = expected.as_array() else {
+                return Err(format!("reach.{key} must be an array"));
+            };
+            let mut expected = expected
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| format!("reach.{key} values must be strings"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            expected.sort();
+            if expected != actual {
+                return Ok(false);
+            }
+        }
+    }
+    for key in ["power", "toughness"] {
+        if let Some(expected) = reach.get(key) {
+            let actual = if key == "power" {
+                json!(object.power)
+            } else {
+                json!(object.toughness)
+            };
+            if expected != &actual {
+                return Ok(false);
+            }
+        }
+    }
+    if reach
+        .get("power_is_null")
+        .is_some_and(|expected| expected != &json!(object.power.is_none()))
+        || reach
+            .get("toughness_is_null")
+            .is_some_and(|expected| expected != &json!(object.toughness.is_none()))
+    {
+        return Ok(false);
+    }
+    if let Some(expected) = reach.get("creature") {
+        let Some(expected) = expected.as_bool() else {
+            return Err("reach.creature must be a boolean".to_string());
+        };
+        let actual = object
+            .card_types
+            .core_types
+            .iter()
+            .any(|kind| kind.to_string() == "Creature");
+        if actual != expected
+            || !actual && (object.power.is_some() || object.toughness.is_some())
+            || actual && (object.power.is_none() || object.toughness.is_none())
+        {
+            return Ok(false);
+        }
+    }
+    if let Some(expected) = reach.get("tapped") {
+        let Some(expected) = expected.as_bool() else {
+            return Err("reach.tapped must be a boolean".to_string());
+        };
+        if object.tapped != expected {
+            return Ok(false);
+        }
+    }
+    if let Some(tapped_labels) = reach.get("tapped_labels") {
+        let Some(tapped_labels) = tapped_labels.as_array() else {
+            return Err("reach.tapped_labels must be an array".to_string());
+        };
+        for label in tapped_labels {
+            let label = label
+                .as_str()
+                .ok_or("reach.tapped_labels must be strings")?;
+            let id = resolve_label(labels, label)?;
+            if !state.objects.get(&id).is_some_and(|object| object.tapped) {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -486,6 +795,95 @@ mod tests {
         let error = validate_setup(&scenario).unwrap_err();
 
         assert!(error.contains("setup.P0.exile is unsupported"));
+    }
+
+    #[test]
+    fn resolves_setup_labels_and_rejects_unknown_labels() {
+        let id = ObjectId(17);
+        let labels = HashMap::from([(id, "prairie".to_string())]);
+
+        assert_eq!(resolve_label(&labels, "prairie"), Ok(id));
+        assert!(resolve_label(&labels, "unknown")
+            .unwrap_err()
+            .contains("unknown battlefield label"));
+    }
+
+    #[test]
+    fn activation_selector_requires_one_described_prefix_match() {
+        let candidates = vec![
+            (0, AbilityKind::Activated, Some("{T}: Add {G}".to_string())),
+            (
+                1,
+                AbilityKind::Activated,
+                Some("{2}{G}{W}: {this} becomes a Llama".to_string()),
+            ),
+        ];
+        assert_eq!(
+            select_activation_ability(candidates.clone(), "{2}{G}{W}:"),
+            Ok(1)
+        );
+        assert!(select_activation_ability(candidates.clone(), "{3}:").is_err());
+
+        let multiple = vec![
+            (0, AbilityKind::Activated, Some("{T}: First".to_string())),
+            (1, AbilityKind::Activated, Some("{T}: Second".to_string())),
+        ];
+        assert!(select_activation_ability(multiple, "{T}:")
+            .unwrap_err()
+            .contains("multiple activated abilities"));
+
+        let missing = vec![(0, AbilityKind::Activated, None)];
+        assert!(select_activation_ability(missing, "{T}:")
+            .unwrap_err()
+            .contains("missing a description"));
+    }
+
+    #[test]
+    fn activation_waits_for_target_selection_before_stack_commit() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let source = scenario
+                    .add_creature_from_oracle(
+                        PlayerId(0),
+                        "Targeted activation fixture",
+                        1,
+                        1,
+                        "{T}: This creature deals 1 damage to target creature.",
+                    )
+                    .id();
+                let target = scenario
+                    .add_creature(PlayerId(1), "Target creature", 1, 1)
+                    .id();
+                let mut runner = scenario.build();
+                let labels = HashMap::from([
+                    (source, "source".to_string()),
+                    (target, "target".to_string()),
+                ]);
+                let stack_size = runner.state().stack.len();
+
+                activate(
+                    &mut runner,
+                    &labels,
+                    &json!({
+                        "source": "source",
+                        "ability": "{T}:",
+                        "targets": ["target"]
+                    }),
+                )
+                .unwrap();
+
+                assert_eq!(runner.state().stack.len(), stack_size + 1);
+                assert!(matches!(
+                    runner.state().waiting_for,
+                    WaitingFor::Priority { .. }
+                ));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
