@@ -629,9 +629,11 @@ fn check_reach(
     }
 
     for id in &state.battlefield {
-        let Some(object) = state.objects.get(id).filter(|object| {
-            object.controller.0 as usize == index && object.name == card
-        }) else {
+        let Some(object) = state
+            .objects
+            .get(id)
+            .filter(|object| object.controller.0 as usize == index && object.name == card)
+        else {
             continue;
         };
         if matches_reach_characteristics(object, reach)? {
@@ -692,7 +694,7 @@ fn matches_reach_characteristics(object: &GameObject, reach: &Value) -> Result<b
                         })
                         .ok_or_else(|| format!("reach.{key} values must be strings"))
                 })
-            .collect::<Result<Vec<_>, _>>()?;
+                .collect::<Result<Vec<_>, _>>()?;
             expected.sort();
             if expected != actual {
                 return Ok(false);
@@ -923,7 +925,10 @@ mod tests {
             "tapped_labels": ["forest"]
         });
 
-        assert_eq!(check_reach(runner.state(), &labels, Some(&reach)), Ok(false));
+        assert_eq!(
+            check_reach(runner.state(), &labels, Some(&reach)),
+            Ok(false)
+        );
         runner.state_mut().objects.get_mut(&forest).unwrap().tapped = true;
         assert_eq!(check_reach(runner.state(), &labels, Some(&reach)), Ok(true));
     }
