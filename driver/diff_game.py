@@ -1047,6 +1047,16 @@ def _phase_ability_key(action: dict, decision: dict) -> tuple:
     )
 
 
+def _normalize_xmage_ability_text(text: str, strip_reminder: bool = False) -> str:
+    if "<i>" in text:
+        text = text.split("<i>", 1)[0]
+    text = re.sub(r"<[^>]*>", "", text)
+    text = re.sub(r"\{this\}", "~", text, flags=re.IGNORECASE)
+    if strip_reminder:
+        text = re.sub(r"\s+\([^()]*\)\.?\s*$", "", text)
+    return normalize_name(text)
+
+
 def _xmage_ability_key(
     choice: dict,
     result: dict,
@@ -1054,8 +1064,20 @@ def _xmage_ability_key(
     xmage_state: dict | None = None,
 ) -> tuple:
     name = normalize_name(choice.get("name", ""))
-    sources = set()
-    for player in _xmage_players(xmage_state or result):
+    card_name = choice.get("name") or name
+    if ability_text is None:
+        abilities = choice.get("playable_abilities", [])
+        ability_text = abilities[0] if len(abilities) == 1 else ""
+    truncated = ability_text.endswith("...")
+    prefix = _normalize_xmage_ability_text(ability_text.removesuffix("..."))
+    if truncated and xmage_state is None:
+        raise UnmappedPromptError(
+            f"Truncated XMage ability has no xmage_state for {card_name} "
+            f"({choice.get('id')}): prefix={prefix!r}; rules=<unavailable>"
+        )
+    source_cards = {}
+    state = xmage_state if truncated else xmage_state or result
+    for player in _xmage_players(state):
         if player.get("name") not in PLAYER_NAMES:
             continue
         for zone, cards in player.items():
@@ -1063,23 +1085,49 @@ def _xmage_ability_key(
                 continue
             if zone not in {"battlefield", "hand", "graveyard", "exile", "command"}:
                 continue
-            if any(
-                card.get("id") == choice.get("id")
-                and normalize_name(card.get("name", "")) == name
-                for card in cards
-            ):
-                sources.add((PLAYER_NAMES.index(player["name"]), normalize_name(zone)))
-    if len(sources) != 1:
+            for card in cards:
+                if (
+                    card.get("id") == choice.get("id")
+                    and normalize_name(card.get("name", "")) == name
+                ):
+                    source_cards[
+                        (PLAYER_NAMES.index(player["name"]), normalize_name(zone))
+                    ] = card
+    if len(source_cards) != 1:
+        if truncated:
+            rules = [card.get("rules") for card in source_cards.values()]
+            raise UnmappedPromptError(
+                f"Could not resolve truncated XMage ability source for {card_name} "
+                f"({choice.get('id')}): prefix={prefix!r}; rules={rules}"
+            )
         return name, None, None, ""
-    controller, zone = sources.pop()
-    if ability_text is None:
-        abilities = choice.get("playable_abilities", [])
-        ability_text = abilities[0] if len(abilities) == 1 else ""
-    text = ability_text
-    if "<i>" in text:
-        text = text.split("<i>", 1)[0]
-    text = re.sub(r"<[^>]*>", "", text).removesuffix("...")
-    return name, controller, zone, normalize_name(text)
+    (controller, zone), source_card = next(iter(source_cards.items()))
+    if truncated:
+        rules = source_card.get("rules")
+        if not isinstance(rules, list) or not rules or any(
+            not isinstance(line, str) for line in rules
+        ):
+            raise UnmappedPromptError(
+                f"XMage source has no usable rules for truncated ability {card_name} "
+                f"({choice.get('id')}): prefix={prefix!r}; rules={rules}"
+            )
+        matches = [
+            line
+            for line in rules
+            if _normalize_xmage_ability_text(line, strip_reminder=True).startswith(
+                prefix
+            )
+        ]
+        if len(matches) != 1:
+            reason = "No" if not matches else "Ambiguous"
+            raise UnmappedPromptError(
+                f"{reason} full XMage rule for truncated ability {card_name} "
+                f"({choice.get('id')}): prefix={prefix!r}; rules={rules}"
+            )
+        text = _normalize_xmage_ability_text(matches[0], strip_reminder=True)
+    else:
+        text = _normalize_xmage_ability_text(ability_text)
+    return name, controller, zone, text
 
 
 def _unique_semantic_choice(
