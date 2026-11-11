@@ -1003,6 +1003,17 @@ def _mana_plan_from_events(
     return plan
 
 
+def _mana_plan_from_current_state(
+    mana_events: list[tuple[dict, dict, dict]],
+    actor: int,
+    bindings: ObjectBindings,
+    phase_state: dict,
+    xmage_state: dict,
+) -> list[str]:
+    bindings.prune(phase_state, xmage_state)
+    return _mana_plan_from_events(mana_events, actor, bindings, xmage_state)
+
+
 def _mana_plan_ack_error(result: dict, plan: list[str]) -> str | None:
     if not plan:
         return None
@@ -3311,10 +3322,11 @@ async def run_game(args: argparse.Namespace) -> dict:
                                 phase, decision, index, action, rng, args.v0
                             )
                         )
-                        mana_plan = _mana_plan_from_events(
+                        mana_plan = _mana_plan_from_current_state(
                             mana_events,
                             owner,
                             object_bindings,
+                            decision["state"],
                             xmage_states[owner],
                         )
                         last_xmage_pending, pending_mana_check = (

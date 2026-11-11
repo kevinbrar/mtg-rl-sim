@@ -1997,6 +1997,42 @@ def test_mana_added_from_applied_keeps_event_and_states() -> None:
     ) == [(event, decision, state)]
 
 
+def test_replaced_phase_incarnation_is_pruned_before_mana_plan() -> None:
+    source = _mana_permanent(71, "Forest", "G")
+    source["incarnation"] = 2
+    decision = _mana_source_decision([source])
+    bindings = ObjectBindings()
+    bindings.bind(71, 1, "p7")
+    xmage_state = {
+        "players": [
+            {
+                "name": "DiffA",
+                "battlefield": [
+                    {
+                        "id": "p7",
+                        "name": "Forest",
+                        "tapped": False,
+                        "damage": 0,
+                        "rules": ["{T}: Add {G}."],
+                    }
+                ],
+            }
+        ]
+    }
+
+    plan = diff_game._mana_plan_from_current_state(
+        [_mana_added(71, "Green", decision)],
+        0,
+        bindings,
+        decision["state"],
+        xmage_state,
+    )
+
+    assert plan == ["p7"]
+    assert bindings.phase_to_xmage == {(71, 2): "p7"}
+    assert bindings.xmage_to_phase == {"p7": (71, 2)}
+
+
 def test_single_ability_land_mana_plan_omits_ability_index() -> None:
     phase_source = _mana_permanent(7, "Mountain", "R")
     decision = _mana_source_decision([phase_source])
@@ -2568,6 +2604,11 @@ def test_pending_mana_plan_cancellation_precedes_sync_divergence(
     monkeypatch.setattr(diff_game, "read_printings", lambda: {})
     monkeypatch.setattr(diff_game, "write_xmage_deck", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(diff_game, "_mage_bench_external_players", lambda _decks: [])
+    monkeypatch.setattr(
+        diff_game,
+        "_suppress_broken_resource_after_terminal",
+        lambda stack, *_args: stack,
+    )
     monkeypatch.setattr(diff_game, "_start_mage_bench", start_mage_bench)
     monkeypatch.setattr(diff_game, "_connect_xmage", connect_xmage)
     monkeypatch.setattr(diff_game, "_keep_opening_hands", keep_opening_hands)
@@ -2585,7 +2626,9 @@ def test_pending_mana_plan_cancellation_precedes_sync_divergence(
         diff_game, "policy_candidate", lambda *_args, **_kwargs: (0, cast_action)
     )
     monkeypatch.setattr(diff_game, "_phase_cast_macro", cast_macro)
-    monkeypatch.setattr(diff_game, "_mana_plan_from_events", lambda *_args: ["p5"])
+    monkeypatch.setattr(
+        diff_game, "_mana_plan_from_current_state", lambda *_args: ["p5"]
+    )
     monkeypatch.setattr(diff_game, "_send_cast_macro_to_xmage", send_cast_macro)
     monkeypatch.setattr(diff_game, "_call", call)
 
