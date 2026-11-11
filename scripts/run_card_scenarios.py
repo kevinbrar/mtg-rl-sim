@@ -135,7 +135,16 @@ def load_specs(paths: list[Path]) -> dict:
     for path in paths:
         with path.open("rb") as source:
             data = tomllib.load(source)
-        for scenario in data.get("scenarios", []):
+        file_scenarios = data.get("scenarios", [])
+        if not isinstance(file_scenarios, list) or not file_scenarios:
+            raise ValueError(f"{path}: scenario file contains no scenarios")
+        for index, scenario in enumerate(file_scenarios, start=1):
+            if (
+                not isinstance(scenario, dict)
+                or not isinstance(scenario.get("name"), str)
+                or not scenario["name"].strip()
+            ):
+                raise ValueError(f"{path}: scenario {index} is missing a name")
             _validate_setup(scenario)
             scenarios.append(scenario)
     names = [scenario["name"] for scenario in scenarios]

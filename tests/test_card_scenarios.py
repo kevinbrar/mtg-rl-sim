@@ -45,6 +45,38 @@ def test_load_specs_rejects_duplicate_names(tmp_path: Path) -> None:
         load_specs([first, second])
 
 
+def test_runner_rejects_empty_second_suite_with_file_and_exit_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    first = tmp_path / "first.toml"
+    first.write_text(
+        '[[scenarios]]\nname = "first"\n[scenarios.setup.P0]\n',
+        encoding="utf-8",
+    )
+    second = tmp_path / "empty.toml"
+    second.write_text("", encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["run_card_scenarios.py", str(first), str(second)])
+    assert main() == 2
+    error = capsys.readouterr().err
+    assert str(second) in error
+    assert "contains no scenarios" in error
+
+
+def test_runner_rejects_scenario_without_name_with_file_and_exit_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    spec = tmp_path / "unnamed.toml"
+    spec.write_text(
+        "[[scenarios]]\n[scenarios.setup.P0]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("sys.argv", ["run_card_scenarios.py", str(spec)])
+    assert main() == 2
+    error = capsys.readouterr().err
+    assert str(spec) in error
+    assert "scenario 1 is missing a name" in error
+
+
 def test_load_specs_rejects_damage_setup(tmp_path: Path) -> None:
     spec = tmp_path / "damage.toml"
     spec.write_text(
