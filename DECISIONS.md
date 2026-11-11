@@ -2,6 +2,7 @@
 
 Dated decisions by Kevin (K) or Devin (D) that shape the project. Newest first.
 
+- 2026-11-11 (K): option B — validate patched cards with per-card differential scenarios in phase-rs and XMage (Forge where XMage lacks the card), instead of requiring seeded full-game runs. Full-game lockstep coverage is open-ended; per-card scenarios and later audits of agent games target the real risks.
 - 2026-11-11 (D): Handle affirmative mana-based `UnlessPayment` choices Phase-first and pass their generated mana plan to XMage `GAME_ASK`, using the same validation as `GAME_SELECT`. Require the normalized XMage ask to match Phase's rendered mana cost exactly; reject unknown shard symbols. Keep declines in lockstep, reject non-mana costs and payment continuations, and exclude ward-resolution mana from the pre-cast unplanned-mana guard.
 - 2026-11-11 (D): Map Phase `TriggerTargetSelection` through the same XMage `GAME_TARGET` and legal-target comparison as spell targeting when the trigger has one target slot. Preserve fail-closed behavior for `ChooseTarget {target: None}` and multi-slot trigger targeting; trigger targets are not cast continuations.
 - 2026-11-11 (D): Normalize XMage ability text by mapping `{this}` to Phase's `~`. When the bridge truncates playable text with `...`, recover it only from the source card's `rules` line with a unique normalized prefix match; omit display-only reminder text consistently, and fail closed on missing state/rules or zero/multiple matches.
