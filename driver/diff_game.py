@@ -1046,11 +1046,13 @@ def _phase_ability_key(action: dict, decision: dict) -> tuple:
     )
 
 
-def _normalize_xmage_ability_text(text: str) -> str:
+def _normalize_xmage_ability_text(text: str, strip_reminder: bool = False) -> str:
     if "<i>" in text:
         text = text.split("<i>", 1)[0]
     text = re.sub(r"<[^>]*>", "", text)
     text = re.sub(r"\{this\}", "~", text, flags=re.IGNORECASE)
+    if strip_reminder:
+        text = re.sub(r"\s+\([^()]*\)\.?\s*$", "", text)
     return normalize_name(text)
 
 
@@ -1111,7 +1113,9 @@ def _xmage_ability_key(
         matches = [
             line
             for line in rules
-            if _normalize_xmage_ability_text(line).startswith(prefix)
+            if _normalize_xmage_ability_text(line, strip_reminder=True).startswith(
+                prefix
+            )
         ]
         if len(matches) != 1:
             reason = "No" if not matches else "Ambiguous"
@@ -1119,7 +1123,7 @@ def _xmage_ability_key(
                 f"{reason} full XMage rule for truncated ability {card_name} "
                 f"({choice.get('id')}): prefix={prefix!r}; rules={rules}"
             )
-        text = _normalize_xmage_ability_text(matches[0])
+        text = _normalize_xmage_ability_text(matches[0], strip_reminder=True)
     else:
         text = _normalize_xmage_ability_text(ability_text)
     return name, controller, zone, text

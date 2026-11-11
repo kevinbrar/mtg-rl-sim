@@ -87,6 +87,9 @@ COMBAT_BLOCKER_FIXTURE = (
     / "fixtures"
     / "boros-dimir-seed-101-blockers.json"
 )
+BASILISK_COLLAR_RULES = [
+    "Equip {2} ({2}: Attach to target creature you control. Equip only as a sorcery.)"
+]
 AUTO_EMPTY_BLOCKER_FIXTURE = (
     Path(__file__).resolve().parents[1]
     / "tests"
@@ -1045,7 +1048,7 @@ def test_duplicate_activation_matches_are_unmapped_with_both_choice_lists() -> N
             "DiffB": [],
         }
     )
-    _add_xmage_rules(xmage_state, "Basilisk Collar", ["Equip {2}"])
+    _add_xmage_rules(xmage_state, "Basilisk Collar", BASILISK_COLLAR_RULES)
 
     assert _phase_activation_set(decision) == _xmage_activation_set(xmage, xmage_state)
     assert _legal_action_diff(decision, xmage, xmage_state) == {}
@@ -1093,7 +1096,7 @@ def test_duplicate_battlefield_collars_bind_and_reuse_ids() -> None:
             "DiffB": [],
         }
     )
-    _add_xmage_rules(xmage_state, "Basilisk Collar", ["Equip {2}"])
+    _add_xmage_rules(xmage_state, "Basilisk Collar", BASILISK_COLLAR_RULES)
     bindings = ObjectBindings()
 
     def activation(phase_id: int) -> dict:
@@ -1184,7 +1187,7 @@ def test_unbound_attachment_hosts_use_full_signature() -> None:
             "DiffB": [],
         }
     )
-    _add_xmage_rules(xmage_state, "Basilisk Collar", ["Equip {2}"])
+    _add_xmage_rules(xmage_state, "Basilisk Collar", BASILISK_COLLAR_RULES)
     bindings = ObjectBindings()
     action = next(
         item
@@ -1257,7 +1260,7 @@ def test_bound_collar_attached_to_different_host_fails_signature_reuse() -> None
             "DiffB": [],
         }
     )
-    _add_xmage_rules(xmage_state, "Basilisk Collar", ["Equip {2}"])
+    _add_xmage_rules(xmage_state, "Basilisk Collar", BASILISK_COLLAR_RULES)
     bindings = ObjectBindings()
     bindings.bind(2, 0, "p5")
     bindings.bind(23, 0, "p28")
@@ -1891,7 +1894,9 @@ def test_activation_key_uses_the_choice_source_zone() -> None:
     xmage = fixture["prompts"]["xmage"]
 
     assert fixture["source_artifact"] == "runs/20261110T044740750318Z/divergence.json"
-    xmage_state = _xmage_state_with_rules(xmage, {"Basilisk Collar": ["Equip {2}"]})
+    xmage_state = _xmage_state_with_rules(
+        xmage, {"Basilisk Collar": BASILISK_COLLAR_RULES}
+    )
     assert _legal_action_diff(decision, xmage, xmage_state) == {}
 
 
