@@ -1,0 +1,314 @@
+diff --git a/Mage.Client.Bridge/src/main/java/mage/client/bridge/BridgeClient.java b/Mage.Client.Bridge/src/main/java/mage/client/bridge/BridgeClient.java
+index 053b121e..42ea31e9 100644
+--- a/Mage.Client.Bridge/src/main/java/mage/client/bridge/BridgeClient.java
++++ b/Mage.Client.Bridge/src/main/java/mage/client/bridge/BridgeClient.java
+@@ -5,6 +5,7 @@ import mage.cards.decks.DeckCardLists;
+ import mage.cards.repository.CardScanner;
+ import mage.constants.TableState;
+ import mage.players.PlayerType;
++import mage.players.net.SkipPrioritySteps;
+ import mage.players.net.UserData;
+ import mage.players.net.UserGroup;
+ import mage.players.net.UserSkipPrioritySteps;
+@@ -102,6 +103,12 @@ public class BridgeClient {
+         if (maxInteractions != null) {
+             callbackHandler.setMaxInteractionsPerTurn(maxInteractions);
+         }
++        boolean stopAtAllPrioritySteps = Boolean.TRUE.equals(
++            getOptionalBooleanProperty("xmage.bridge.stopAtAllPrioritySteps")
++        );
++        if (stopAtAllPrioritySteps) {
++            logger.info("[" + username + "] stopAtAllPrioritySteps enabled");
++        }
+ 
+         Connection connection = new Connection();
+         connection.setHost(server);
+@@ -113,12 +120,13 @@ public class BridgeClient {
+         connection.setNumberOfCallRetries(3);      // JBoss default (default 1 fails on transient errors)
+ 
+         // Set user data with allowRequestShowHandCards=true so spectators can see hands
++        UserSkipPrioritySteps skipPrioritySteps = createUserSkipPrioritySteps(stopAtAllPrioritySteps);
+         UserData userData = new UserData(
+                 UserGroup.PLAYER,
+                 0, // avatarId
+                 true, // allowRequestShowHandCards - important for streaming spectators
+                 false, // confirmEmptyManaPool — suppress "mana left in pool" GAME_ASK prompts
+-                new UserSkipPrioritySteps(),
++                skipPrioritySteps,
+                 "world", // flagName
+                 false, // askMoveToGraveOrder
+                 true, // manaPoolAutomatic
+@@ -434,6 +442,39 @@ public class BridgeClient {
+         return value != null ? parseIntSetting(value, "-D" + propertyName) : null;
+     }
+ 
++    static Boolean getOptionalBooleanProperty(String propertyName) {
++        String value = System.getProperty(propertyName);
++        if (value == null) {
++            return null;
++        }
++        if ("true".equalsIgnoreCase(value)) {
++            return true;
++        }
++        if ("false".equalsIgnoreCase(value)) {
++            return false;
++        }
++        throw new IllegalArgumentException("Invalid boolean for -D" + propertyName + ": " + value);
++    }
++
++    static UserSkipPrioritySteps createUserSkipPrioritySteps(boolean stopAtAllPrioritySteps) {
++        UserSkipPrioritySteps steps = new UserSkipPrioritySteps();
++        if (stopAtAllPrioritySteps) {
++            setAllPrioritySteps(steps.getYourTurn());
++            setAllPrioritySteps(steps.getOpponentTurn());
++        }
++        return steps;
++    }
++
++    private static void setAllPrioritySteps(SkipPrioritySteps steps) {
++        steps.setUpkeep(true);
++        steps.setDraw(true);
++        steps.setMain1(true);
++        steps.setBeforeCombat(true);
++        steps.setEndOfCombat(true);
++        steps.setMain2(true);
++        steps.setEndOfTurn(true);
++    }
++
+     private static String getOptionalArg(String[] args, String name) {
+         for (int i = 0; i < args.length; i++) {
+             if (args[i].equals(name)) {
+diff --git a/Mage.Client.Bridge/src/test/java/mage/client/bridge/BridgeClientTest.java b/Mage.Client.Bridge/src/test/java/mage/client/bridge/BridgeClientTest.java
+index 096cb572..1b6169c9 100644
+--- a/Mage.Client.Bridge/src/test/java/mage/client/bridge/BridgeClientTest.java
++++ b/Mage.Client.Bridge/src/test/java/mage/client/bridge/BridgeClientTest.java
+@@ -2,6 +2,7 @@ package mage.client.bridge;
+ 
+ import mage.cards.decks.DeckCardInfo;
+ import mage.cards.decks.DeckCardLists;
++import mage.players.net.UserSkipPrioritySteps;
+ import org.junit.jupiter.api.Test;
+ 
+ import java.io.IOException;
+@@ -75,6 +76,67 @@ class BridgeClientTest {
+         );
+     }
+ 
++    @Test
++    void optionalBooleanPropertyIsAbsentByDefault() {
++        withSystemProperty("xmage.bridge.stopAtAllPrioritySteps", null, () ->
++            assertThat(BridgeClient.getOptionalBooleanProperty("xmage.bridge.stopAtAllPrioritySteps"))
++                .isNull()
++        );
++    }
++
++    @Test
++    void parsesOptionalBooleanProperty() {
++        withSystemProperty("xmage.bridge.stopAtAllPrioritySteps", "true", () ->
++            assertThat(BridgeClient.getOptionalBooleanProperty("xmage.bridge.stopAtAllPrioritySteps"))
++                .isTrue()
++        );
++        withSystemProperty("xmage.bridge.stopAtAllPrioritySteps", "false", () ->
++            assertThat(BridgeClient.getOptionalBooleanProperty("xmage.bridge.stopAtAllPrioritySteps"))
++                .isFalse()
++        );
++    }
++
++    @Test
++    void rejectsInvalidBooleanProperty() {
++        withSystemProperty("xmage.bridge.stopAtAllPrioritySteps", "yes", () ->
++            assertThatThrownBy(() ->
++                BridgeClient.getOptionalBooleanProperty("xmage.bridge.stopAtAllPrioritySteps")
++            )
++                .isInstanceOf(IllegalArgumentException.class)
++                .hasMessage("Invalid boolean for -Dxmage.bridge.stopAtAllPrioritySteps: yes")
++        );
++    }
++
++    @Test
++    void enablesEveryPriorityStepForBothTurns() {
++        UserSkipPrioritySteps steps = BridgeClient.createUserSkipPrioritySteps(true);
++
++        for (var turn : List.of(steps.getYourTurn(), steps.getOpponentTurn())) {
++            assertThat(turn.isUpkeep()).isTrue();
++            assertThat(turn.isDraw()).isTrue();
++            assertThat(turn.isMain1()).isTrue();
++            assertThat(turn.isBeforeCombat()).isTrue();
++            assertThat(turn.isEndOfCombat()).isTrue();
++            assertThat(turn.isMain2()).isTrue();
++            assertThat(turn.isEndOfTurn()).isTrue();
++        }
++    }
++
++    @Test
++    void leavesDefaultPriorityStepsWhenDisabled() {
++        UserSkipPrioritySteps steps = BridgeClient.createUserSkipPrioritySteps(false);
++
++        for (var turn : List.of(steps.getYourTurn(), steps.getOpponentTurn())) {
++            assertThat(turn.isUpkeep()).isFalse();
++            assertThat(turn.isDraw()).isFalse();
++            assertThat(turn.isMain1()).isTrue();
++            assertThat(turn.isBeforeCombat()).isFalse();
++            assertThat(turn.isEndOfCombat()).isFalse();
++            assertThat(turn.isMain2()).isTrue();
++            assertThat(turn.isEndOfTurn()).isFalse();
++        }
++    }
++
+     @Test
+     void loadsValidDeckFile() throws IOException {
+         Path deckFile = writeDeck(
+diff --git a/src/magebench/orchestration/batch_coordination.py b/src/magebench/orchestration/batch_coordination.py
+index 19313afc..9a7bbe9a 100644
+--- a/src/magebench/orchestration/batch_coordination.py
++++ b/src/magebench/orchestration/batch_coordination.py
+@@ -214,6 +214,7 @@ def setup_game(
+                     log_path,
+                     game_dir,
+                     max_interactions_per_turn=external_player.max_interactions_per_turn,
++                    stop_at_all_priority_steps=external_player.stop_at_all_priority_steps,
+                 )
+                 session.pilot_procs.append((external_player.name, proc))
+ 
+diff --git a/src/magebench/orchestration/config.py b/src/magebench/orchestration/config.py
+index b30b81b8..32cc363e 100644
+--- a/src/magebench/orchestration/config.py
++++ b/src/magebench/orchestration/config.py
+@@ -75,6 +75,7 @@ class ExternalPlayer:
+     deck_name: str | None = None
+     deck_strategy: str | None = None
+     max_interactions_per_turn: int | None = None
++    stop_at_all_priority_steps: bool = False
+ 
+ 
+ @dataclass
+@@ -700,6 +701,9 @@ class Config:
+                             max_interactions_per_turn=player.get(
+                                 "max_interactions_per_turn"
+                             ),
++                            stop_at_all_priority_steps=player.get(
++                                "stop_at_all_priority_steps", False
++                            ),
+                         )
+                     )
+                 elif player_type == "cpu":
+diff --git a/src/magebench/orchestration/game_processes.py b/src/magebench/orchestration/game_processes.py
+index 4ba1f09f..4681b5b0 100644
+--- a/src/magebench/orchestration/game_processes.py
++++ b/src/magebench/orchestration/game_processes.py
+@@ -260,6 +260,7 @@ def start_external_client(
+     log_path: Path,
+     game_dir: Path,
+     max_interactions_per_turn: int | None = None,
++    stop_at_all_priority_steps: bool = False,
+ ) -> subprocess.Popen:
+     """Start a bridge-only client for an external MCP controller."""
+     args = [
+@@ -281,6 +282,8 @@ def start_external_client(
+         args.extend(["--deck", str(project_root / deck_path)])
+     if max_interactions_per_turn is not None:
+         args.extend(["--max-interactions-per-turn", str(max_interactions_per_turn)])
++    if stop_at_all_priority_steps:
++        args.append("--stop-at-all-priority-steps")
+ 
+     return pm.start_process(
+         args=args,
+diff --git a/src/magebench/pilot/bridge_transport.py b/src/magebench/pilot/bridge_transport.py
+index cbf5f6ba..5931000d 100644
+--- a/src/magebench/pilot/bridge_transport.py
++++ b/src/magebench/pilot/bridge_transport.py
+@@ -48,6 +48,7 @@ def build_bridge_launch_args(
+     error_log_path: Path | None = None,
+     bridge_log_path: Path | None = None,
+     max_interactions_per_turn: int | None = None,
++    stop_at_all_priority_steps: bool = False,
+ ) -> BridgeLaunchArgs:
+     """Build the bridge JVM and Maven arguments for Python bridge clients."""
+     jvm_args_list = [
+@@ -75,6 +76,8 @@ def build_bridge_launch_args(
+         mvn_args.append(f"-Dxmage.bridge.bridgelog={bridge_log_path}")
+     if max_interactions_per_turn is not None:
+         mvn_args.append(f"-Dxmage.bridge.maxInteractionsPerTurn={max_interactions_per_turn}")
++    if stop_at_all_priority_steps:
++        mvn_args.append("-Dxmage.bridge.stopAtAllPrioritySteps=true")
+     mvn_args.append("exec:java")
+ 
+     return BridgeLaunchArgs(jvm_args=" ".join(jvm_args_list), mvn_args=mvn_args)
+diff --git a/src/magebench/pilot/external.py b/src/magebench/pilot/external.py
+index 1f215ab2..718da441 100644
+--- a/src/magebench/pilot/external.py
++++ b/src/magebench/pilot/external.py
+@@ -19,6 +19,7 @@ async def run_external(
+     game_dir: Path,
+     deck_path: Path | None,
+     max_interactions_per_turn: int | None = None,
++    stop_at_all_priority_steps: bool = False,
+ ) -> None:
+     launch_args = build_bridge_launch_args(
+         server=server,
+@@ -27,6 +28,7 @@ async def run_external(
+         deck_path=deck_path,
+         error_log_path=game_dir / f"{username}_errors.log",
+         max_interactions_per_turn=max_interactions_per_turn,
++        stop_at_all_priority_steps=stop_at_all_priority_steps,
+     )
+     async with spawn_bridge_http(
+         mvn_args=launch_args.mvn_args,
+@@ -51,6 +53,7 @@ def main() -> int:
+     parser.add_argument("--game-dir", type=Path, required=True)
+     parser.add_argument("--deck", type=Path)
+     parser.add_argument("--max-interactions-per-turn", type=int)
++    parser.add_argument("--stop-at-all-priority-steps", action="store_true")
+     args = parser.parse_args()
+     asyncio.run(
+         run_external(
+@@ -61,6 +64,7 @@ def main() -> int:
+             game_dir=args.game_dir.resolve(),
+             deck_path=args.deck.resolve() if args.deck else None,
+             max_interactions_per_turn=args.max_interactions_per_turn,
++            stop_at_all_priority_steps=args.stop_at_all_priority_steps,
+         )
+     )
+     return 0
+diff --git a/tests/test_bridge_transport.py b/tests/test_bridge_transport.py
+index d0a1a312..5582ab16 100644
+--- a/tests/test_bridge_transport.py
++++ b/tests/test_bridge_transport.py
+@@ -68,6 +68,17 @@ def test_build_bridge_launch_args_for_external_max_interactions() -> None:
+     assert "-Dxmage.bridge.maxInteractionsPerTurn=100000" in launch_args.mvn_args
+ 
+ 
++def test_build_bridge_launch_args_for_external_stop_at_all_priority_steps() -> None:
++    launch_args = bridge_transport.build_bridge_launch_args(
++        server="localhost",
++        port=17171,
++        username="DiffA",
++        stop_at_all_priority_steps=True,
++    )
++
++    assert "-Dxmage.bridge.stopAtAllPrioritySteps=true" in launch_args.mvn_args
++
++
+ def test_build_bridge_launch_args_for_replay_with_table_id() -> None:
+     launch_args = bridge_transport.build_bridge_launch_args(
+         server="localhost",
+diff --git a/tests/test_external_pilot.py b/tests/test_external_pilot.py
+index 01db4a59..8dbe1443 100644
+--- a/tests/test_external_pilot.py
++++ b/tests/test_external_pilot.py
+@@ -20,6 +20,7 @@ def test_external_player_reserves_bridge_seat(tmp_path: Path) -> None:
+                         "name": "DiffA",
+                         "deck": "decks/green.dck",
+                         "max_interactions_per_turn": 100000,
++                        "stop_at_all_priority_steps": True,
+                     }
+                 ],
+             }
+@@ -36,6 +37,7 @@ def test_external_player_reserves_bridge_seat(tmp_path: Path) -> None:
+             name="DiffA",
+             deck="decks/green.dck",
+             max_interactions_per_turn=100000,
++            stop_at_all_priority_steps=True,
+         )
+     ]
+     assert config.log_dir == log_dir

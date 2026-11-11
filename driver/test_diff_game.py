@@ -972,6 +972,51 @@ def test_mage_bench_config_sets_loop_guard_limit_for_both_external_players() -> 
         player["max_interactions_per_turn"] == DIFF_MAX_INTERACTIONS_PER_TURN
         for player in players
     )
+    assert all(player["stop_at_all_priority_steps"] is True for player in players)
+
+
+def test_mcp_logs_require_stop_at_all_priority_steps_for_both_players(
+    tmp_path: Path,
+) -> None:
+    game_dir = tmp_path / "game_stub"
+    game_dir.mkdir()
+    for name in ("DiffA", "DiffB"):
+        (game_dir / f"{name}_mcp.log").write_text(
+            f"[{name}] stopAtAllPrioritySteps enabled\n"
+        )
+
+    diff_game._assert_stop_at_all_priority_steps_enabled(tmp_path)
+
+    (game_dir / "DiffB_mcp.log").write_text("[DiffB] bridge started\n")
+    with pytest.raises(RuntimeError, match="DiffB MCP log did not enable"):
+        diff_game._assert_stop_at_all_priority_steps_enabled(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "context",
+    ["T1 Beginning/Upkeep (DiffA)", "T1 Precombat Main (DiffA)"],
+)
+def test_keep_opening_hands_returns_at_first_turn_priority_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+    context: str,
+) -> None:
+    prompt = {
+        "action_pending": True,
+        "action_type": "GAME_SELECT",
+        "context": context,
+        "board": [
+            {"name": "DiffA", "hand_size": 7},
+            {"name": "DiffB", "hand_size": 7},
+        ],
+    }
+
+    async def call(_session, name, _arguments=None):
+        assert name == "get_action_choices"
+        return prompt
+
+    monkeypatch.setattr(diff_game, "_call", call)
+
+    assert asyncio.run(diff_game._keep_opening_hands([object(), object()])) == {}
 
 
 @pytest.mark.parametrize(
@@ -2743,6 +2788,9 @@ def test_pending_mana_plan_cancellation_precedes_sync_divergence(
         game_dir.mkdir()
         for name in ("DiffA", "DiffB"):
             (game_dir / f"{name}_mcp_url.txt").write_text(f"http://{name}")
+            (game_dir / f"{name}_mcp.log").write_text(
+                f"[{name}] stopAtAllPrioritySteps enabled\n"
+            )
         return None, None
 
     async def connect_xmage(_urls):
