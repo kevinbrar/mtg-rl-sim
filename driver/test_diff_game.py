@@ -1381,6 +1381,63 @@ def test_tapped_mauler_target_matches_by_signature() -> None:
     )
 
 
+def test_trigger_target_selection_maps_duplicate_opponent_targets_by_signature() -> (
+    None
+):
+    fixture = json.loads(DUPLICATE_FIXTURE.read_text())
+    decision = fixture["prompts"]["target"]["phase"]
+    xmage = fixture["prompts"]["target"]["xmage"]
+    _signature_fields(decision)
+    decision["waiting_for"] = {
+        "type": "TriggerTargetSelection",
+        "data": {"player": 1, "target_slots": [{"optional": False}]},
+    }
+    decision["objects"]["2"]["tapped"] = True
+    decision["objects"]["23"]["tapped"] = False
+    xmage["choices"] = [
+        choice for choice in xmage["choices"] if choice["id"] in {"p5", "p28"}
+    ]
+    xmage_state = _xmage_signature_state(
+        {
+            "DiffA": [
+                {
+                    "id": "p5",
+                    "name": "Dwarven Mauler",
+                    "tapped": False,
+                    "power": 3,
+                    "toughness": 2,
+                    "damage": 0,
+                    "summoning_sick": False,
+                    "attached_to": None,
+                },
+                {
+                    "id": "p28",
+                    "name": "Dwarven Mauler",
+                    "tapped": True,
+                    "power": 3,
+                    "toughness": 2,
+                    "damage": 0,
+                    "summoning_sick": False,
+                    "attached_to": None,
+                },
+            ],
+            "DiffB": [],
+        }
+    )
+    action = next(
+        item
+        for item in decision["candidates"]
+        if item.get("data", {}).get("target", {}).get("Object") == 2
+    )
+
+    assert (
+        _xmage_target_choice(action, decision, xmage, ObjectBindings(), xmage_state)[
+            "id"
+        ]
+        == "p28"
+    )
+
+
 def test_no_matching_battlefield_signature_reports_both_sides() -> None:
     fixture = json.loads(DUPLICATE_FIXTURE.read_text())
     decision = fixture["prompts"]["target"]["phase"]
@@ -1958,6 +2015,67 @@ def test_duplicate_target_without_board_ids_fails_closed() -> None:
         for permanent in fixture["source_run"]["xmage_permanents"]
         if permanent["name"] == "Dwarven Mauler"
     ]
+
+
+def test_legal_action_diff_matches_trigger_target_selection() -> None:
+    fixture = json.loads(DUPLICATE_FIXTURE.read_text())
+    decision = fixture["prompts"]["target"]["phase"]
+    xmage = fixture["prompts"]["target"]["xmage"]
+    decision["waiting_for"] = {
+        "type": "TriggerTargetSelection",
+        "data": {"player": 1, "target_slots": [{"optional": False}]},
+    }
+    xmage_state = _xmage_signature_state(
+        {
+            "DiffA": [
+                {"id": choice["id"], "name": choice["name"]}
+                for choice in xmage["choices"]
+            ],
+            "DiffB": [],
+        }
+    )
+
+    assert _legal_action_diff(decision, xmage, xmage_state) == {}
+
+
+def test_multi_slot_trigger_targeting_is_unmapped() -> None:
+    action = {"type": "ChooseTarget", "data": {"target": {"Player": 0}}}
+    decision = {
+        "waiting_for": {
+            "type": "TriggerTargetSelection",
+            "data": {"target_slots": [{}, {}]},
+        },
+        "state": {"players": []},
+        "candidates": [action],
+    }
+    xmage = {
+        "action_type": "GAME_TARGET",
+        "choices": [{"target_type": "player", "name": "DiffA"}],
+    }
+
+    with pytest.raises(
+        UnmappedPromptError, match="Multi-slot trigger targeting is unsupported"
+    ):
+        _xmage_target_choice(action, decision, xmage)
+    with pytest.raises(
+        UnmappedPromptError, match="Multi-slot trigger targeting is unsupported"
+    ):
+        _legal_action_diff(decision, xmage)
+
+
+def test_trigger_optional_target_skip_is_unmapped() -> None:
+    action = {"type": "ChooseTarget", "data": {"target": None}}
+    decision = {
+        "waiting_for": {
+            "type": "TriggerTargetSelection",
+            "data": {"target_slots": [{"optional": True}]},
+        },
+        "candidates": [action],
+    }
+    xmage = {"action_type": "GAME_TARGET", "choices": []}
+
+    with pytest.raises(UnmappedPromptError, match="Unsupported Phase target reference"):
+        _xmage_target_choice(action, decision, xmage)
 
 
 def test_xmage_target_controller_comes_from_choice_source_id() -> None:

@@ -1228,6 +1228,17 @@ def _phase_activation_set(decision: dict) -> Counter:
     )
 
 
+def _validate_trigger_target_slots(decision: dict) -> None:
+    waiting_for = decision.get("waiting_for", {})
+    if waiting_for.get("type") != "TriggerTargetSelection":
+        return
+    target_slots = waiting_for.get("data", {}).get("target_slots")
+    if isinstance(target_slots, list) and len(target_slots) > 1:
+        raise UnmappedPromptError(
+            f"Multi-slot trigger targeting is unsupported: {decision}"
+        )
+
+
 def _phase_target_key(action: dict, decision: dict) -> tuple:
     if action.get("type") == "SelectCards":
         cards = action.get("data", {}).get("cards", [])
@@ -1327,6 +1338,7 @@ def _xmage_target_key(
 
 
 def _phase_target_set(decision: dict) -> Counter:
+    _validate_trigger_target_slots(decision)
     return Counter(
         _phase_target_key(action, decision)
         for action in decision["candidates"]
@@ -1411,14 +1423,16 @@ def _xmage_target_choice(
     bindings: ObjectBindings | None = None,
     xmage_state: dict | None = None,
 ) -> dict:
+    waiting_type = decision.get("waiting_for", {}).get("type")
     if (
-        decision.get("waiting_for", {}).get("type") != "TargetSelection"
+        waiting_type not in {"TargetSelection", "TriggerTargetSelection"}
         or result.get("action_type") != "GAME_TARGET"
     ):
         raise UnmappedPromptError(
             f"Target prompt kinds do not match: "
             f"{decision.get('waiting_for')}, {result.get('action_type')}"
         )
+    _validate_trigger_target_slots(decision)
     key = _phase_target_key(action, decision)
     matching = [
         choice
