@@ -67,6 +67,8 @@ _Updated 2026-11-11._
 - Representative mutants measurement: 16 candidates; 4 missed, 1 timeout, 11 unknown after about 33 minutes. Log: `/home/ubuntu/ci-governance-worktrees/mutants-0017-tmpfs.log`.
 - Branch protection is enabled on the public repository: all six required checks, `enforce_admins` on, no approvals required.
 
+- 2026-11-11 (D): Bringer of the Last Gift B1–B3 scenario suite locally matched Phase and XMage with reach in all three; scratch-reverting patch 0023 diverged in B1 and B3 (B2 matched). CI `xmage-diff` remains pending. Evidence: `runs/card-scenarios/bringer-canonical-20261111/` and `runs/card-scenarios/bringer-scratch-revert-20261111/`.
+
 ## Next
 - Backburner: full-game lockstep coverage (plan A). Per-card differential scenarios are the card-correctness gate; retain full-game lockstep as CI smoke coverage and later agent-game audit tooling.
 - Batched Python training environment over phase-env; then agent/training research.
