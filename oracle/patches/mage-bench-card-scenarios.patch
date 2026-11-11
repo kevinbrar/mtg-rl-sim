@@ -3,7 +3,7 @@ new file mode 100644
 index 00000000000..91bff5c8b87
 --- /dev/null
 +++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-@@ -0,0 +1,491 @@
+@@ -0,0 +1,506 @@
 +package org.mage.test.testapi;
 +
 +import com.google.gson.Gson;
@@ -23,6 +23,7 @@ index 00000000000..91bff5c8b87
 +import mage.game.Game;
 +import mage.game.GameImpl;
 +import mage.game.permanent.Permanent;
++import mage.game.permanent.PermanentToken;
 +import mage.target.Target;
 +import org.junit.Test;
 +import org.junit.runner.RunWith;
@@ -93,6 +94,7 @@ index 00000000000..91bff5c8b87
 +        PhaseStep step = PhaseStep.PRECOMBAT_MAIN;
 +        TestPlayer active = player(initialActive);
 +        activePlayer = active;
++        skipInitShuffling();
 +        addScenarioSetup();
 +        scheduleCounterSetup(active);
 +        if (scenario.has("legal_targets_of")) {
@@ -261,7 +263,9 @@ index 00000000000..91bff5c8b87
 +            } else {
 +                item.addProperty("label", label);
 +            }
-+            item.addProperty("name", permanent.getName());
++            boolean token = permanent instanceof PermanentToken;
++            item.addProperty("name", projectedName(permanent.getName(), token));
++            item.addProperty("token", token);
 +            item.addProperty("controller", playerName(permanent.getControllerId()));
 +            item.addProperty("tapped", permanent.isTapped());
 +            item.addProperty("damage", permanent.getDamage());
@@ -310,7 +314,7 @@ index 00000000000..91bff5c8b87
 +        List<String> battlefield = new ArrayList<>();
 +        for (Permanent permanent : currentGame.getBattlefield().getAllActivePermanents()) {
 +            if (permanent.getControllerId().equals(player.getId())) {
-+                battlefield.add(permanent.getName());
++                battlefield.add(projectedName(permanent));
 +            }
 +        }
 +        battlefield.sort(String::compareTo);
@@ -369,7 +373,7 @@ index 00000000000..91bff5c8b87
 +                List<String> values = new ArrayList<>();
 +                for (Permanent permanent : currentGame.getBattlefield().getAllActivePermanents()) {
 +                    if (permanent.getControllerId().equals(player.getId())) {
-+                        values.add(permanent.getName());
++                        values.add(projectedName(permanent));
 +                    }
 +                }
 +                yield values;
@@ -403,6 +407,17 @@ index 00000000000..91bff5c8b87
 +
 +    private TestPlayer player(int index) {
 +        return index == 0 ? playerA : playerB;
++    }
++
++    private String projectedName(Permanent permanent) {
++        return projectedName(permanent.getName(), permanent instanceof PermanentToken);
++    }
++
++    static String projectedName(String name, boolean token) {
++        if (token && name.endsWith(" Token")) {
++            return name.substring(0, name.length() - " Token".length());
++        }
++        return name;
 +    }
 +
 +    private static void addCharacteristic(JsonObject item, String key, MageInt characteristic) {
@@ -493,5 +508,60 @@ index 00000000000..91bff5c8b87
 +    private static boolean bool(JsonObject object, String key, boolean fallback) {
 +        JsonElement value = object.get(key);
 +        return value == null || value.isJsonNull() ? fallback : value.getAsBoolean();
++    }
++}
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioLibraryOrderTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioLibraryOrderTest.java
+new file mode 100644
+index 00000000000..00000000000
+--- /dev/null
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioLibraryOrderTest.java
+@@ -0,0 +1,49 @@
++package org.mage.test.testapi;
++
++import mage.constants.PhaseStep;
++import mage.constants.Zone;
++import org.junit.Test;
++import org.mage.test.serverside.base.CardTestPlayerBase;
++
++import static org.junit.Assert.assertEquals;
++import static org.junit.Assert.assertTrue;
++
++public final class CardScenarioLibraryOrderTest extends CardTestPlayerBase {
++
++    @Test
++    public void fixtureLibraryTopIsFirstDrawn() {
++        removeAllCardsFromLibrary(playerA);
++        removeAllCardsFromLibrary(playerB);
++        skipInitShuffling();
++        addCard(Zone.LIBRARY, playerA, "Swamp");
++        addCard(Zone.LIBRARY, playerA, "Mountain");
++        addCard(Zone.LIBRARY, playerA, "Forest");
++        addCard(Zone.LIBRARY, playerB, "Swamp");
++        addCard(Zone.LIBRARY, playerB, "Mountain");
++        addCard(Zone.LIBRARY, playerB, "Forest");
++
++        runCode("check ordered library then draw once", 1, PhaseStep.PRECOMBAT_MAIN, playerA,
++                (info, player, game) -> {
++                    assertTrue(player.getHand().getCards(game).isEmpty());
++                    assertEquals("Forest", player.getLibrary().getCards(game).get(0).getName());
++                    assertEquals("Mountain", player.getLibrary().getCards(game).get(1).getName());
++                    assertEquals("Swamp", player.getLibrary().getCards(game).get(2).getName());
++                    player.drawCards(1, null, game);
++                    assertEquals(1, player.getHand().getCards(game).size());
++                    assertEquals("Forest", player.getHand().getCards(game).iterator().next().getName());
++                    assertEquals("Mountain", player.getLibrary().getCards(game).get(0).getName());
++                    assertEquals("Swamp", player.getLibrary().getCards(game).get(1).getName());
++                });
++
++        setStrictChooseMode(true);
++        setStopAt(1, PhaseStep.PRECOMBAT_MAIN);
++        execute();
++    }
++
++    @Test
++    public void tokenNameSuffixIsRemovedOnlyForTokenPermanents() {
++        assertEquals("Rat", CardScenarioProjectionTest.projectedName("Rat Token", true));
++        assertEquals("Rat Token", CardScenarioProjectionTest.projectedName("Rat Token", false));
++        assertEquals("Rat", CardScenarioProjectionTest.projectedName("Rat", true));
 +    }
 +}

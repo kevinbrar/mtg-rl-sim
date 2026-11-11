@@ -1,1 +1,15 @@
 # Add one [[diff]] entry per card with fields: card, category (engine-bug | xmage-bug | unsupported), rationale, link, regression_test.
+
+[[diff]]
+card = "Essence Burn"
+category = "unsupported"
+rationale = "In S4, both engines reach the legal-target check and report the same target set after casting Shock. With two identical untapped Mountains and no mana-source selection in the script, Phase taps label p0.bf.0 while XMage taps p0.bf.1; the battlefield multiset has one tapped and one untapped Mountain on both sides. Fixture labels make this equivalent auto-payment choice appear as a permanent mismatch."
+link = "https://magic.wizards.com/en/rules"
+regression_test = "runs/card-scenarios/essence-burn-shuffle-fix-20261111/phase-projection.json and mage-projection.json"
+
+[[diff]]
+card = "Vren, the Relentless"
+category = "engine-bug"
+rationale = "V2 creates two Rat tokens while Vren is on the battlefield. Each token should be 3/3 because it gets +1/+1 for each other Rat controlled, including Vren and the other token. Phase remains 2/2 after mark_layers_full plus flush_layers immediately before projection. Parsed card data contains constant AddPower(1)/AddToughness(1) modifiers, and patch 0005 only changes opponent-creature exile counting."
+link = "https://scryfall.com/search?q=%21%22Vren%2C+the+Relentless%22"
+regression_test = "runs/card-scenarios/vren-fixed-production-20261111/phase-projection.json and runs/card-scenarios/vren-layer-recompute-20261111/phase-projection.json"
