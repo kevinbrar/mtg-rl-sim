@@ -134,6 +134,13 @@ class UnmappedPromptError(RuntimeError):
     pass
 
 
+class DifferentialDivergenceError(RuntimeError):
+    def __init__(self, kind: str, details: dict):
+        super().__init__(details.get("reason", kind))
+        self.kind = kind
+        self.details = details
+
+
 class ObjectBindings:
     def __init__(self) -> None:
         self.phase_to_xmage: dict[tuple[int, int], str] = {}
@@ -232,6 +239,49 @@ def _unmapped_prompt_result(
         "run_dir": run_dir,
         "step": step,
         "reason": reason,
+    }
+
+
+def _differential_divergence_result(
+    run_dir: Path,
+    run_id: str,
+    seed: int,
+    step: int,
+    decision: dict,
+    xmage_result: dict | None,
+    error: DifferentialDivergenceError,
+) -> dict:
+    phase_decision = error.details.get("phase_decision", decision)
+    failed_xmage = error.details.get("xmage_result", xmage_result)
+    report = {
+        "run_id": run_id,
+        "seed": seed,
+        "kind": error.kind,
+        "step": step,
+        "state": {
+            "phase": phase_decision.get("state", decision.get("state")),
+            "xmage": failed_xmage,
+        },
+        "phase_candidates": phase_decision.get("candidates", []),
+        "xmage_choices": failed_xmage.get("choices", [])
+        if isinstance(failed_xmage, dict)
+        else None,
+        "prompts": {
+            "phase": {
+                "waiting_for": phase_decision.get("waiting_for"),
+                "objects": phase_decision.get("objects"),
+                "candidates": phase_decision.get("candidates", []),
+            },
+            "xmage": failed_xmage,
+        },
+        "reason": error.details,
+    }
+    (run_dir / "divergence.json").write_text(json.dumps(report, indent=2) + "\n")
+    return {
+        "type": "divergence",
+        "run_dir": run_dir,
+        "step": step,
+        "kind": error.kind,
     }
 
 
@@ -953,6 +1003,17 @@ def _mana_plan_from_events(
     return plan
 
 
+def _mana_plan_from_current_state(
+    mana_events: list[tuple[dict, dict, dict]],
+    actor: int,
+    bindings: ObjectBindings,
+    phase_state: dict,
+    xmage_state: dict,
+) -> list[str]:
+    bindings.prune(phase_state, xmage_state)
+    return _mana_plan_from_events(mana_events, actor, bindings, xmage_state)
+
+
 def _mana_plan_ack_error(result: dict, plan: list[str]) -> str | None:
     if not plan:
         return None
@@ -1631,6 +1692,307 @@ def _phase_blocker_key(decision: dict) -> tuple[int, int] | None:
     return None
 
 
+def _record_unplanned_mana(
+    unplanned_mana: list[tuple[tuple[int, str], dict]], applied: dict, decision: dict
+) -> None:
+    phase_state = decision.get("state", {})
+    phase_key = (phase_state.get("turn"), phase_state.get("phase"))
+    unplanned_mana.extend(
+        (phase_key, event)
+        for event, _, _ in _mana_added_from_applied(applied, decision)
+    )
+
+
+def _ensure_no_unplanned_mana(
+    unplanned_mana: list[tuple[tuple[int, str], dict]],
+) -> None:
+    if unplanned_mana:
+        raise UnmappedPromptError(
+            f"Mana pool contains mana produced before this cast macro: {unplanned_mana}"
+        )
+
+
+def _cast_action_source_id(action: dict) -> int:
+    data = action.get("data", {})
+    source_id = (
+        data.get("source_id")
+        if action.get("type") == "ActivateAbility"
+        else data.get("object_id", data.get("card_id"))
+    )
+    if not isinstance(source_id, int) or isinstance(source_id, bool):
+        raise UnmappedPromptError(f"Cast action has an invalid object id: {action}")
+    return source_id
+
+
+def _is_cast_continuation(decision: dict, source_id: int, actor: int) -> bool:
+    if decision.get("type") != "decision":
+        return False
+    waiting = decision.get("waiting_for", {})
+    waiting_type = waiting.get("type")
+    data = waiting.get("data", {})
+    if waiting_type == "Priority":
+        return False
+    pending = data.get("pending_cast")
+    pending_id = pending.get("object_id") if isinstance(pending, dict) else None
+    if pending_id is not None and pending_id != source_id:
+        return False
+    if decision.get("actor") != actor:
+        raise UnmappedPromptError(
+            f"Cast continuation prompt belongs to another actor: {decision}"
+        )
+    if waiting_type in {"ManaPayment", "ManaSourceSelection"}:
+        if data.get("player") != actor:
+            raise UnmappedPromptError(
+                f"Cast continuation prompt has a different payer: {decision}"
+            )
+        if waiting_type == "ManaSourceSelection":
+            options = data.get("options")
+            if not isinstance(options, list):
+                raise UnmappedPromptError(
+                    f"Mana-source continuation omitted its options: {decision}"
+                )
+            if len(options) != 1:
+                raise UnmappedPromptError(
+                    "ManaSourceSelection with "
+                    f"{len(options)} options is unsupported: {decision}"
+                )
+        return True
+    if waiting_type == "TargetSelection":
+        if data.get("player") != actor:
+            raise UnmappedPromptError(
+                f"Target continuation prompt belongs to another player: {decision}"
+            )
+        if pending_id is None:
+            raise UnmappedPromptError(
+                f"Target continuation omitted its pending cast: {decision}"
+            )
+        return True
+    if pending_id == source_id:
+        raise UnmappedPromptError(f"Unsupported cast continuation prompt: {decision}")
+    if pending_id is not None:
+        return False
+    raise UnmappedPromptError(
+        f"Cannot establish whether prompt continues the cast: {decision}"
+    )
+
+
+async def _phase_cast_macro(
+    phase: PhaseEnv,
+    decision: dict,
+    first_index: int,
+    first_action: dict,
+    rng: random.Random,
+    v0: bool,
+) -> tuple[
+    dict,
+    list[tuple[dict, int, dict]],
+    list[tuple[dict, int, dict]],
+    list[tuple[dict, dict, dict]],
+]:
+    actor = decision.get("actor")
+    if not isinstance(actor, int) or isinstance(actor, bool):
+        raise UnmappedPromptError(f"Cast decision has an invalid actor: {decision}")
+    source_id = _cast_action_source_id(first_action)
+    current = decision
+    index, action = first_index, first_action
+    records: list[tuple[dict, int, dict]] = []
+    target_records: list[tuple[dict, int, dict]] = []
+    mana_events: list[tuple[dict, dict, dict]] = []
+
+    while True:
+        waiting_type = current.get("waiting_for", {}).get("type")
+        if current is not decision:
+            if waiting_type == "ManaPayment" and action.get("type") not in {
+                "TapLandForMana",
+                "ActivateManaSource",
+                "PassPriority",
+            }:
+                raise UnmappedPromptError(
+                    f"Unsupported mana-payment action: {action}"
+                )
+            if waiting_type == "ManaSourceSelection" and action.get("type") not in {
+                "ActivateManaSource",
+                "BackToManaPayment",
+            }:
+                raise UnmappedPromptError(
+                    f"Unsupported mana-source selection action: {action}"
+                )
+            if waiting_type == "TargetSelection":
+                if action.get("type") not in {"ChooseTarget", "SelectTargets"}:
+                    raise UnmappedPromptError(
+                        f"Unsupported cast target action: {action}"
+                    )
+                target_records.append((current, index, action))
+        records.append((current, index, action))
+        applied = await asyncio.to_thread(phase.choose, index)
+        if applied.get("type") != "applied" or not applied.get("ok"):
+            raise RuntimeError(f"phase rejected cast continuation {action}: {applied}")
+        mana_events.extend(_mana_added_from_applied(applied, current))
+        current = await asyncio.to_thread(phase._read)
+        if not _is_cast_continuation(current, source_id, actor):
+            break
+        index, action = policy_candidate(current, rng, v0=v0)
+
+    return current, records, target_records, mana_events
+
+
+async def _replay_cast_targets(
+    sessions: list,
+    owner: int,
+    initial_result: dict,
+    target_records: list[tuple[dict, int, dict]],
+    action_tasks: dict[int, asyncio.Task],
+    pending_results: dict[int, dict],
+    skipped_stops: list[dict],
+    normalization_events: list[dict],
+    object_bindings: ObjectBindings,
+    phase_attack_records: set[tuple[int, int]],
+    phase_blocker_decisions: set[tuple[int, int]],
+    expected_combat_batches: dict[int, tuple[str, int]],
+) -> dict:
+    result = initial_result
+    pending_results[owner] = result
+    for target_decision, _, target_action in target_records:
+        result, point_diff = await _sync_xmage_to_decision(
+            sessions,
+            target_decision,
+            action_tasks,
+            pending_results,
+            skipped_stops,
+            normalization_events,
+            phase_attack_records=phase_attack_records,
+            phase_blocker_decisions=phase_blocker_decisions,
+            expected_combat_batches=expected_combat_batches,
+        )
+        if result is None or point_diff:
+            if point_diff.get("kind") == "unmapped_prompt":
+                raise UnmappedPromptError(point_diff["reason"])
+            raise DifferentialDivergenceError(
+                point_diff.get("kind", "decision_point"),
+                {
+                    "reason": point_diff,
+                    "phase_decision": target_decision,
+                    "xmage_result": result,
+                },
+            )
+        xmage_state = await _get_state(sessions[owner])
+        legal_diff = _legal_action_diff(target_decision, result, xmage_state)
+        if legal_diff:
+            raise DifferentialDivergenceError(
+                "legal_actions",
+                {
+                    "reason": legal_diff,
+                    "phase_decision": target_decision,
+                    "xmage_result": result,
+                },
+            )
+        task = await _apply_xmage_action(
+            sessions[owner],
+            target_action,
+            target_decision,
+            result,
+            object_bindings,
+        )
+        pending_results.pop(owner, None)
+        result = await task
+        pending_results[owner] = result
+    return result
+
+
+async def _send_cast_macro_to_xmage(
+    sessions: list,
+    owner: int,
+    action: dict,
+    decision: dict,
+    xmage_result: dict,
+    mana_plan: list[str],
+    target_records: list[tuple[dict, int, dict]],
+    action_tasks: dict[int, asyncio.Task],
+    pending_results: dict[int, dict],
+    skipped_stops: list[dict],
+    normalization_events: list[dict],
+    object_bindings: ObjectBindings,
+    phase_attack_records: set[tuple[int, int]],
+    phase_blocker_decisions: set[tuple[int, int]],
+    expected_combat_batches: dict[int, tuple[str, int]],
+    macro_decision: dict,
+) -> tuple[dict, dict]:
+    baseline_log = await _call(sessions[owner], "get_game_log")
+    cursor = baseline_log.get("cursor")
+    if not isinstance(cursor, int) or isinstance(cursor, bool):
+        raise RuntimeError(f"XMage game log omitted a valid cursor: {baseline_log}")
+    pending_log_check = {
+        "owner": owner,
+        "cursor": cursor,
+        "macro_decision": macro_decision,
+        "mana_plan": mana_plan,
+    }
+    task = await _apply_xmage_action(
+        sessions[owner],
+        action,
+        decision,
+        xmage_result,
+        object_bindings,
+        mana_plan=mana_plan,
+    )
+    pending_results.pop(owner, None)
+    result = await task
+    issue = _mana_plan_ack_error(result, mana_plan)
+    if issue is not None:
+        raise DifferentialDivergenceError(
+            "mana_plan",
+            {
+                "reason": issue,
+                "phase_decision": macro_decision,
+                "mana_plan": mana_plan,
+                "xmage_result": result,
+            },
+        )
+    result = await _replay_cast_targets(
+        sessions,
+        owner,
+        result,
+        target_records,
+        action_tasks,
+        pending_results,
+        skipped_stops,
+        normalization_events,
+        object_bindings,
+        phase_attack_records,
+        phase_blocker_decisions,
+        expected_combat_batches,
+    )
+    return result, pending_log_check
+
+
+async def _check_pending_mana_plan_log(sessions: list, pending_check: dict) -> None:
+    owner = pending_check["owner"]
+    cursor = pending_check["cursor"]
+    result = await _call(sessions[owner], "get_game_log", {"cursor": cursor})
+    details = {
+        "phase_decision": pending_check["macro_decision"],
+        "mana_plan": pending_check["mana_plan"],
+        "xmage_result": result,
+    }
+    if result.get("cursor_reset") is True:
+        details["reason"] = f"XMage game log cursor reset: {result}"
+        raise DifferentialDivergenceError("mana_plan", details)
+    log = result.get("log")
+    if not isinstance(log, str):
+        raise RuntimeError(f"XMage game log response omitted log text: {result}")
+    cancellation = log.find("[System] Spell cancelled")
+    if cancellation >= 0:
+        details["reason"] = "XMage cancelled the spell during mana payment"
+        details["log_excerpt"] = log[max(0, cancellation - 100) : cancellation + 240]
+        raise DifferentialDivergenceError("mana_plan", details)
+
+
+def _cast_macro_step_increment(
+    target_records: list[tuple[dict, int, dict]],
+) -> int:
+    return 1 + len(target_records)
+
+
 async def _phase_advance_to_meaningful(
     phase: PhaseEnv,
     decision: dict,
@@ -1638,6 +2000,7 @@ async def _phase_advance_to_meaningful(
     normalization_events: list[dict],
     phase_attack_records: set[tuple[int, int]],
     phase_blocker_decisions: set[tuple[int, int]],
+    unplanned_mana: list[tuple[tuple[int, str], dict]] | None = None,
 ) -> dict:
     while decision["type"] == "decision":
         blocker_key = _phase_blocker_key(decision)
@@ -1670,6 +2033,8 @@ async def _phase_advance_to_meaningful(
         applied = await asyncio.to_thread(phase.choose, index)
         if applied.get("type") != "applied" or not applied.get("ok"):
             raise RuntimeError(f"phase rejected automatic stop {action}: {applied}")
+        if unplanned_mana is not None:
+            _record_unplanned_mana(unplanned_mana, applied, decision)
         if attack_key is not None:
             phase_attack_records.add(attack_key)
         decision = await asyncio.to_thread(phase._read)
@@ -2325,6 +2690,7 @@ async def _apply_xmage_action(
     decision: dict,
     xmage_result: dict,
     bindings: ObjectBindings | None = None,
+    mana_plan: list[str] | None = None,
 ) -> asyncio.Task:
     kind = action["type"]
     data = action.get("data", {})
@@ -2337,7 +2703,12 @@ async def _apply_xmage_action(
         choice = _xmage_hand_choice(
             card["name"], owner, desired_action, decision, xmage_result
         )
-        return asyncio.create_task(_call(session, "choose_action", {"choice": str(choice["index"])}))
+        payload = {"choice": str(choice["index"])}
+        if action.get("type") == "CastSpell" and mana_plan is not None:
+            payload["auto_tap"] = not mana_plan
+            if mana_plan:
+                payload["mana_plan"] = ",".join(mana_plan)
+        return asyncio.create_task(_call(session, "choose_action", payload))
     if kind == "ActivateAbility":
         xmage_state = await _get_state(session)
         if bindings is not None:
@@ -2345,8 +2716,13 @@ async def _apply_xmage_action(
         choice = _xmage_activation_choice(
             action, decision, xmage_result, bindings, xmage_state
         )
+        payload = {"choice": str(choice["index"])}
+        if mana_plan is not None:
+            payload["auto_tap"] = not mana_plan
+            if mana_plan:
+                payload["mana_plan"] = ",".join(mana_plan)
         return asyncio.create_task(
-            _call(session, "choose_action", {"choice": str(choice["index"])})
+            _call(session, "choose_action", payload)
         )
     if kind in {"ChooseTarget", "SelectTargets"}:
         xmage_state = await _get_state(session)
@@ -2642,6 +3018,8 @@ async def run_game(args: argparse.Namespace) -> dict:
             phase_attack_records: set[tuple[int, int]] = set()
             phase_blocker_decisions: set[tuple[int, int]] = set()
             expected_combat_batches: dict[int, tuple[str, int]] = {}
+            unplanned_mana: list[tuple[tuple[int, str], dict]] = []
+            pending_mana_check: dict | None = None
             phase_projection = projection_from_phase(phase.started["state"])
             xmage_states = await asyncio.gather(*(_get_state(session) for session in sessions))
             xmage_projection = projection_from_xmage(xmage_states)
@@ -2672,6 +3050,7 @@ async def run_game(args: argparse.Namespace) -> dict:
                 normalization_events,
                 phase_attack_records,
                 phase_blocker_decisions,
+                unplanned_mana,
             )
             steps = 0
             last_xmage_states = xmage_states
@@ -2680,6 +3059,13 @@ async def run_game(args: argparse.Namespace) -> dict:
             while decision["type"] == "decision":
                 if not _is_meaningful_decision(decision):
                     raise RuntimeError(f"phase trivial-stop normalization failed: {decision}")
+                phase_key = (
+                    decision.get("state", {}).get("turn"),
+                    decision.get("state", {}).get("phase"),
+                )
+                unplanned_mana[:] = [
+                    record for record in unplanned_mana if record[0] == phase_key
+                ]
                 owner = decision["owner"]
                 blocker_key = _phase_blocker_key(decision)
                 if blocker_key is not None:
@@ -2695,6 +3081,22 @@ async def run_game(args: argparse.Namespace) -> dict:
                     phase_blocker_decisions=phase_blocker_decisions,
                     expected_combat_batches=expected_combat_batches,
                 )
+                if pending_mana_check is not None:
+                    try:
+                        await _check_pending_mana_plan_log(
+                            sessions, pending_mana_check
+                        )
+                    except DifferentialDivergenceError as exc:
+                        return _differential_divergence_result(
+                            run_dir,
+                            run_id,
+                            args.seed,
+                            steps,
+                            decision,
+                            xmage_result,
+                            exc,
+                        )
+                    pending_mana_check = None
                 if xmage_result is None:
                     report = {
                         "run_id": run_id,
@@ -2913,12 +3315,112 @@ async def run_game(args: argparse.Namespace) -> dict:
                 try:
                     index, action = policy_candidate(decision, rng, v0=args.v0)
                     attack_key = _phase_attack_key(action, decision)
-                    action_task = await _apply_xmage_action(
-                        sessions[owner],
-                        action,
+                    if action.get("type") in {"CastSpell", "ActivateAbility"}:
+                        _ensure_no_unplanned_mana(unplanned_mana)
+                        macro_decision, _, target_records, mana_events = (
+                            await _phase_cast_macro(
+                                phase, decision, index, action, rng, args.v0
+                            )
+                        )
+                        mana_plan = _mana_plan_from_current_state(
+                            mana_events,
+                            owner,
+                            object_bindings,
+                            decision["state"],
+                            xmage_states[owner],
+                        )
+                        last_xmage_pending, pending_mana_check = (
+                            await _send_cast_macro_to_xmage(
+                                sessions,
+                                owner,
+                                action,
+                                decision,
+                                xmage_result,
+                                mana_plan,
+                                target_records,
+                                action_tasks,
+                                pending_results,
+                                skipped_stops,
+                                normalization_events,
+                                object_bindings,
+                                phase_attack_records,
+                                phase_blocker_decisions,
+                                expected_combat_batches,
+                                macro_decision,
+                            )
+                        )
+                        last_action = action
+                        expected_combat_batches.pop(owner, None)
+                        steps += _cast_macro_step_increment(target_records)
+                        decision = await _phase_advance_to_meaningful(
+                            phase,
+                            macro_decision,
+                            skipped_stops,
+                            normalization_events,
+                            phase_attack_records,
+                            phase_blocker_decisions,
+                            unplanned_mana,
+                        )
+                    else:
+                        action_task = await _apply_xmage_action(
+                            sessions[owner],
+                            action,
+                            decision,
+                            xmage_result,
+                            object_bindings,
+                        )
+                        pending_results.pop(owner, None)
+                        action_tasks[owner] = action_task
+                        last_action = action
+                        last_xmage_pending = xmage_result
+                        applied = await asyncio.to_thread(phase.choose, index)
+                        if applied.get("type") != "applied" or not applied.get("ok"):
+                            raise RuntimeError(
+                                f"phase rejected policy action {action}: {applied}"
+                            )
+                        _record_unplanned_mana(unplanned_mana, applied, decision)
+                        if attack_key is not None:
+                            phase_attack_records.add(attack_key)
+                        batch_data = action.get("data", {})
+                        if action.get("type") == "DeclareAttackers" and batch_data.get(
+                            "attacks"
+                        ):
+                            expected_combat_batches[owner] = (
+                                "batch_attack",
+                                len(batch_data["attacks"]),
+                            )
+                        elif action.get("type") == "DeclareBlockers" and batch_data.get(
+                            "assignments"
+                        ):
+                            expected_combat_batches[owner] = (
+                                "batch_block",
+                                len(batch_data["assignments"]),
+                            )
+                        else:
+                            expected_combat_batches.pop(owner, None)
+                        steps += 1
+                        decision = await asyncio.to_thread(phase._read)
+                        decision = await _phase_advance_to_meaningful(
+                            phase,
+                            decision,
+                            skipped_stops,
+                            normalization_events,
+                            phase_attack_records,
+                            phase_blocker_decisions,
+                            unplanned_mana,
+                        )
+                    if decision["type"] == "game_over":
+                        break
+                    last_xmage_states = xmage_states
+                except DifferentialDivergenceError as exc:
+                    return _differential_divergence_result(
+                        run_dir,
+                        run_id,
+                        args.seed,
+                        steps,
                         decision,
                         xmage_result,
-                        object_bindings,
+                        exc,
                     )
                 except UnmappedPromptError as exc:
                     return _unmapped_prompt_result(
@@ -2932,48 +3434,23 @@ async def run_game(args: argparse.Namespace) -> dict:
                         phase_projection,
                         xmage_projection,
                     )
-                pending_results.pop(owner, None)
-                action_tasks[owner] = action_task
-                last_action = action
-                last_xmage_pending = xmage_result
-                applied = await asyncio.to_thread(phase.choose, index)
-                if applied.get("type") != "applied" or not applied.get("ok"):
-                    raise RuntimeError(f"phase rejected policy action {action}: {applied}")
-                if attack_key is not None:
-                    phase_attack_records.add(attack_key)
-                batch_data = action.get("data", {})
-                if action.get("type") == "DeclareAttackers" and batch_data.get(
-                    "attacks"
-                ):
-                    expected_combat_batches[owner] = (
-                        "batch_attack",
-                        len(batch_data["attacks"]),
-                    )
-                elif action.get("type") == "DeclareBlockers" and batch_data.get(
-                    "assignments"
-                ):
-                    expected_combat_batches[owner] = (
-                        "batch_block",
-                        len(batch_data["assignments"]),
-                    )
-                else:
-                    expected_combat_batches.pop(owner, None)
-                steps += 1
-                decision = await asyncio.to_thread(phase._read)
-                decision = await _phase_advance_to_meaningful(
-                    phase,
-                    decision,
-                    skipped_stops,
-                    normalization_events,
-                    phase_attack_records,
-                    phase_blocker_decisions,
-                )
-                if decision["type"] == "game_over":
-                    break
-                last_xmage_states = xmage_states
 
             if decision["type"] != "game_over":
                 raise RuntimeError(f"phase game stopped unexpectedly: {decision}")
+            if pending_mana_check is not None:
+                try:
+                    await _check_pending_mana_plan_log(sessions, pending_mana_check)
+                except DifferentialDivergenceError as exc:
+                    return _differential_divergence_result(
+                        run_dir,
+                        run_id,
+                        args.seed,
+                        steps,
+                        decision,
+                        last_xmage_pending,
+                        exc,
+                    )
+                pending_mana_check = None
             game_completed = True
             phase_state = projection_from_phase(decision["state"])
             xmage_states, terminal_issue = await _advance_xmage_to_terminal(
