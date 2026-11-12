@@ -1,9 +1,9 @@
 diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 new file mode 100644
-index 00000000000..91bff5c8b87
+index 00000000..1576c76f
 --- /dev/null
 +++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-@@ -0,0 +1,688 @@
+@@ -0,0 +1,719 @@
 +package org.mage.test.testapi;
 +
 +import com.google.gson.Gson;
@@ -107,6 +107,8 @@ index 00000000000..91bff5c8b87
 +        int finalTurn = scheduleScript(initialActive, step);
 +        PhaseStep finalStep = finalTurn == 1 ? step : lastStep;
 +        setStrictChooseMode(true);
++        player(0).setAutoOrderIdenticalTriggers(true);
++        player(1).setAutoOrderIdenticalTriggers(true);
 +        setStopAt(finalTurn, finalStep);
 +        execute();
 +        System.out.println(RESULT_PREFIX + GSON.toJson(result()));
@@ -178,7 +180,7 @@ index 00000000000..91bff5c8b87
 +                case "end_turn", "next_turn" -> {
 +                    turn++;
 +                    activeIndex = 1 - activeIndex;
-+                    lastStep = PhaseStep.UNTAP;
++                    lastStep = PhaseStep.UPKEEP;
 +                }
 +                default -> throw new IllegalArgumentException("unsupported action " + kind);
 +            }
@@ -451,6 +453,9 @@ index 00000000000..91bff5c8b87
 +        if (!names.contains(card)) {
 +            return false;
 +        }
++        if (!zone.equals("battlefield") && reach.has("counters")) {
++            return false;
++        }
 +        if (zone.equals("battlefield")) {
 +            boolean matchingPermanent = currentGame.getBattlefield().getAllActivePermanents().stream()
 +                    .filter(candidate -> candidate.getControllerId().equals(player.getId()))
@@ -510,6 +515,32 @@ index 00000000000..91bff5c8b87
 +                && reach.get("toughness_is_null").getAsBoolean()
 +                != (!permanent.isCreature(currentGame) || permanent.getToughness() == null)) {
 +            return false;
++        }
++        if (reach.has("counters")) {
++            if (!reach.get("counters").isJsonObject()) {
++                throw new IllegalArgumentException("reach.counters must be an object");
++            }
++            for (Map.Entry<String, JsonElement> entry : reach.getAsJsonObject("counters").entrySet()) {
++                JsonElement value = entry.getValue();
++                if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
++                    throw new IllegalArgumentException("reach.counters." + entry.getKey()
++                            + " must be a non-negative integer");
++                }
++                long expected = value.getAsLong();
++                if (expected < 0 || value.getAsDouble() != expected) {
++                    throw new IllegalArgumentException("reach.counters." + entry.getKey()
++                            + " must be a non-negative integer");
++                }
++                String counterName = entry.getKey().toLowerCase(Locale.ROOT);
++                Counter actual = permanent.getCounters(currentGame).entrySet().stream()
++                        .filter(counter -> counter.getKey().toLowerCase(Locale.ROOT).equals(counterName))
++                        .map(Map.Entry::getValue)
++                        .findFirst()
++                        .orElse(null);
++                if ((actual == null ? 0 : actual.getCount()) != expected) {
++                    return false;
++                }
++            }
 +        }
 +        return !reach.has("tapped") || reach.get("tapped").getAsBoolean() == permanent.isTapped();
 +    }
@@ -694,7 +725,7 @@ index 00000000000..91bff5c8b87
 +}
 diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioLibraryOrderTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioLibraryOrderTest.java
 new file mode 100644
-index 00000000000..00000000000
+index 00000000..c36d02d2
 --- /dev/null
 +++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioLibraryOrderTest.java
 @@ -0,0 +1,49 @@
@@ -748,9 +779,37 @@ index 00000000000..00000000000
 +    }
 +}
 diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+index 1fb66017..26c9ae85 100644
 --- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
 +++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
-@@ -445,4 +445,13 @@
+@@ -118,6 +118,7 @@ public class TestPlayer implements Player {
+     // - enable inner choice dialogs accessable by set up choices
+     //   (example: card call TestPlayer's choice, but it uses another choices, see docs in TestComputerPlayer)
+     private boolean strictChooseMode = false;
++    private boolean autoOrderIdenticalTriggers = false;
+ 
+     private String[] groupsForTargetHandling = null; // predefined targets list from cast/activate command
+ 
+@@ -159,6 +160,7 @@ public class TestPlayer implements Player {
+         }
+         this.isSkipAllNextChooseCommands = testPlayer.isSkipAllNextChooseCommands;
+         this.strictChooseMode = testPlayer.strictChooseMode;
++        this.autoOrderIdenticalTriggers = testPlayer.autoOrderIdenticalTriggers;
+     }
+ 
+     public void addChoice(String choice) {
+@@ -180,6 +182,10 @@ public class TestPlayer implements Player {
+         return this.choices;
+     }
+ 
++    public void setAutoOrderIdenticalTriggers(boolean autoOrderIdenticalTriggers) {
++        this.autoOrderIdenticalTriggers = autoOrderIdenticalTriggers;
++    }
++
+     public List<String> getTargets() {
+         return this.targets;
+     }
+@@ -445,6 +451,15 @@ public class TestPlayer implements Player {
          return foundObject && foundAbility;
      }
  
@@ -764,3 +823,28 @@ diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mag
 +    }
 +
      public boolean hasObjectTargetNameOrAlias(MageObject object, String nameOrAlias) {
+         if (object == null || nameOrAlias == null) {
+             return false;
+@@ -2697,6 +2712,22 @@ public class TestPlayer implements Player {
+     @Override
+     public TriggeredAbility chooseTriggeredAbility(List<TriggeredAbility> abilities, Game game) {
+         assertAliasSupportInChoices(false);
++        if (autoOrderIdenticalTriggers) {
++            if (!abilities.isEmpty()) {
++                TriggeredAbility first = abilities.get(0);
++                UUID sourceId = first.getSourceId();
++                String rule = first.getRule();
++                if (sourceId != null && rule != null && !rule.isBlank()
++                        && abilities.stream().allMatch(ability -> sourceId.equals(ability.getSourceId())
++                        && rule.equals(ability.getRule()))) {
++                    return first;
++                }
++            }
++            throw new IllegalStateException("Cannot auto-order non-identical triggered abilities:\n"
++                    + abilities.stream()
++                    .map(ability -> "Source: " + ability.getSourceId() + "\n" + getInfo(ability, game))
++                    .collect(Collectors.joining("\n")));
++        }
+         if (!choices.isEmpty()) {
+             String choice = choices.get(0);
+ 

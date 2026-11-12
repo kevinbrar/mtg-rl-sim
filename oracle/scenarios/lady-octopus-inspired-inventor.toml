@@ -1,0 +1,92 @@
+[[scenarios]]
+name = "L1 Divination adds two ingenuity counters"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Divination" },
+  { action = "pass_until_resolved" },
+  { action = "end_turn" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Lady Octopus, Inspired Inventor", counters = { ingenuity = 2 } }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "lady", card = "Lady Octopus, Inspired Inventor" },
+  { label = "island", card = "Island" },
+  { label = "plains", card = "Plains" },
+  { label = "swamp", card = "Swamp" },
+]
+hand = ["Divination"]
+library_top = ["Forest", "Forest"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = ["Forest"]
+graveyard = []
+
+[[scenarios]]
+name = "L2 third draw does not add a counter"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Concentrate" },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Lady Octopus, Inspired Inventor", counters = { ingenuity = 2 } }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "lady", card = "Lady Octopus, Inspired Inventor" },
+  { label = "island-1", card = "Island" },
+  { label = "island-2", card = "Island" },
+  { label = "plains", card = "Plains" },
+  { label = "swamp", card = "Swamp" },
+]
+hand = ["Concentrate"]
+library_top = ["Forest", "Forest", "Forest"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = ["Forest"]
+graveyard = []
+
+[[scenarios]]
+name = "L3 draw count resets each turn"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Divination" },
+  { action = "pass_until_resolved" },
+  { action = "end_turn" },
+  { action = "end_turn" },
+  { action = "cast", card = "Divination" },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Lady Octopus, Inspired Inventor", counters = { ingenuity = 4 } }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "lady", card = "Lady Octopus, Inspired Inventor" },
+  { label = "island", card = "Island" },
+  { label = "plains", card = "Plains" },
+  { label = "swamp", card = "Swamp" },
+]
+hand = ["Divination", "Divination"]
+library_top = ["Forest", "Forest", "Forest", "Forest", "Forest"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = ["Forest"]
+graveyard = []

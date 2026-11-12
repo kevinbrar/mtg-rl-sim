@@ -2,6 +2,8 @@
 - Jace's Machinations — not implemented in XMage upstream @3a9bc5ac; Forge oracle planned.
 - Extrapolate the Impossible — not implemented in XMage upstream @3a9bc5ac; Forge oracle planned.
 - Enlightened Confidant — the upstream class requires `Player.SurveilResult.getCardsPutInGraveyard()`, absent from pinned XMage @2e68eefa; adding it would modify core.
+- Seasoned Cryomancer — not implemented in XMage upstream @2e68eefa.
+- Uldaros Theorix — not implemented in XMage upstream @2e68eefa.
 
 ## XMage-unrunnable decks
 - `azorius-control.txt`: contains Jace's Machinations.

@@ -1,6 +1,6 @@
 # Status
 
-_Updated 2026-11-11._
+_Updated 2026-11-12._
 
 ## State
 - phase-rs pinned at `988bc34` + 30 local patches (`phase-patches/`, apply with `scripts/apply-phase-patches.sh`); all 18 unsupported Standard-meta cards supported; 29,417 engine tests pass. Evidence: `phase-patches/README.md`, `docs/debrief.md`.
@@ -9,7 +9,7 @@ _Updated 2026-11-11._
 - Upstream offer: phase-rs#10736; patches public at kevinbrar/phase@standard-meta-fixes.
 
 ## In progress
-- In progress: Restless Prairie scripted activation; patched Phase/XMage match R1–R2 (2/2), and the Essence Burn, Bringer, and Ms. Marvel projection reruns match (5/5, 3/3, 5/5). With patch 0002 reverted, scenarios still match (2/2); 0002 is non-behavioral (coverage lexicon). The scenario validates runtime behavior; coverage is handled by the patch's own coverage test.
+- PR candidate: Lady Octopus, Inspired Inventor (`devin/1794442216-scenarios-lady-octopus`); multi-turn scripts advance through turn-start steps, order identical XMage triggers, and assert counters in reach. All five suites match (Essence Burn 5/5, Bringer 3/3, Ms. Marvel 5/5, Restless Prairie 2/2, Lady Octopus 3/3). With the 0025 patch reverted and pinned 988bc34 baseline card-data, L1–L3 diverge; source-only reversion with patched card-data is not sensitive because that data already encodes the `LE` comparator. Local checks and packet-lint pass; CI is deferred per scope.
 - PR candidate: Ms. Marvel, Kamala Khan (`devin/1794404518-scenarios-ms-marvel-kamala-khan`); M1–M5 match XMage with reach, and reverting patches 0024/0026/0027 diverges in M1/M2/M4/M5.
 - PR G candidate `devin/1794369729-harness-unless-payment`: affirmative mana-based `UnlessPayment` applies Phase-first and passes a verified mana plan to XMage `GAME_ASK`; the normalized XMage ask must now match Phase's rendered mana cost, with unsupported shards failing closed. Declines remain lockstep, non-mana costs and continuation prompts fail closed, and ward-resolution mana is excluded from the pre-cast unplanned-mana guard. The new Bridge patch shares `GAME_SELECT` mana-plan validation. `python -m pytest` under Python 3.12: 199 passed; Ruff check and test-file format passed; Mage-Bench Python tests: 8 passed; Bridge package/build and `BridgeCallbackHandlerTest`: 89 passed. All six sorted Mage-Bench patches applied to a clean pinned checkout. Patched Phase tree `b55566fad463e2e8f99ebef1c27f9af24cf0137e`; `phase-env` SHA-256 `0d40e6a5829c341d11f941f88105e2b1d85d644d1fd09c4fa141e31ae82354ac`.
   - Mono-green `--v0` seed 17 exited 0 at 44 steps and seed 42 exited 0 at 53 steps, both with 0 divergences and matched winners: `runs/20261111T050747276401Z/summary.json`, `runs/20261111T044622484602Z/summary.json`.
@@ -71,6 +71,7 @@ _Updated 2026-11-11._
 - PR #21 merged: canonical unordered-zone comparison and semicolon-separated card lists.
 - PR #22 merged: deterministic XMage library fixtures, token projections, and forced scenario mana payments.
 - PR #23 merged: Bringer B1–B3.
+- PR #26 merged: Restless Prairie scripted activation; existing suites match (Essence Burn 5/5, Bringer 3/3, Ms. Marvel 5/5, Restless Prairie 2/2). Reverting 0002 still matches 2/2 because it changes only the coverage lexicon; the scenario validates runtime behavior and the patch's own test covers coverage.
 - PR #25 merged: cross-JVM H2 init lock.
 
 ## Next
