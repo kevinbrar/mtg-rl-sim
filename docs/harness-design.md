@@ -73,6 +73,18 @@ too many targets, and groups left when the script ends. XMage uses one
 targets; the runner also rejects unconsumed target entries at script end.
 Optional target slots may be left unselected when the prompt allows it.
 
+`choose_cards` queues one group of setup labels for each card-selection prompt.
+The group must be queued before the action that causes the prompt. For Anzrag's
+Rampage, Phase represents the optional return as an optional sub-ability
+followed by `ChangeZoneAll` over a tracked exile set, so the runner consumes the
+group at the optional prompt: an empty group declines; a nonempty group accepts
+only when every label currently matches a creature in exile exiled by that
+spell. Phase then follows its `ChangeZoneAll` model without checking which
+cards moved. XMage retains its actual card-selection prompt and selects the
+queued cards. Both runners use only the FIFO head and fail on an empty queue,
+unoffered labels, too many selections at a card-selection prompt, or leftover
+groups.
+
 ## Multi-turn scenario scripts
 
 `end_turn` advances to the next turn's precombat main when a later action is

@@ -39,6 +39,7 @@ def _card_slug(name: str) -> str:
         .encode("ascii", "ignore")
         .decode("ascii")
         .casefold()
+        .replace("'", "")
     )
     slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
     if not slug:
@@ -84,6 +85,7 @@ def _validate_setup(scenario: dict) -> None:
     setup = scenario.get("setup")
     if not isinstance(setup, dict):
         raise TypeError(f"{name}: setup must be a table")
+    labels: set[str] = set()
     for player, player_setup in setup.items():
         if player not in {"P0", "P1"}:
             raise ValueError(f"{name}: setup.{player} is unsupported")
@@ -98,13 +100,32 @@ def _validate_setup(scenario: dict) -> None:
                 raise TypeError(f"{name}: setup.{player}.{field} must be an array")
             for index, card in enumerate(cards):
                 if isinstance(card, dict):
-                    if card.keys() != {"card"}:
+                    if card.keys() - {"card", "label"} or not isinstance(
+                        card.get("card"), str
+                    ):
                         raise ValueError(
-                            f"{name}: setup.{player}.{field}[{index}] only supports card"
+                            f"{name}: setup.{player}.{field}[{index}] needs card and optional label"
                         )
+                    if not card["card"]:
+                        raise ValueError(
+                            f"{name}: setup.{player}.{field}[{index}] needs a card"
+                        )
+                    if "label" in card:
+                        label = card["label"]
+                        if not isinstance(label, str) or not label:
+                            raise ValueError(
+                                f"{name}: setup.{player}.{field}[{index}].label must be a non-empty string"
+                            )
+                        if label in labels:
+                            raise ValueError(f"{name}: duplicate setup label {label}")
+                        labels.add(label)
                 elif not isinstance(card, str):
                     raise TypeError(
                         f"{name}: setup.{player}.{field}[{index}] must name a card"
+                    )
+                elif not card:
+                    raise ValueError(
+                        f"{name}: setup.{player}.{field}[{index}] needs a card"
                     )
         battlefield = player_setup.get("battlefield", [])
         if not isinstance(battlefield, list):
@@ -124,6 +145,10 @@ def _validate_setup(scenario: dict) -> None:
                 permanent.get("card"), str
             ):
                 raise TypeError(f"{context} needs label and card")
+            label = permanent["label"]
+            if not label or label in labels:
+                raise ValueError(f"{name}: duplicate or empty setup label {label}")
+            labels.add(label)
             if "tapped" in permanent and not isinstance(permanent["tapped"], bool):
                 raise ValueError(f"{context}.tapped must be a boolean")
             if "counters" in permanent and not isinstance(permanent["counters"], dict):

@@ -1,0 +1,151 @@
+[[scenarios]]
+name = "A1 selects the first creature exiled"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["p0.top.first-creature"] },
+  { action = "cast", card = "Anzrag's Rampage" },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Grizzly Bears", creature = true }
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "p0.ornithopter", card = "Ornithopter" },
+  { label = "p0.mountain", card = "Mountain" },
+  { label = "p0.copperline", card = "Copperline Gorge" },
+  { label = "p0.island", card = "Island" },
+  { label = "p0.plains", card = "Plains" },
+  { label = "p0.swamp", card = "Swamp" },
+]
+hand = ["Anzrag's Rampage"]
+library_top = [
+  { card = "Grizzly Bears", label = "p0.top.first-creature" },
+  "Plains",
+  { card = "Llanowar Elves", label = "p0.top.second-creature" },
+]
+graveyard = []
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "p1.celestus", card = "The Celestus" },
+  { label = "p1.bankbuster", card = "Reckoner Bankbuster" },
+]
+hand = []
+library_top = ["Forest"]
+graveyard = []
+
+[[scenarios]]
+name = "A2 declines the optional creature return"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = [] },
+  { action = "cast", card = "Anzrag's Rampage" },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P1", zone = "graveyard", card = "Reckoner Bankbuster" }
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "p0.ornithopter", card = "Ornithopter" },
+  { label = "p0.mountain", card = "Mountain" },
+  { label = "p0.copperline", card = "Copperline Gorge" },
+  { label = "p0.island", card = "Island" },
+  { label = "p0.plains", card = "Plains" },
+  { label = "p0.swamp", card = "Swamp" },
+]
+hand = ["Anzrag's Rampage"]
+library_top = [
+  { card = "Grizzly Bears", label = "p0.top.first-creature" },
+  "Plains",
+  { card = "Llanowar Elves", label = "p0.top.second-creature" },
+]
+graveyard = []
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "p1.celestus", card = "The Celestus" },
+  { label = "p1.bankbuster", card = "Reckoner Bankbuster" },
+]
+hand = []
+library_top = ["Forest"]
+graveyard = []
+
+[[scenarios]]
+name = "A4 counts an artifact sacrificed earlier this turn"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "activate", source = "p0.lantern", ability = "{T}, Sacrifice" },
+  { action = "pass_until_resolved" },
+  { action = "choose_cards", cards = [] },
+  { action = "cast", card = "Anzrag's Rampage" },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "graveyard", card = "Soul-Guide Lantern" }
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "p0.ornithopter", card = "Ornithopter" },
+  { label = "p0.lantern", card = "Soul-Guide Lantern" },
+  { label = "p0.mountain", card = "Mountain" },
+  { label = "p0.copperline", card = "Copperline Gorge" },
+  { label = "p0.island", card = "Island" },
+  { label = "p0.plains", card = "Plains" },
+  { label = "p0.swamp", card = "Swamp" },
+]
+hand = ["Anzrag's Rampage"]
+library_top = [
+  { card = "Grizzly Bears", label = "p0.top.first-creature" },
+  "Plains",
+  { card = "Llanowar Elves", label = "p0.top.second-creature" },
+]
+graveyard = []
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "p1.celestus", card = "The Celestus" },
+  { label = "p1.bankbuster", card = "Reckoner Bankbuster" },
+]
+hand = []
+library_top = ["Forest"]
+graveyard = []
+
+[[scenarios]]
+name = "A3 creature returns to hand at the next end step"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["p0.top.first-creature"] },
+  { action = "cast", card = "Anzrag's Rampage" },
+  { action = "pass_until_resolved" },
+  { action = "end_turn" },
+]
+reach = { player = "P0", zone = "hand", card = "Grizzly Bears" }
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "p0.ornithopter", card = "Ornithopter" },
+  { label = "p0.mountain", card = "Mountain" },
+  { label = "p0.copperline", card = "Copperline Gorge" },
+  { label = "p0.island", card = "Island" },
+  { label = "p0.plains", card = "Plains" },
+  { label = "p0.swamp", card = "Swamp" },
+]
+hand = ["Anzrag's Rampage"]
+library_top = [
+  { card = "Grizzly Bears", label = "p0.top.first-creature" },
+  "Plains",
+  { card = "Llanowar Elves", label = "p0.top.second-creature" },
+]
+graveyard = []
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "p1.celestus", card = "The Celestus" },
+  { label = "p1.bankbuster", card = "Reckoner Bankbuster" },
+]
+hand = []
+library_top = ["Forest"]
+graveyard = []

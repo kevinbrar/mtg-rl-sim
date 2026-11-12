@@ -1,0 +1,193 @@
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -105,6 +105,7 @@
+     private final Map<Integer, HashMap<UUID, ArrayList<PlayerAction>>> rollbackActions = new HashMap<>(); // actions to add after a executed rollback
+     private final List<String> choices = new ArrayList<>(); // choices stack for choice
+     private final List<String> targets = new ArrayList<>(); // targets stack for choose (it's uses on empty direct target by cast command)
++    private final List<List<String>> cardChoiceGroups = new ArrayList<>();
+     private final Map<String, UUID> aliases = new HashMap<>(); // aliases for game objects/players (use it for cards with same name to save and use)
+     private final List<String> modes = new ArrayList<>();
+ 
+@@ -120,6 +121,7 @@
+     private boolean strictChooseMode = false;
+     private boolean autoOrderIdenticalTriggers = false;
+     private boolean strictTargetQueue = false;
++    private boolean strictCardChoiceQueue = false;
+ 
+     private String[] groupsForTargetHandling = null; // predefined targets list from cast/activate command
+ 
+@@ -153,6 +155,7 @@
+         this.actions.addAll(testPlayer.actions);
+         this.choices.addAll(testPlayer.choices);
+         this.targets.addAll(testPlayer.targets);
++        testPlayer.cardChoiceGroups.forEach(group -> this.cardChoiceGroups.add(new ArrayList<>(group)));
+         this.aliases.putAll(testPlayer.aliases);
+         this.modes.addAll(testPlayer.modes);
+         this.computerPlayer = testPlayer.computerPlayer.copy();
+@@ -163,6 +166,7 @@
+         this.strictChooseMode = testPlayer.strictChooseMode;
+         this.autoOrderIdenticalTriggers = testPlayer.autoOrderIdenticalTriggers;
+         this.strictTargetQueue = testPlayer.strictTargetQueue;
++        this.strictCardChoiceQueue = testPlayer.strictCardChoiceQueue;
+     }
+ 
+     public void addChoice(String choice) {
+@@ -192,6 +196,20 @@
+         this.strictTargetQueue = strictTargetQueue;
+     }
+ 
++    public void setStrictCardChoiceQueue(boolean strictCardChoiceQueue) {
++        this.strictCardChoiceQueue = strictCardChoiceQueue;
++    }
++
++    public void addCardChoiceGroup(List<String> cards) {
++        cardChoiceGroups.add(new ArrayList<>(cards));
++    }
++
++    public void assertNoCardChoiceGroups() {
++        if (!cardChoiceGroups.isEmpty()) {
++            throw new IllegalStateException("card choice group(s) were unconsumed: " + cardChoiceGroups);
++        }
++    }
++
+     public List<String> getTargets() {
+         return this.targets;
+     }
+@@ -4178,6 +4196,9 @@
+     }
+ 
+     private boolean makeChoose(Outcome outcome, Target target, Ability source, Game game, Cards fromCards) {
++        if (strictCardChoiceQueue && target instanceof TargetCard) {
++            return makeScenarioCardChoice(outcome, target, source, game, fromCards);
++        }
+         assertAliasSupportInChoices(true);
+ 
+         // choose itself for starting player all the time
+@@ -4283,6 +4304,44 @@
+         }
+     }
+ 
++    private boolean makeScenarioCardChoice(
++            Outcome outcome, Target target, Ability source, Game game, Cards fromCards) {
++        if (cardChoiceGroups.isEmpty()) {
++            throw new IllegalStateException("card-choice prompt arrived with an empty choose_cards queue");
++        }
++        List<String> group = cardChoiceGroups.remove(0);
++        int min = target.getMinNumberOfTargets() - target.getSize();
++        int max = target.getMaxNumberOfTargets() - target.getSize();
++        if (group.size() < min) {
++            throw new IllegalStateException("card choice group has " + group.size()
++                    + " cards but the prompt requires at least " + min);
++        }
++        if (group.size() > max) {
++            throw new IllegalStateException("card choice group has " + group.size()
++                    + " cards but the prompt allows at most " + max);
++        }
++
++        UUID abilityControllerId = target.getAffectedAbilityControllerId(this.getId());
++        PossibleTargetsSelector selector = new PossibleTargetsSelector(
++                outcome, target, abilityControllerId, source, game);
++        selector.findNewTargets(fromCards);
++        if (group.isEmpty()) {
++            target.setSkipChoice(true);
++            return false;
++        }
++        for (String label : group) {
++            MageObject selected = selector.getAny().stream()
++                    .filter(MageObject.class::isInstance)
++                    .map(MageObject.class::cast)
++                    .filter(card -> hasObjectTargetNameOrAlias(card, ALIAS_PREFIX + label))
++                    .findFirst()
++                    .orElseThrow(() -> new IllegalStateException(
++                            "card choice label " + label + " is not offered"));
++            target.add(selected.getId(), game);
++        }
++        return target.isChosen(game);
++    }
++
+     @Override
+     public boolean choose(Outcome outcome, Cards cards, TargetCard target, Ability source, Game game) {
+         return makeChoose(outcome, target, source, game, cards);
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -105,6 +105,8 @@
+         player(1).setAutoOrderIdenticalTriggers(true);
+         player(0).setStrictTargetQueue(true);
+         player(1).setStrictTargetQueue(true);
++        player(0).setStrictCardChoiceQueue(true);
++        player(1).setStrictCardChoiceQueue(true);
+         setStopAt(finalTurn, finalStep);
+         execute();
+         for (int index = 0; index < 2; index++) {
+@@ -112,6 +114,7 @@
+                 throw new IllegalStateException("trigger target group(s) were unconsumed when the script ended: "
+                         + player(index).getTargets());
+             }
++            player(index).assertNoCardChoiceGroups();
+         }
+         System.out.println(RESULT_PREFIX + GSON.toJson(result()));
+     }
+@@ -177,6 +180,18 @@
+                     }
+                     actingPlayer.addTarget(String.join("^", targets));
+                 }
++                case "choose_cards" -> {
++                    if (!action.has("cards") || !action.get("cards").isJsonArray()) {
++                        throw new IllegalArgumentException("choose_cards needs cards");
++                    }
++                    List<String> cards = strings(action.getAsJsonArray("cards"));
++                    for (String label : cards) {
++                        if (!labels.containsKey(label)) {
++                            throw new IllegalArgumentException("unknown card label " + label);
++                        }
++                    }
++                    actingPlayer.addCardChoiceGroup(cards);
++                }
+                 case "activate" -> {
+                     String source = requiredString(action, "source");
+                     String ability = requiredString(action, "ability");
+@@ -244,7 +259,7 @@
+             List<JsonElement> library = new ArrayList<>();
+             array(playerSetup, "library_top").forEach(library::add);
+             for (int cardIndex = library.size() - 1; cardIndex >= 0; cardIndex--) {
+-                addCard(Zone.LIBRARY, player, cardName(library.get(cardIndex)));
++                addSetupCard(Zone.LIBRARY, player, library.get(cardIndex));
+             }
+             addCards(Zone.GRAVEYARD, player, array(playerSetup, "graveyard"));
+         }
+@@ -289,7 +304,25 @@
+ 
+     private void addCards(Zone zone, TestPlayer player, JsonArray cards) {
+         for (JsonElement card : cards) {
+-            addCard(zone, player, cardName(card));
++            addSetupCard(zone, player, card);
++        }
++    }
++
++    private void addSetupCard(Zone zone, TestPlayer player, JsonElement item) {
++        String card = cardName(item);
++        if (item.isJsonObject() && item.getAsJsonObject().has("label")) {
++            String label = requiredString(item.getAsJsonObject(), "label");
++            if (labels.containsKey(label)) {
++                throw new IllegalArgumentException("duplicate setup label " + label);
++            }
++            addCard(zone, player, card + "@" + label);
++            UUID objectId = player.getAliasByName(label);
++            if (objectId == null) {
++                throw new IllegalArgumentException("XMage did not register setup label " + label);
++            }
++            labels.put(label, objectId);
++        } else {
++            addCard(zone, player, card);
+         }
+     }
+ 
+@@ -700,7 +733,7 @@
+             return value.getAsString();
+         }
+         JsonObject card = value.getAsJsonObject();
+-        rejectUnknownKeys(card, Set.of("card"), "card setup");
++        rejectUnknownKeys(card, Set.of("card", "label"), "card setup");
+         return requiredString(card, "card");
+     }
+ 
