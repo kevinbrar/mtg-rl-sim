@@ -3,7 +3,7 @@ new file mode 100644
 index 00000000000..91bff5c8b87
 --- /dev/null
 +++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-@@ -0,0 +1,506 @@
+@@ -0,0 +1,688 @@
 +package org.mage.test.testapi;
 +
 +import com.google.gson.Gson;
@@ -14,6 +14,7 @@ index 00000000000..91bff5c8b87
 +import com.google.gson.JsonObject;
 +import com.google.gson.JsonParser;
 +import mage.MageInt;
++import mage.ObjectColor;
 +import mage.abilities.SpellAbility;
 +import mage.cards.Card;
 +import mage.constants.PhaseStep;
@@ -39,6 +40,7 @@ index 00000000000..91bff5c8b87
 +import java.util.Comparator;
 +import java.util.LinkedHashMap;
 +import java.util.List;
++import java.util.Locale;
 +import java.util.Map;
 +import java.util.Set;
 +import java.util.UUID;
@@ -96,7 +98,7 @@ index 00000000000..91bff5c8b87
 +        activePlayer = active;
 +        skipInitShuffling();
 +        addScenarioSetup();
-+        scheduleCounterSetup(active);
++        scheduleObjectSetup(active);
 +        if (scenario.has("legal_targets_of")) {
 +            runCode("capture initial legal targets", 1, step, active, (info, player, game) -> {
 +                initialLegalTargets = legalTargets();
@@ -135,6 +137,38 @@ index 00000000000..91bff5c8b87
 +                    } else {
 +                        castSpell(turn, step, actingPlayer, card, String.join("^", targets));
 +                    }
++                    lastStep = step;
++                }
++                case "activate" -> {
++                    String source = requiredString(action, "source");
++                    String ability = requiredString(action, "ability");
++                    if (!labels.containsKey(source)) {
++                        throw new IllegalArgumentException("unknown battlefield label " + source);
++                    }
++                    UUID sourceId = labels.get(source);
++                    String command = "@" + source + " " + ability;
++                    List<String> targets = strings(array(action, "targets"));
++                    for (int index = 0; index < targets.size(); index++) {
++                        String label = targets.get(index);
++                        if (!labels.containsKey(label)) {
++                            throw new IllegalArgumentException("unknown target label " + label);
++                        }
++                        targets.set(index, "@" + label);
++                    }
++                    runCode("require unique activated ability", turn, step, actingPlayer,
++                            (info, player, game) -> actingPlayer.assertUniqueActivatedAbility(game, command));
++                    if (targets.isEmpty()) {
++                        activateAbility(turn, step, actingPlayer, command);
++                    } else {
++                        activateAbility(turn, step, actingPlayer, command, targets.toArray(String[]::new));
++                    }
++                    runCode("assert activation committed", turn, step, actingPlayer, (info, player, game) -> {
++                        boolean committed = game.getStack().stream()
++                                .anyMatch(stackObject -> sourceId.equals(stackObject.getSourceId()));
++                        if (!committed) {
++                            throw new IllegalStateException("activated ability did not commit to the stack");
++                        }
++                    });
 +                    lastStep = step;
 +                }
 +                case "pass_until_resolved" -> {
@@ -221,11 +255,11 @@ index 00000000000..91bff5c8b87
 +        }
 +    }
 +
-+    private void scheduleCounterSetup(TestPlayer active) {
-+        if (counters.isEmpty()) {
++    private void scheduleObjectSetup(TestPlayer active) {
++        if (counters.isEmpty() && !hasTappedFixture()) {
 +            return;
 +        }
-+        runCode("apply scenario counter fixtures", 1, PhaseStep.UPKEEP, active, (info, player, game) -> {
++        runCode("apply scenario permanent fixtures", 1, PhaseStep.UPKEEP, active, (info, player, game) -> {
 +            for (Map.Entry<String, Map<String, Integer>> fixture : counters.entrySet()) {
 +                Permanent permanent = game.getPermanent(labels.get(fixture.getKey()));
 +                if (permanent == null) {
@@ -240,8 +274,33 @@ index 00000000000..91bff5c8b87
 +                    permanent.getCounters(game).put(type.getName(), value);
 +                }
 +            }
++            for (Map.Entry<String, JsonElement> playerSetup : object(scenario, "setup").entrySet()) {
++                for (JsonElement element : array(playerSetup.getValue().getAsJsonObject(), "battlefield")) {
++                    JsonObject fixture = element.getAsJsonObject();
++                    if (!bool(fixture, "tapped", false)) {
++                        continue;
++                    }
++                    String label = requiredString(fixture, "label");
++                    Permanent permanent = game.getPermanent(labels.get(label));
++                    if (permanent == null) {
++                        throw new IllegalStateException("missing battlefield permanent " + label);
++                    }
++                    permanent.setTapped(true);
++                }
++            }
 +            ((GameImpl) game).applyEffects();
 +        });
++    }
++
++    private boolean hasTappedFixture() {
++        for (Map.Entry<String, JsonElement> playerSetup : object(scenario, "setup").entrySet()) {
++            for (JsonElement element : array(playerSetup.getValue().getAsJsonObject(), "battlefield")) {
++                if (bool(element.getAsJsonObject(), "tapped", false)) {
++                    return true;
++                }
++            }
++        }
++        return false;
 +    }
 +
 +    private JsonObject result() {
@@ -268,6 +327,15 @@ index 00000000000..91bff5c8b87
 +            item.addProperty("token", token);
 +            item.addProperty("controller", playerName(permanent.getControllerId()));
 +            item.addProperty("tapped", permanent.isTapped());
++            item.add("types", strings(permanent.getCardType(currentGame).stream()
++                    .map(type -> normalizeCharacteristic(type.toString()))
++                    .sorted()
++                    .toList()));
++            item.add("subtypes", strings(permanent.getSubtype(currentGame).stream()
++                    .map(subtype -> normalizeCharacteristic(subtype.getDescription()))
++                    .sorted()
++                    .toList()));
++            item.add("colors", strings(colorCodes(permanent.getColor(currentGame))));
 +            item.addProperty("damage", permanent.getDamage());
 +            JsonObject counterValues = new JsonObject();
 +            permanent.getCounters(currentGame).entrySet().stream()
@@ -380,7 +448,70 @@ index 00000000000..91bff5c8b87
 +            }
 +            default -> throw new IllegalArgumentException("unsupported reach zone " + zone);
 +        };
-+        return names.contains(card);
++        if (!names.contains(card)) {
++            return false;
++        }
++        if (zone.equals("battlefield")) {
++            boolean matchingPermanent = currentGame.getBattlefield().getAllActivePermanents().stream()
++                    .filter(candidate -> candidate.getControllerId().equals(player.getId()))
++                    .filter(candidate -> projectedName(candidate).equals(card))
++                    .anyMatch(candidate -> matchesReachCharacteristics(reach, candidate));
++            if (!matchingPermanent) {
++                return false;
++            }
++        }
++        for (String label : strings(array(reach, "tapped_labels"))) {
++            UUID id = labels.get(label);
++            if (id == null) {
++                throw new IllegalArgumentException("unknown battlefield label " + label);
++            }
++            Permanent permanent = currentGame.getPermanent(id);
++            if (permanent == null || !permanent.isTapped()) {
++                return false;
++            }
++        }
++        return true;
++    }
++
++    private boolean matchesReachCharacteristics(JsonObject reach, Permanent permanent) {
++        if (!matchesCharacteristicList(reach, "types", permanent.getCardType(currentGame).stream()
++                .map(type -> normalizeCharacteristic(type.toString()))
++                .toList())
++                || !matchesCharacteristicList(reach, "subtypes", permanent.getSubtype(currentGame).stream()
++                .map(subtype -> normalizeCharacteristic(subtype.getDescription()))
++                .toList())
++                || !matchesCharacteristicList(reach, "colors", colorCodes(permanent.getColor(currentGame)))) {
++            return false;
++        }
++        if (reach.has("creature")) {
++            boolean expected = reach.get("creature").getAsBoolean();
++            if (permanent.isCreature(currentGame) != expected) {
++                return false;
++            }
++        }
++        if (reach.has("power")) {
++            if (!characteristicMatches(reach.get("power"), permanent.isCreature(currentGame)
++                    ? permanent.getPower() : null)) {
++                return false;
++            }
++        }
++        if (reach.has("toughness")) {
++            if (!characteristicMatches(reach.get("toughness"), permanent.isCreature(currentGame)
++                    ? permanent.getToughness() : null)) {
++                return false;
++            }
++        }
++        if (reach.has("power_is_null")
++                && reach.get("power_is_null").getAsBoolean()
++                != (!permanent.isCreature(currentGame) || permanent.getPower() == null)) {
++            return false;
++        }
++        if (reach.has("toughness_is_null")
++                && reach.get("toughness_is_null").getAsBoolean()
++                != (!permanent.isCreature(currentGame) || permanent.getToughness() == null)) {
++            return false;
++        }
++        return !reach.has("tapped") || reach.get("tapped").getAsBoolean() == permanent.isTapped();
 +    }
 +
 +    private String labelOf(Permanent permanent) {
@@ -426,6 +557,57 @@ index 00000000000..91bff5c8b87
 +        } else {
 +            item.addProperty(key, characteristic.getValue());
 +        }
++    }
++
++    private static boolean characteristicMatches(JsonElement expected, MageInt actual) {
++        if (actual == null) {
++            return expected.isJsonNull();
++        }
++        return expected.isJsonPrimitive() && expected.getAsInt() == actual.getValue();
++    }
++
++    private static boolean matchesCharacteristicList(JsonObject reach, String key, List<String> actual) {
++        if (!reach.has(key)) {
++            return true;
++        }
++        List<String> expected = strings(reach.getAsJsonArray(key));
++        expected.replaceAll(CardScenarioProjectionTest::normalizeCharacteristic);
++        expected.sort(String::compareTo);
++        List<String> normalizedActual = new ArrayList<>(actual);
++        normalizedActual.sort(String::compareTo);
++        return expected.equals(normalizedActual);
++    }
++
++    private static List<String> colorCodes(ObjectColor color) {
++        List<String> result = new ArrayList<>();
++        if (color.isWhite()) {
++            result.add("W");
++        }
++        if (color.isBlue()) {
++            result.add("U");
++        }
++        if (color.isBlack()) {
++            result.add("B");
++        }
++        if (color.isRed()) {
++            result.add("R");
++        }
++        if (color.isGreen()) {
++            result.add("G");
++        }
++        result.sort(String::compareTo);
++        return result;
++    }
++
++    private static String normalizeCharacteristic(String value) {
++        String[] words = value.trim().toLowerCase(Locale.ROOT).split("\\s+");
++        for (int index = 0; index < words.length; index++) {
++            if (!words[index].isEmpty()) {
++                words[index] = words[index].substring(0, 1).toUpperCase(Locale.ROOT)
++                        + words[index].substring(1);
++            }
++        }
++        return String.join(" ", words);
 +    }
 +
 +    private static void rejectUnknownKeys(JsonObject object, Set<String> allowed, String context) {
@@ -565,3 +747,20 @@ index 00000000000..00000000000
 +        assertEquals("Rat", CardScenarioProjectionTest.projectedName("Rat", true));
 +    }
 +}
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -445,4 +445,13 @@
+         return foundObject && foundAbility;
+     }
+ 
++    public void assertUniqueActivatedAbility(Game game, String nameOrAlias) {
++        List<ActivatedAbility> matches = computerPlayer.getPlayable(game, true, Zone.BATTLEFIELD, false).stream()
++                .filter(Ability::isNonManaActivatedAbility)
++                .filter(ability -> hasAbilityTargetNameOrAlias(game, ability, nameOrAlias))
++                .toList();
++        Assert.assertEquals("Expected exactly one matching non-mana activated ability: " + nameOrAlias,
++                1, matches.size());
++    }
++
+     public boolean hasObjectTargetNameOrAlias(MageObject object, String nameOrAlias) {

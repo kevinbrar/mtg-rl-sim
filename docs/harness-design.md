@@ -43,12 +43,30 @@ same type when a script taps only some of them; use distinct colors where the
 spell costs allow it. This keeps tapped-state comparisons about game behavior,
 not auto-payment tie-breaking.
 
+## Scenario activation
+
+Scripts can activate a battlefield permanent with
+`{ action = "activate", source = "label", ability = "{cost}:" }`; `targets` is
+an optional list of setup labels. The source and targets resolve only through
+those labels. Both runners select exactly one non-mana activated ability whose
+normalized description starts with the cost prefix; zero, multiple, or missing
+descriptions fail closed. Phase submits `ActivateAbility` with automatic cost
+payment and handles target-selection prompts like casts. XMage uses its regular
+`activateAbility` helper, not the separate `manaActivate:` path.
+XMage applies `tapped = true` battlefield fixtures during upkeep, after its
+opening untap step, so the precombat-main state matches the Phase fixture.
+
 ## Comparator v0
 
 At every decision boundary and after each applied action, compare a canonical
 projection: zone contents per player by card name (hand/library/graveyard/
 battlefield/exile), stack spell names, life totals, tapped status, phase/turn.
 Divergence ⇒ dump both snapshots + the action history for triage.
+
+Battlefield object projections include sorted `types`, `subtypes`, and `colors`
+arrays. Type and subtype spelling is normalized by capitalization; colors use
+the single-letter W/U/B/R/G notation. These fields participate in exact
+projection comparison.
 
 Known noise sources to normalize: token names, DFC face names, card-name
 formatting (`Æ`, accents), zone ordering, phased-out permanents.
