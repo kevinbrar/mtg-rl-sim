@@ -129,7 +129,10 @@ duplicates, unknown scenarios in a run suite, malformed entries, and digest
 drift also fail closed. Entries for suites not run are ignored. The report
 artifact lists matched, triaged (including category and card), and failed
 scenarios and counts. This follows strict `xfail` semantics: once a difference
-disappears, remove its entry.
+disappears, remove its entry. CI compares base and head registry entries as
+whole tables; every added, edited, or removed entry requires its card in the
+packet's `cards:` list. The base reader accepts legacy entries with only a
+non-empty string `card` field.
 
 ## Validation loop in training later
 

@@ -6,7 +6,7 @@ _Updated 2026-11-12._
 - phase-rs pinned at `988bc34` + 30 local patches (`phase-patches/`, apply with `scripts/apply-phase-patches.sh`); all 18 unsupported Standard-meta cards supported; 29,417 engine tests pass. Evidence: `phase-patches/README.md`, `docs/debrief.md`.
 - Differential harness (`driver/diff_game.py`) v0: lands, creature casts, all-or-none attacks, no blocks, no targets. Real meta decks are **not** supported yet; the first Boros-vs-Dimir run reached an unmapped scry prompt at step 4.
 - phase-rs web client runs locally on the patched engine (`docs/play.md`).
-- The digest-pinned `oracle/known-diffs.toml` gate currently contains 2 `engine-bug` entries: Vren V2 and Anzrag A5. Both are committed scenarios; their output digests are checked by `xmage-diff`.
+- The digest-pinned `oracle/known-diffs.toml` gate currently contains 2 `engine-bug` entries: Vren V2 and Anzrag A5. Both are committed scenarios; their output digests are checked by `xmage-diff`. CI compares base/head entries as whole tables, requires each changed entry's card in the packet, and fails closed on registry-only changes with `cards: none`.
 - Upstream offer: phase-rs#10736; patches public at kevinbrar/phase@standard-meta-fixes.
 
 ## In progress

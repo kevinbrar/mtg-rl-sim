@@ -9,8 +9,10 @@ import pytest
 
 from scripts.compare_card_scenarios import compare, read_results
 from scripts.run_card_scenarios import (
+    check_changed_known_diff_entries,
     check_changed_scenario_suites,
     evaluate_known_diffs,
+    load_base_known_diffs,
     load_known_diffs,
     load_specs,
     main,
@@ -94,6 +96,51 @@ def test_runner_rejects_scenario_without_name_with_file_and_exit_two(
     error = capsys.readouterr().err
     assert str(spec) in error
     assert "scenario 1 is missing a name" in error
+
+
+def test_base_known_diffs_requires_changed_suite_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = tmp_path / "known-diffs.toml"
+    base_registry = tmp_path / "base-known-diffs.toml"
+    registry.write_text("", encoding="utf-8")
+    base_registry.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_card_scenarios.py",
+            "--known-diffs",
+            str(registry),
+            "--base-known-diffs",
+            str(base_registry),
+        ],
+    )
+
+    assert main() == 2
+    assert (
+        "--base-known-diffs requires --check-changed-suites" in capsys.readouterr().err
+    )
+
+
+def test_base_known_diffs_is_optional_when_registry_is_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    changed_files = tmp_path / "changed-files.txt"
+    changed_files.write_text("docs/unrelated.md\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_card_scenarios.py",
+            "--cards",
+            "Vren, the Relentless",
+            "--check-changed-suites",
+            str(changed_files),
+            "--known-diffs",
+            "oracle/known-diffs.toml",
+        ],
+    )
+
+    assert main() == 0
 
 
 def test_load_specs_rejects_damage_setup(tmp_path: Path) -> None:
@@ -609,6 +656,121 @@ def test_known_diffs_for_unrun_suites_are_ignored() -> None:
     report = evaluate_known_diffs({"suite": ["S1"]}, [result], [result], [unrelated])
 
     assert report["counts"] == {"matched": 1, "triaged": 0, "failed": 0}
+
+
+def _write_base_known_diffs(path: Path, entries: list[dict]) -> None:
+    lines = []
+    for entry in entries:
+        lines.append("[[diff]]")
+        lines.extend(f"{key} = {json.dumps(value)}" for key, value in entry.items())
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_changed_known_diff_entry_for_unlisted_card_fails(tmp_path: Path) -> None:
+    base_path = tmp_path / "base-known-diffs.toml"
+    _write_base_known_diffs(base_path, [{"card": "Vren", "rationale": "old"}])
+
+    with pytest.raises(ValueError, match="Vren"):
+        check_changed_known_diff_entries(
+            "Anzrag",
+            ["oracle/known-diffs.toml"],
+            base_path,
+            [{"card": "Vren", "rationale": "updated"}],
+        )
+
+
+def test_changed_known_diff_entry_for_listed_card_passes(tmp_path: Path) -> None:
+    base_path = tmp_path / "base-known-diffs.toml"
+    _write_base_known_diffs(base_path, [{"card": "Vren", "rationale": "old"}])
+
+    check_changed_known_diff_entries(
+        "Vren",
+        ["oracle/known-diffs.toml"],
+        base_path,
+        [{"card": "Vren", "rationale": "updated"}],
+    )
+
+
+def test_removed_known_diff_entry_requires_its_card(tmp_path: Path) -> None:
+    base_path = tmp_path / "base-known-diffs.toml"
+    _write_base_known_diffs(base_path, [{"card": "Vren", "rationale": "old"}])
+
+    with pytest.raises(ValueError, match="Vren"):
+        check_changed_known_diff_entries(
+            "Anzrag", ["oracle/known-diffs.toml"], base_path, []
+        )
+
+
+def test_added_known_diff_entry_requires_its_card(tmp_path: Path) -> None:
+    base_path = tmp_path / "base-known-diffs.toml"
+    _write_base_known_diffs(base_path, [])
+
+    with pytest.raises(ValueError, match="Vren"):
+        check_changed_known_diff_entries(
+            "Anzrag",
+            ["oracle/known-diffs.toml"],
+            base_path,
+            [{"card": "Vren", "rationale": "new"}],
+        )
+
+
+def test_unchanged_known_diff_registry_with_base_arg_passes(tmp_path: Path) -> None:
+    base_path = tmp_path / "base-known-diffs.toml"
+    unchanged = {"card": "Vren", "rationale": "same"}
+    _write_base_known_diffs(base_path, [unchanged])
+
+    check_changed_known_diff_entries(
+        "Vren",
+        ["oracle/known-diffs.toml"],
+        base_path,
+        [unchanged],
+    )
+
+
+def test_changed_known_diff_registry_without_base_arg_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    changed_files = tmp_path / "changed-files.txt"
+    changed_files.write_text("oracle/known-diffs.toml\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_card_scenarios.py",
+            "--cards",
+            "Vren, the Relentless",
+            "--check-changed-suites",
+            str(changed_files),
+            "--known-diffs",
+            "oracle/known-diffs.toml",
+        ],
+    )
+
+    assert main() == 2
+    assert "--base-known-diffs is required" in capsys.readouterr().err
+
+
+def test_base_known_diff_parser_accepts_old_entry_schema(tmp_path: Path) -> None:
+    path = tmp_path / "base-known-diffs.toml"
+    _write_base_known_diffs(path, [{"card": "Vren", "legacy_field": "accepted"}])
+
+    assert load_base_known_diffs(path) == [{"card": "Vren", "legacy_field": "accepted"}]
+
+
+@pytest.mark.parametrize(
+    ("entry", "error"),
+    [
+        ({"category": "engine-bug"}, "requires a non-empty card string"),
+        ({"card": 5}, "requires a non-empty card string"),
+    ],
+)
+def test_base_known_diff_parser_rejects_missing_or_non_string_card(
+    tmp_path: Path, entry: dict, error: str
+) -> None:
+    path = tmp_path / "base-known-diffs.toml"
+    _write_base_known_diffs(path, [entry])
+
+    with pytest.raises(ValueError, match=error):
+        load_base_known_diffs(path)
 
 
 def test_projection_sha256_uses_comparator_unordered_zone_normalization() -> None:

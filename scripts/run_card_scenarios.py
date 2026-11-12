@@ -13,6 +13,7 @@ import sys
 import tomllib
 import unicodedata
 import xml.etree.ElementTree as ET
+from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -137,6 +138,84 @@ def load_known_diffs(path: Path) -> list[dict]:
                     f"known-diffs diff {index} field {field} must be a 64-digit hex SHA-256"
                 )
     return entries
+
+
+def load_base_known_diffs(path: Path) -> list[dict]:
+    with path.open("rb") as source:
+        data = tomllib.load(source)
+    unknown_top_level = data.keys() - {"diff"}
+    if unknown_top_level:
+        raise ValueError(
+            f"unknown top-level base known-diffs field {min(unknown_top_level)}"
+        )
+    entries = data.get("diff", [])
+    if not isinstance(entries, list):
+        raise ValueError("base known-diffs diff must be an array")
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"base known-diffs diff {index} must be a table")
+        if not isinstance(entry.get("card"), str) or not entry["card"].strip():
+            raise ValueError(
+                f"base known-diffs diff {index} requires a non-empty card string"
+            )
+    return entries
+
+
+def _freeze_toml_value(value: object) -> object:
+    if isinstance(value, dict):
+        return tuple(
+            (key, _freeze_toml_value(item)) for key, item in sorted(value.items())
+        )
+    if isinstance(value, list):
+        return tuple(_freeze_toml_value(item) for item in value)
+    return value
+
+
+def _changed_known_diff_entries(
+    base_entries: list[dict], head_entries: list[dict]
+) -> list[dict]:
+    unmatched_head = Counter(_freeze_toml_value(entry) for entry in head_entries)
+    removed = []
+    for entry in base_entries:
+        key = _freeze_toml_value(entry)
+        if unmatched_head[key]:
+            unmatched_head[key] -= 1
+        else:
+            removed.append(entry)
+
+    unmatched_base = Counter(_freeze_toml_value(entry) for entry in base_entries)
+    added = []
+    for entry in head_entries:
+        key = _freeze_toml_value(entry)
+        if unmatched_base[key]:
+            unmatched_base[key] -= 1
+        else:
+            added.append(entry)
+    return [*removed, *added]
+
+
+def check_changed_known_diff_entries(
+    cards: str,
+    changed_files: Sequence[str],
+    base_path: Path | None,
+    head_entries: list[dict],
+) -> None:
+    registry_changed = "oracle/known-diffs.toml" in changed_files
+    if registry_changed and base_path is None:
+        raise ValueError(
+            "oracle/known-diffs.toml changed; --base-known-diffs is required"
+        )
+    if base_path is None:
+        return
+
+    base_entries = load_base_known_diffs(base_path)
+    changed_entries = _changed_known_diff_entries(base_entries, head_entries)
+    listed_cards = set(_card_names(cards))
+    missing_cards = sorted({entry["card"] for entry in changed_entries} - listed_cards)
+    if missing_cards:
+        raise ValueError(
+            "changed known-diff entries require cards: " + "; ".join(missing_cards)
+        )
 
 
 def scenario_names_by_suite(paths: list[Path]) -> dict[str, list[str]]:
@@ -509,7 +588,12 @@ def main() -> int:
     )
     parser.add_argument("--outdir", type=Path)
     parser.add_argument("--known-diffs", type=Path, required=True)
+    parser.add_argument("--base-known-diffs", type=Path)
     args = parser.parse_args()
+
+    if args.base_known_diffs is not None and args.check_changed_suites is None:
+        print("--base-known-diffs requires --check-changed-suites", file=sys.stderr)
+        return 2
 
     known_diffs_path = (
         args.known_diffs if args.known_diffs.is_absolute() else ROOT / args.known_diffs
@@ -532,8 +616,20 @@ def main() -> int:
                 encoding="utf-8"
             ).splitlines()
             check_changed_scenario_suites(args.cards, changed_files)
+            base_known_diffs_path = args.base_known_diffs
+            if (
+                base_known_diffs_path is not None
+                and not base_known_diffs_path.is_absolute()
+            ):
+                base_known_diffs_path = ROOT / base_known_diffs_path
+            check_changed_known_diff_entries(
+                args.cards,
+                changed_files,
+                base_known_diffs_path,
+                known_diffs,
+            )
         except (OSError, ValueError) as error:
-            print(f"invalid changed scenario suites: {error}", file=sys.stderr)
+            print(f"invalid changed scenario scope: {error}", file=sys.stderr)
             return 2
         return 0
 
