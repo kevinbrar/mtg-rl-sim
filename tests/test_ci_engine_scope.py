@@ -51,5 +51,6 @@ def test_listed_packet_cards_route_before_changed_path_skip() -> None:
     assert listed_cards < per_card_mode < changed_path_check
     assert (
         'python scripts/run_card_scenarios.py --cards "$CARDS" '
-        '--check-changed-suites "$RUNNER_TEMP/changed-files.txt"'
+        '--check-changed-suites "$RUNNER_TEMP/changed-files.txt" '
+        "--known-diffs oracle/known-diffs.toml"
     ) in workflow

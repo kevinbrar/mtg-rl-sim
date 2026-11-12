@@ -359,7 +359,7 @@ jobs:
         if: steps.scope.outputs.mode == 'per-card'
         env:
           CARDS: ${{ steps.scope.outputs.cards }}
-        run: python scripts/run_card_scenarios.py --cards "$CARDS" --check-changed-suites "$RUNNER_TEMP/changed-files.txt"
+        run: python scripts/run_card_scenarios.py --cards "$CARDS" --check-changed-suites "$RUNNER_TEMP/changed-files.txt" --known-diffs oracle/known-diffs.toml
       - name: Read pinned mage-bench revision
         id: mage-bench-pin
         if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
@@ -487,7 +487,7 @@ jobs:
         env:
           CARDS: ${{ steps.scope.outputs.cards }}
           MAGE_BENCH_ROOT: ${{ github.workspace }}/mage-bench
-        run: python scripts/run_card_scenarios.py --cards "$CARDS"
+        run: python scripts/run_card_scenarios.py --cards "$CARDS" --known-diffs oracle/known-diffs.toml
       - name: Run two-seed mono-green differential smoke
         if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         env:

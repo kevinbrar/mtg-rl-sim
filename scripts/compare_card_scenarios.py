@@ -12,7 +12,7 @@ def _json_sort_key(value: object) -> str:
     return json.dumps(value, sort_keys=True)
 
 
-def _normalize_unordered_zones(projection: object) -> object:
+def normalize_projection(projection: object) -> object:
     if not isinstance(projection, dict):
         return projection
     normalized = copy.deepcopy(projection)
@@ -64,7 +64,7 @@ def compare(left: dict[str, dict], right: dict[str, dict]) -> list[str]:
             differences.append(f"{name} missing projection on right")
         elif not a.get("reach", False) or not b.get("reach", False):
             differences.append(f"{name} (reach failed)")
-        elif _normalize_unordered_zones(a["projection"]) != _normalize_unordered_zones(
+        elif normalize_projection(a["projection"]) != normalize_projection(
             b["projection"]
         ):
             differences.append(name)

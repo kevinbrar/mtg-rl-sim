@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -16,10 +17,27 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+if __package__:
+    from .compare_card_scenarios import compare, normalize_projection
+else:
+    from compare_card_scenarios import compare, normalize_projection
+
 ROOT = Path(__file__).resolve().parents[1]
 MAGE_RESULT_PREFIX = "CARD_SCENARIO_RESULT:"
 PLAYER_SETUP_FIELDS = {"life", "battlefield", "hand", "library_top", "graveyard"}
 PERMANENT_SETUP_FIELDS = {"label", "card", "tapped", "counters"}
+KNOWN_DIFF_FIELDS = {
+    "card",
+    "category",
+    "rationale",
+    "link",
+    "regression_test",
+    "suite",
+    "scenario",
+    "phase_sha256",
+    "mage_sha256",
+}
+KNOWN_DIFF_CATEGORIES = {"engine-bug", "xmage-bug", "unsupported"}
 
 
 def _card_names(cards: str) -> list[str]:
@@ -78,6 +96,266 @@ def parse_mage_report(report: str) -> list[dict]:
             if line.startswith(MAGE_RESULT_PREFIX):
                 results.append(json.loads(line[len(MAGE_RESULT_PREFIX) :]))
     return results
+
+
+def load_known_diffs(path: Path) -> list[dict]:
+    with path.open("rb") as source:
+        data = tomllib.load(source)
+    unknown_top_level = data.keys() - {"diff"}
+    if unknown_top_level:
+        raise ValueError(
+            f"unknown top-level known-diffs field {min(unknown_top_level)}"
+        )
+    entries = data.get("diff", [])
+    if not isinstance(entries, list):
+        raise ValueError("known-diffs diff must be an array")
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"known-diffs diff {index} must be a table")
+        missing = KNOWN_DIFF_FIELDS - entry.keys()
+        unknown = entry.keys() - KNOWN_DIFF_FIELDS
+        if missing:
+            raise ValueError(
+                f"known-diffs diff {index} missing fields: {', '.join(sorted(missing))}"
+            )
+        if unknown:
+            raise ValueError(
+                f"known-diffs diff {index} has unknown fields: {', '.join(sorted(unknown))}"
+            )
+        for field in KNOWN_DIFF_FIELDS:
+            if not isinstance(entry[field], str) or not entry[field].strip():
+                raise ValueError(
+                    f"known-diffs diff {index} field {field} must be a non-empty string"
+                )
+        if entry["category"] not in KNOWN_DIFF_CATEGORIES:
+            raise ValueError(
+                f"known-diffs diff {index} has bad category {entry['category']!r}"
+            )
+        for field in ("phase_sha256", "mage_sha256"):
+            if re.fullmatch(r"[0-9a-fA-F]{64}", entry[field]) is None:
+                raise ValueError(
+                    f"known-diffs diff {index} field {field} must be a 64-digit hex SHA-256"
+                )
+    return entries
+
+
+def scenario_names_by_suite(paths: list[Path]) -> dict[str, list[str]]:
+    suites = {}
+    for path in paths:
+        suite = path.stem
+        if suite in suites:
+            raise ValueError(f"duplicate scenario suite stem {suite}")
+        with path.open("rb") as source:
+            data = tomllib.load(source)
+        suites[suite] = [scenario["name"] for scenario in data["scenarios"]]
+    return suites
+
+
+def projection_sha256(result: dict | None) -> str | None:
+    if result is None or result.get("projection") is None:
+        return None
+    projection = normalize_projection(result["projection"])
+    canonical = json.dumps(projection, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _results_by_name(
+    results: list[dict], engine: str
+) -> tuple[dict[str, dict], list[str]]:
+    mapped = {}
+    errors = []
+    for index, result in enumerate(results, start=1):
+        if not isinstance(result, dict) or not isinstance(result.get("scenario"), str):
+            errors.append(f"{engine} result {index} has no scenario name")
+            continue
+        name = result["scenario"]
+        if name in mapped:
+            errors.append(f"{engine} returned duplicate scenario {name}")
+        mapped[name] = result
+    return mapped, errors
+
+
+def evaluate_known_diffs(
+    suite_scenarios: dict[str, list[str]],
+    phase_results: list[dict],
+    mage_results: list[dict],
+    entries: list[dict],
+    runner_errors: list[str] | None = None,
+) -> dict:
+    expected_names = [
+        name for scenario_names in suite_scenarios.values() for name in scenario_names
+    ]
+    phase, phase_errors = _results_by_name(phase_results, "Phase")
+    mage, mage_errors = _results_by_name(mage_results, "XMage")
+    failed = [
+        {"suite": "<runner>", "scenario": "<runner>", "reason": error}
+        for error in [*(runner_errors or []), *phase_errors, *mage_errors]
+    ]
+    if list(phase) != expected_names:
+        failed.append(
+            {
+                "suite": "<runner>",
+                "scenario": "<Phase>",
+                "reason": "Phase scenario names or order differ from the requested suites",
+            }
+        )
+    if list(mage) != expected_names:
+        failed.append(
+            {
+                "suite": "<runner>",
+                "scenario": "<XMage>",
+                "reason": "XMage scenario names or order differ from the requested suites",
+            }
+        )
+
+    run_suites = set(suite_scenarios)
+    entries_by_key: dict[tuple[str, str], list[dict]] = {}
+    for entry in entries:
+        suite = entry["suite"]
+        if suite not in run_suites:
+            continue
+        key = (suite, entry["scenario"])
+        entries_by_key.setdefault(key, []).append(entry)
+        if entry["scenario"] not in suite_scenarios[suite]:
+            failed.append(
+                {
+                    "suite": suite,
+                    "scenario": entry["scenario"],
+                    "reason": "known-diff entry names a scenario not present in the run suite",
+                    "card": entry["card"],
+                }
+            )
+
+    duplicate_keys = set()
+    for (suite, scenario), matching in entries_by_key.items():
+        if len(matching) > 1:
+            duplicate_keys.add((suite, scenario))
+            failed.append(
+                {
+                    "suite": suite,
+                    "scenario": scenario,
+                    "reason": f"duplicate known-diff entries ({len(matching)})",
+                }
+            )
+
+    matched = []
+    triaged = []
+    for suite, names in suite_scenarios.items():
+        for name in names:
+            key = (suite, name)
+            matching = entries_by_key.get(key, [])
+            if key in duplicate_keys:
+                continue
+            phase_result = phase.get(name)
+            mage_result = mage.get(name)
+            differences = compare(
+                {name: phase_result} if phase_result is not None else {},
+                {name: mage_result} if mage_result is not None else {},
+            )
+            phase_digest = projection_sha256(phase_result)
+            mage_digest = projection_sha256(mage_result)
+            if not differences:
+                if matching:
+                    failed.append(
+                        {
+                            "suite": suite,
+                            "scenario": name,
+                            "reason": "stale known-diff entry; remove it",
+                            "card": matching[0]["card"],
+                            "phase_sha256": phase_digest,
+                            "mage_sha256": mage_digest,
+                        }
+                    )
+                else:
+                    matched.append({"suite": suite, "scenario": name})
+                continue
+
+            details = {
+                "suite": suite,
+                "scenario": name,
+                "differences": differences,
+                "phase_sha256": phase_digest,
+                "mage_sha256": mage_digest,
+            }
+            if not matching:
+                failed.append({**details, "reason": "untriaged divergence"})
+                continue
+            entry = matching[0]
+            if entry["category"] == "unsupported":
+                failed.append(
+                    {
+                        **details,
+                        "card": entry["card"],
+                        "reason": "unsupported entries never waive divergences",
+                    }
+                )
+            elif phase_digest is None or mage_digest is None:
+                failed.append(
+                    {
+                        **details,
+                        "card": entry["card"],
+                        "reason": "divergence has a missing projection and cannot be triaged",
+                    }
+                )
+            elif (
+                entry["phase_sha256"].lower() != phase_digest
+                or entry["mage_sha256"].lower() != mage_digest
+            ):
+                failed.append(
+                    {
+                        **details,
+                        "card": entry["card"],
+                        "reason": (
+                            "digest mismatch; "
+                            f"expected phase_sha256={entry['phase_sha256'].lower()} "
+                            f"mage_sha256={entry['mage_sha256'].lower()}; "
+                            f"observed phase_sha256={phase_digest}; "
+                            f"observed mage_sha256={mage_digest}"
+                        ),
+                    }
+                )
+            else:
+                triaged.append(
+                    {
+                        "suite": suite,
+                        "scenario": name,
+                        "category": entry["category"],
+                        "card": entry["card"],
+                        "phase_sha256": phase_digest,
+                        "mage_sha256": mage_digest,
+                    }
+                )
+
+    return {
+        "counts": {
+            "matched": len(matched),
+            "triaged": len(triaged),
+            "failed": len(failed),
+        },
+        "matched": matched,
+        "triaged": triaged,
+        "failed": failed,
+    }
+
+
+def format_known_diff_report(report: dict) -> str:
+    counts = report["counts"]
+    lines = [
+        f"MATCHED: {counts['matched']}",
+        f"TRIAGED: {counts['triaged']}",
+    ]
+    lines.extend(
+        f"  [{item['category']}] {item['card']}: {item['suite']} / {item['scenario']} "
+        f"(phase_sha256={item['phase_sha256']}, mage_sha256={item['mage_sha256']})"
+        for item in report["triaged"]
+    )
+    lines.append(f"FAILED: {counts['failed']}")
+    lines.extend(
+        f"  {item.get('suite', '<unknown>')} / {item.get('scenario', '<unknown>')}: "
+        f"{item['reason']}"
+        for item in report["failed"]
+    )
+    return "\n".join(lines) + "\n"
 
 
 def _validate_setup(scenario: dict) -> None:
@@ -230,7 +508,17 @@ def main() -> int:
         ),
     )
     parser.add_argument("--outdir", type=Path)
+    parser.add_argument("--known-diffs", type=Path, required=True)
     args = parser.parse_args()
+
+    known_diffs_path = (
+        args.known_diffs if args.known_diffs.is_absolute() else ROOT / args.known_diffs
+    )
+    try:
+        known_diffs = load_known_diffs(known_diffs_path)
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as error:
+        print(f"invalid known-diffs registry: {error}", file=sys.stderr)
+        return 2
 
     if args.check_changed_suites is not None:
         if not args.cards or args.specs:
@@ -268,8 +556,12 @@ def main() -> int:
 
     try:
         spec = load_specs(paths)
+        suite_scenarios = scenario_names_by_suite(paths)
     except (OSError, TypeError, ValueError, KeyError, tomllib.TOMLDecodeError) as error:
         print(f"invalid scenario spec: {error}", file=sys.stderr)
+        return 2
+    if not spec["scenarios"]:
+        print("no scenarios were run", file=sys.stderr)
         return 2
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     outdir = args.outdir or ROOT / "runs/card-scenarios" / stamp
@@ -296,10 +588,14 @@ def main() -> int:
     )
     (outdir / "phase.log").write_text(phase.stdout + phase.stderr, encoding="utf-8")
     phase_results = []
+    runner_errors = []
     try:
         phase_results = json.loads(phase.stdout)
-    except json.JSONDecodeError as error:
+        if not isinstance(phase_results, list):
+            raise ValueError("expected a list of scenario projections")
+    except (json.JSONDecodeError, ValueError) as error:
         print(f"Phase runner emitted invalid JSON: {error}", file=sys.stderr)
+        runner_errors.append(f"Phase runner emitted invalid JSON: {error}")
     mage_root = args.mage_bench_root
     if not mage_root.is_absolute():
         mage_root = ROOT / mage_root
@@ -341,43 +637,35 @@ def main() -> int:
     (outdir / "mage-projection.json").write_text(
         json.dumps(mage_results, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    expected = [scenario["name"] for scenario in spec["scenarios"]]
-    phase_names = [result.get("scenario") for result in phase_results]
-    mage_names = [result.get("scenario") for result in mage_results]
-    if phase_names != expected:
-        print("Phase runner returned unexpected scenario names", file=sys.stderr)
-    if mage_names != expected:
-        print("XMage runner returned unexpected scenario names", file=sys.stderr)
-    comparison = subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "scripts/compare_card_scenarios.py"),
-            str(outdir / "phase-projection.json"),
-            str(outdir / "mage-projection.json"),
-        ],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
+    if phase.returncode:
+        runner_errors.append(f"Phase runner exited {phase.returncode}")
+    if mage.returncode:
+        runner_errors.append(f"XMage runner exited {mage.returncode}")
+    report = evaluate_known_diffs(
+        suite_scenarios, phase_results, mage_results, known_diffs, runner_errors
     )
-    comparison_log = comparison.stdout + comparison.stderr
+    report_path = outdir / "known-diffs-report.json"
+    report_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    comparison_log = format_known_diff_report(report)
     (outdir / "compare.log").write_text(comparison_log, encoding="utf-8")
     print(comparison_log, end="")
-    if comparison.returncode:
-        try:
-            phase_values = json.loads(
-                (outdir / "phase-projection.json").read_text(encoding="utf-8")
+    phase_map, _ = _results_by_name(phase_results, "Phase")
+    mage_map, _ = _results_by_name(mage_results, "XMage")
+    for item in [*report["triaged"], *report["failed"]]:
+        scenario = item.get("scenario")
+        if not scenario or scenario not in phase_map or scenario not in mage_map:
+            continue
+        differences = compare(
+            {scenario: phase_map[scenario]}, {scenario: mage_map[scenario]}
+        )
+        if differences:
+            print(
+                f"DIVERGENCE {item.get('suite')} / {scenario}: {', '.join(differences)}"
             )
-            mage_values = json.loads(
-                (outdir / "mage-projection.json").read_text(encoding="utf-8")
-            )
-            phase_map = {value["scenario"]: value for value in phase_values}
-            mage_map = {value["scenario"]: value for value in mage_values}
-            line = comparison.stdout.strip()
-            names = line.removeprefix("DIFF: ").split(", ")
-            _print_differences(names, phase_map, mage_map)
-        except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
-            print(f"Could not load projections for divergence report: {error}")
+            print(f"phase-rs: {json.dumps(phase_map[scenario], sort_keys=True)}")
+            print(f"XMage: {json.dumps(mage_map[scenario], sort_keys=True)}")
     for engine, results in (("PHASE", phase_results), ("XMAGE", mage_results)):
         for result in results:
             if result.get("projection") is not None:
@@ -385,24 +673,8 @@ def main() -> int:
                     f"{engine} {result['scenario']} "
                     f"{json.dumps(result['projection'], separators=(',', ':'))}"
                 )
-    if phase.returncode:
-        print(
-            f"Phase runner exited {phase.returncode}; see {outdir / 'phase.log'}",
-            file=sys.stderr,
-        )
-    if mage.returncode:
-        print(
-            f"XMage runner exited {mage.returncode}; see {outdir / 'mage.log'}",
-            file=sys.stderr,
-        )
-    print(f"Artifacts: {outdir}")
-    return int(
-        phase.returncode != 0
-        or mage.returncode != 0
-        or comparison.returncode != 0
-        or phase_names != expected
-        or mage_names != expected
-    )
+    print(f"Artifacts: {outdir} (including {report_path.name})")
+    return int(report["counts"]["failed"] != 0)
 
 
 if __name__ == "__main__":
