@@ -36,6 +36,78 @@ library_top = ["Forest"]
 graveyard = []
 
 [[scenarios]]
+name = "A6 selects the second of two exiled creatures"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["p0.top.second-creature"] },
+  { action = "cast", card = "Anzrag's Rampage" },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Llanowar Elves", creature = true }
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "p0.ornithopter", card = "Ornithopter" },
+  { label = "p0.mountain", card = "Mountain" },
+  { label = "p0.copperline", card = "Copperline Gorge" },
+  { label = "p0.island", card = "Island" },
+  { label = "p0.plains", card = "Plains" },
+  { label = "p0.swamp", card = "Swamp" },
+]
+hand = ["Anzrag's Rampage"]
+library_top = [
+  { card = "Grizzly Bears", label = "p0.top.first-creature" },
+  { card = "Llanowar Elves", label = "p0.top.second-creature" },
+  "Forest",
+]
+graveyard = []
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "p1.celestus", card = "The Celestus" },
+  { label = "p1.bankbuster", card = "Reckoner Bankbuster" },
+]
+hand = []
+library_top = ["Mountain"]
+graveyard = []
+
+[[scenarios]]
+name = "A7 selects the only exiled creature"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["p0.top.first-creature"] },
+  { action = "cast", card = "Anzrag's Rampage" },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Grizzly Bears", creature = true }
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "p0.ornithopter", card = "Ornithopter" },
+  { label = "p0.mountain", card = "Mountain" },
+  { label = "p0.copperline", card = "Copperline Gorge" },
+  { label = "p0.island", card = "Island" },
+  { label = "p0.plains", card = "Plains" },
+  { label = "p0.swamp", card = "Swamp" },
+]
+hand = ["Anzrag's Rampage"]
+library_top = [
+  { card = "Grizzly Bears", label = "p0.top.first-creature" },
+  "Forest",
+]
+graveyard = []
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "p1.celestus", card = "The Celestus" },
+]
+hand = []
+library_top = ["Mountain"]
+graveyard = []
+
+[[scenarios]]
 name = "A5 chooses one of two exiled creatures"
 active_player = 0
 step = "precombat_main"
