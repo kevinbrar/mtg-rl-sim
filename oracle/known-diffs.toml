@@ -6,3 +6,10 @@ category = "engine-bug"
 rationale = "V2 creates two Rat tokens while Vren is on the battlefield. Vren is a Rat Rogue, so under CR 613 each token's continuous effect counts Vren and the other Rat, making both 3/3; CR 608.2h requires checking the resulting state after resolution. Phase remains 2/2 after mark_layers_full plus flush_layers immediately before projection. The parsed Vren token ability contains only constant AddPower(1)/AddToughness(1) modifiers and no other-Rat quantity. Patch 0005 only changes opponent-creature exile counting."
 link = "https://scryfall.com/search?q=%21%22Vren%2C+the+Relentless%22"
 regression_test = "runs/card-scenarios/vren-fixed-production-20261111/phase-projection.json and runs/card-scenarios/vren-layer-recompute-20261111/phase-projection.json"
+
+[[diff]]
+card = "Anzrag's Rampage"
+category = "engine-bug"
+rationale = "A5 (not yet in the committed suite): X exiles two creature cards and the controller chooses one. Oracle says 'You may put a creature card exiled this way onto the battlefield' (one card). XMage moves only the chosen Grizzly Bears; Phase moves Grizzly Bears and Llanowar Elves because patch 0007's card data models the choice as an optional ChangeZoneAll over the tracked exile set. A1-A4 exile at most one creature and are unaffected. Fix to patch 0007 card data and committed A5 follow in a separate PR with known-diffs CI integration."
+link = "https://scryfall.com/search?q=%21%22Anzrag%27s+Rampage%22"
+regression_test = "runs/card-scenarios/anzrag-a5-probe-20261112T065338/phase-projection.json and mage-projection.json"
