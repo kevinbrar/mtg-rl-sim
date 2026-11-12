@@ -227,14 +227,24 @@ fn apply_trigger_target_group(
     labels: &HashMap<ObjectId, String>,
     groups: &mut VecDeque<Vec<ObjectId>>,
 ) -> Result<(), String> {
+    let trigger_entry = runner
+        .state()
+        .pending_trigger_entry
+        .ok_or("trigger target prompt has no pending stack entry")?;
     let group = take_trigger_target_group(groups)?;
     let mut target_index = 0;
-    while let WaitingFor::TriggerTargetSelection {
-        target_slots,
-        selection,
-        ..
-    } = runner.state().waiting_for.clone()
-    {
+    loop {
+        let WaitingFor::TriggerTargetSelection {
+            target_slots,
+            selection,
+            ..
+        } = runner.state().waiting_for.clone()
+        else {
+            break;
+        };
+        if runner.state().pending_trigger_entry != Some(trigger_entry) {
+            break;
+        }
         let slot = target_slots
             .get(selection.current_slot)
             .ok_or("trigger target slot is missing")?;
@@ -1105,6 +1115,89 @@ mod tests {
         assert!(ensure_trigger_target_groups_consumed(&groups)
             .unwrap_err()
             .contains("unconsumed"));
+    }
+
+    #[test]
+    fn simultaneous_trigger_target_prompts_consume_groups_in_fifo_order() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let trigger_text = "Whenever a creature enters the battlefield under your control, tap target creature an opponent controls.";
+                let first_source = scenario
+                    .add_enchantment_from_oracle(PlayerId(0), "First trigger", trigger_text)
+                    .id();
+                let second_source = scenario
+                    .add_enchantment_from_oracle(PlayerId(0), "Second trigger", trigger_text)
+                    .id();
+                let first_target = scenario
+                    .add_creature(PlayerId(1), "First target", 1, 1)
+                    .id();
+                let second_target = scenario
+                    .add_creature(PlayerId(1), "Second target", 1, 1)
+                    .id();
+                let entering_creature = scenario
+                    .add_creature_to_hand(PlayerId(0), "Triggering creature", 1, 1)
+                    .with_mana_cost(engine::types::mana::ManaCost::generic(0))
+                    .id();
+                let mut runner = scenario.build();
+                let labels = HashMap::from([
+                    (first_target, "first".to_string()),
+                    (second_target, "second".to_string()),
+                ]);
+                let mut groups = VecDeque::from(vec![vec![first_target], vec![second_target]]);
+
+                runner.cast(entering_creature).commit();
+                runner.advance_until_stack_empty();
+                let prompt_identity = |runner: &GameRunner| match &runner.state().waiting_for {
+                    WaitingFor::TriggerTargetSelection {
+                        source_id: Some(source),
+                        ..
+                    } => (
+                        *source,
+                        runner
+                            .state()
+                            .pending_trigger_entry
+                            .expect("trigger prompt has a pending stack entry"),
+                    ),
+                    waiting_for => panic!("expected trigger target prompt, got {waiting_for:?}"),
+                };
+
+                let (prompt_source_1, prompt_entry_1) = prompt_identity(&runner);
+                assert!([first_source, second_source].contains(&prompt_source_1));
+                apply_trigger_target_group(&mut runner, &labels, &mut groups).unwrap();
+                let (prompt_source_2, prompt_entry_2) = prompt_identity(&runner);
+                assert!([first_source, second_source].contains(&prompt_source_2));
+                assert_ne!(prompt_source_1, prompt_source_2);
+                assert_ne!(prompt_entry_1, prompt_entry_2);
+                apply_trigger_target_group(&mut runner, &labels, &mut groups).unwrap();
+
+                assert!(groups.is_empty());
+                let targets_by_source = runner
+                    .state()
+                    .stack
+                    .iter()
+                    .filter_map(|entry| match &entry.kind {
+                        engine::types::game_state::StackEntryKind::TriggeredAbility {
+                            ability,
+                            ..
+                        } => Some((entry.source_id, ability.targets.clone())),
+                        _ => None,
+                    })
+                    .collect::<HashMap<_, _>>();
+                assert_eq!(
+                    targets_by_source.get(&prompt_source_1),
+                    Some(&vec![TargetRef::Object(first_target)])
+                );
+                assert_eq!(
+                    targets_by_source.get(&prompt_source_2),
+                    Some(&vec![TargetRef::Object(second_target)])
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
