@@ -117,6 +117,23 @@ zero.
 Known noise sources to normalize: token names, DFC face names, card-name
 formatting (`Æ`, accents), zone ordering, phased-out permanents.
 
+## Digest-pinned known differences
+
+`scripts/run_card_scenarios.py` requires `--known-diffs`. Each `[[diff]]` entry
+identifies one exact scenario by suite stem and scenario name, and pins the
+SHA-256 of each engine's projection after the comparator's unordered-zone
+normalization. A divergence is triaged only by exactly one matching entry in
+category `engine-bug` or `xmage-bug` with both digests unchanged. `unsupported`
+never waives a divergence. Matching scenarios with an entry are stale and fail;
+duplicates, unknown scenarios in a run suite, malformed entries, and digest
+drift also fail closed. Entries for suites not run are ignored. The report
+artifact lists matched, triaged (including category and card), and failed
+scenarios and counts. This follows strict `xfail` semantics: once a difference
+disappears, remove its entry. CI compares base and head registry entries as
+whole tables; every added, edited, or removed entry requires its card in the
+packet's `cards:` list. The base reader accepts legacy entries with only a
+non-empty string `card` field.
+
 ## Validation loop in training later
 
 Sample live self-play games (a % of games) through this same harness; a policy

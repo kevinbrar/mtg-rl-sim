@@ -1,0 +1,111 @@
+[[scenarios]]
+name = "V1 opponent creature exiled creates one Rat"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Shock", targets = ["p1-bear"] },
+  { action = "pass_until_resolved" },
+  { action = "end_turn" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Rat" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "mountain", card = "Mountain" },
+  { label = "vren", card = "Vren, the Relentless" },
+]
+hand = ["Shock"]
+library_top = ["Forest", "Mountain", "Swamp"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "p1-bear", card = "Grizzly Bears" }]
+hand = []
+library_top = ["Forest", "Mountain", "Swamp"]
+graveyard = []
+
+[[scenarios]]
+name = "V2 two opponent creatures exiled create two larger Rats"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Shock", targets = ["p1-walking-corpse"] },
+  { action = "pass_until_resolved" },
+  { action = "cast", card = "Shock", targets = ["p1-bear"] },
+  { action = "pass_until_resolved" },
+  { action = "end_turn" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Rat" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "mountain-1", card = "Mountain" },
+  { label = "mountain-2", card = "Mountain" },
+  { label = "vren", card = "Vren, the Relentless" },
+]
+hand = ["Shock", "Shock"]
+library_top = ["Forest", "Mountain", "Swamp"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [
+  { label = "p1-walking-corpse", card = "Walking Corpse" },
+  { label = "p1-bear", card = "Grizzly Bears" },
+]
+hand = []
+library_top = ["Forest", "Mountain", "Swamp"]
+graveyard = []
+
+[[scenarios]]
+name = "V3 own creature death does not create a Rat"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Shock", targets = ["p0-walking-corpse"] },
+  { action = "pass_until_resolved" },
+  { action = "end_turn" },
+]
+reach = { player = "P0", zone = "graveyard", card = "Walking Corpse" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "mountain", card = "Mountain" },
+  { label = "vren", card = "Vren, the Relentless" },
+  { label = "p0-walking-corpse", card = "Walking Corpse" },
+]
+hand = ["Shock"]
+library_top = ["Forest", "Mountain", "Swamp"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = ["Forest", "Mountain", "Swamp"]
+graveyard = []
+
+[[scenarios]]
+name = "V4 no creature death creates no Rat"
+active_player = 0
+step = "precombat_main"
+script = [{ action = "end_turn" }]
+reach = { player = "P0", zone = "battlefield", card = "Vren, the Relentless" }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [{ label = "vren", card = "Vren, the Relentless" }]
+hand = []
+library_top = ["Forest", "Mountain", "Swamp"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "p1-bear", card = "Grizzly Bears" }]
+hand = []
+library_top = ["Forest", "Mountain", "Swamp"]
+graveyard = []

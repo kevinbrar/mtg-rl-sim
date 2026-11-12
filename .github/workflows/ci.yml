@@ -324,7 +324,7 @@ jobs:
               echo "cards=$cards" >> "$GITHUB_OUTPUT"
             elif [[ "${cards,,}" == "none" ]] \
               && grep -Eiq '^(scripts/|\.github/workflows/)' "$RUNNER_TEMP/changed-files.txt" \
-              && ! grep -Eiq '^(phase-patches/|oracle/scenarios/|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
+              && ! grep -Eiq '^(phase-patches/|oracle/scenarios/|oracle/known-diffs\.toml$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
               echo "mode=smoke" >> "$GITHUB_OUTPUT"
             elif ! grep -Eiq '^(phase-patches/|phase(/|$)|phase-env/|oracle/|driver/diff_game\.py$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
               echo "mode=skip" >> "$GITHUB_OUTPUT"
@@ -333,7 +333,7 @@ jobs:
               echo "mode=fail-closed" >> "$GITHUB_OUTPUT"
               echo "reason=cards-missing" >> "$GITHUB_OUTPUT"
             elif [[ "${cards,,}" == "none" ]]; then
-              if grep -Eiq '^(phase-patches/|oracle/scenarios/|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
+              if grep -Eiq '^(phase-patches/|oracle/scenarios/|oracle/known-diffs\.toml$|([^/]+/)*card-data[^/]*\.json$)' "$RUNNER_TEMP/changed-files.txt"; then
                 echo "mode=fail-closed" >> "$GITHUB_OUTPUT"
                 echo "reason=cards-none-per-card" >> "$GITHUB_OUTPUT"
               else
@@ -349,17 +349,20 @@ jobs:
       - name: Fail closed for missing or required per-card scenario scope
         if: steps.scope.outputs.mode == 'fail-closed'
         run: |
-          echo "::error::xmage-diff requires a semicolon-separated cards: list and a scenario suite for every listed card; cards: none is not accepted for phase-patches, card-data, or oracle/scenarios changes"
+          echo "::error::xmage-diff requires a semicolon-separated cards: list and a scenario suite for every listed card; cards: none is not accepted for phase-patches, card-data, oracle/scenarios, or known-diffs changes"
           exit 1
       - uses: actions/setup-python@v5
         if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         with:
           python-version: "3.12"
-      - name: Validate changed scenario suites are listed
+      - name: Validate changed scenario suites and known-diff coverage
         if: steps.scope.outputs.mode == 'per-card'
         env:
+          BASE_REF: ${{ github.base_ref }}
           CARDS: ${{ steps.scope.outputs.cards }}
-        run: python scripts/run_card_scenarios.py --cards "$CARDS" --check-changed-suites "$RUNNER_TEMP/changed-files.txt"
+        run: |
+          git show "origin/$BASE_REF:oracle/known-diffs.toml" > "$RUNNER_TEMP/base-known-diffs.toml"
+          python scripts/run_card_scenarios.py --cards "$CARDS" --check-changed-suites "$RUNNER_TEMP/changed-files.txt" --known-diffs oracle/known-diffs.toml --base-known-diffs "$RUNNER_TEMP/base-known-diffs.toml"
       - name: Read pinned mage-bench revision
         id: mage-bench-pin
         if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
@@ -487,7 +490,7 @@ jobs:
         env:
           CARDS: ${{ steps.scope.outputs.cards }}
           MAGE_BENCH_ROOT: ${{ github.workspace }}/mage-bench
-        run: python scripts/run_card_scenarios.py --cards "$CARDS"
+        run: python scripts/run_card_scenarios.py --cards "$CARDS" --known-diffs oracle/known-diffs.toml
       - name: Run two-seed mono-green differential smoke
         if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         env:
