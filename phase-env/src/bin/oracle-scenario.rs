@@ -1315,11 +1315,9 @@ mod tests {
     fn card_choice_groups_left_at_script_end_fail_closed() {
         let groups = VecDeque::from(vec![vec![ObjectId(17)]]);
 
-        assert!(
-            ensure_card_choice_groups_consumed(&groups)
-                .unwrap_err()
-                .contains("unconsumed")
-        );
+        assert!(ensure_card_choice_groups_consumed(&groups)
+            .unwrap_err()
+            .contains("unconsumed"));
         assert!(ensure_card_choice_groups_consumed(&VecDeque::new()).is_ok());
     }
 
