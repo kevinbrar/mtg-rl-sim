@@ -8,7 +8,7 @@ use engine::types::{
     PlayerId, ResolvedAbility, TargetRef, WaitingFor, Zone,
 };
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
 fn card_name(state: &GameState, id: ObjectId) -> String {
@@ -205,6 +205,146 @@ fn resolve_target_labels(
             resolve_label(labels, label).map_err(|_| format!("unknown target label {label}"))
         })
         .collect()
+}
+
+fn cast_x(action: &Value, has_x_cost: bool) -> Result<Option<u32>, String> {
+    match (has_x_cost, action.get("x")) {
+        (true, None) => Err("cast of an X-cost spell requires x".to_string()),
+        (false, Some(_)) => Err("x is only valid for a spell with an X cost".to_string()),
+        (_, None) => Ok(None),
+        (true, Some(value)) => {
+            let x = value
+                .as_u64()
+                .ok_or("cast.x must be a non-negative integer")?;
+            let x = u32::try_from(x).map_err(|_| "cast.x exceeds the supported range")?;
+            Ok(Some(x))
+        }
+    }
+}
+
+fn apply_trigger_target_group(
+    runner: &mut GameRunner,
+    labels: &HashMap<ObjectId, String>,
+    groups: &mut VecDeque<Vec<ObjectId>>,
+) -> Result<(), String> {
+    let trigger_entry = runner
+        .state()
+        .pending_trigger_entry
+        .ok_or("trigger target prompt has no pending stack entry")?;
+    let group = take_trigger_target_group(groups)?;
+    let mut target_index = 0;
+    loop {
+        let WaitingFor::TriggerTargetSelection {
+            target_slots,
+            selection,
+            ..
+        } = runner.state().waiting_for.clone()
+        else {
+            break;
+        };
+        if runner.state().pending_trigger_entry != Some(trigger_entry) {
+            break;
+        }
+        let slot = target_slots
+            .get(selection.current_slot)
+            .ok_or("trigger target slot is missing")?;
+        let target = trigger_target_for_slot(
+            group.get(target_index).copied(),
+            &slot.legal_targets,
+            slot.optional,
+            labels,
+            selection.current_slot,
+        )?;
+        let has_target = target.is_some();
+        runner
+            .act(GameAction::ChooseTarget { target })
+            .map_err(|error| error.to_string())?;
+        if has_target {
+            target_index += 1;
+        }
+    }
+    ensure_trigger_target_group_consumed(group.len(), target_index)
+}
+
+fn take_trigger_target_group(
+    groups: &mut VecDeque<Vec<ObjectId>>,
+) -> Result<Vec<ObjectId>, String> {
+    groups.pop_front().ok_or_else(|| {
+        "trigger target prompt arrived with an empty trigger_targets queue".to_string()
+    })
+}
+
+fn trigger_target_for_slot(
+    id: Option<ObjectId>,
+    legal_targets: &[TargetRef],
+    optional: bool,
+    labels: &HashMap<ObjectId, String>,
+    slot_index: usize,
+) -> Result<Option<TargetRef>, String> {
+    let target = id.map(TargetRef::Object);
+    if target
+        .as_ref()
+        .is_some_and(|target| !legal_targets.contains(target))
+    {
+        let label = id
+            .and_then(|id| labels.get(&id))
+            .map(String::as_str)
+            .unwrap_or("<unknown>");
+        return Err(format!(
+            "trigger target label {label} is not legal for slot {slot_index}"
+        ));
+    }
+    if target.is_none() && !optional {
+        return Err(format!(
+            "trigger target group has too few targets for required slot {slot_index}"
+        ));
+    }
+    Ok(target)
+}
+
+fn ensure_trigger_target_group_consumed(group_len: usize, used: usize) -> Result<(), String> {
+    if group_len != used {
+        return Err(format!(
+            "trigger target group has {group_len} targets but used {used}"
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_trigger_target_groups_consumed(groups: &VecDeque<Vec<ObjectId>>) -> Result<(), String> {
+    if groups.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} trigger target group(s) were unconsumed when the script ended",
+        groups.len()
+    ))
+}
+
+fn pass_until_resolved(
+    runner: &mut GameRunner,
+    labels: &HashMap<ObjectId, String>,
+    groups: &mut VecDeque<Vec<ObjectId>>,
+) -> Result<(), String> {
+    for _ in 0..128 {
+        if matches!(
+            runner.state().waiting_for,
+            WaitingFor::TriggerTargetSelection { .. }
+        ) {
+            apply_trigger_target_group(runner, labels, groups)?;
+        } else {
+            runner.advance_until_stack_empty();
+        }
+        if runner.state().stack.is_empty()
+            && !matches!(
+                runner.state().waiting_for,
+                WaitingFor::TriggerTargetSelection { .. }
+            )
+        {
+            return Ok(());
+        }
+    }
+    Err("stack did not resolve within 128 actions".to_string())
 }
 
 fn activate(
@@ -567,6 +707,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
         legal = Some(targets);
     }
     let actions = spec["script"].as_array().cloned().unwrap_or_default();
+    let mut trigger_target_groups = VecDeque::new();
     for (action_index, action) in actions.iter().enumerate() {
         match action["action"].as_str().unwrap_or_default() {
             "cast" => {
@@ -584,12 +725,28 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                             .is_some_and(|object| object.name == card)
                     })
                     .ok_or_else(|| format!("{card} is not in the active player's hand"))?;
+                let has_x_cost = match &runner.state().objects[&spell].mana_cost {
+                    engine::types::mana::ManaCost::Cost { shards, .. } => {
+                        shards.contains(&engine::types::mana::ManaCostShard::X)
+                    }
+                    _ => false,
+                };
+                let x = cast_x(action, has_x_cost)?;
                 let target_ids = resolve_target_labels(action, &labels)?;
-                let _ = runner.cast(spell).target_objects(&target_ids).commit();
+                let cast = runner.cast(spell);
+                let cast = if let Some(x) = x { cast.x(x) } else { cast };
+                let _ = cast.target_objects(&target_ids).commit();
             }
             "activate" => activate(&mut runner, &labels, action)?,
+            "trigger_targets" => {
+                let targets = resolve_target_labels(action, &labels)?;
+                if targets.is_empty() {
+                    return Err("trigger_targets needs at least one target".to_string());
+                }
+                trigger_target_groups.push_back(targets);
+            }
             "pass_until_resolved" => {
-                runner.advance_until_stack_empty();
+                pass_until_resolved(&mut runner, &labels, &mut trigger_target_groups)?;
             }
             "end_turn" | "next_turn" => {
                 advance_to_next_turn(&mut runner, action_index + 1 < actions.len())?;
@@ -597,6 +754,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
             other => return Err(format!("unsupported action {other}")),
         }
     }
+    ensure_trigger_target_groups_consumed(&trigger_target_groups)?;
     let reached = check_reach(runner.state(), &labels, spec.get("reach"))?;
     Ok(json!({
         "scenario": name,
@@ -909,6 +1067,137 @@ mod tests {
         assert!(select_activation_ability(missing, "{T}:")
             .unwrap_err()
             .contains("missing a description"));
+    }
+
+    #[test]
+    fn cast_x_requires_an_explicit_non_negative_value_only_for_x_costs() {
+        assert_eq!(cast_x(&json!({}), false), Ok(None));
+        assert_eq!(cast_x(&json!({"x": 0}), true), Ok(Some(0)));
+        assert!(cast_x(&json!({"x": 2}), false)
+            .unwrap_err()
+            .contains("only valid"));
+        assert!(cast_x(&json!({}), true).unwrap_err().contains("requires x"));
+        assert!(cast_x(&json!({"x": -1}), true)
+            .unwrap_err()
+            .contains("non-negative"));
+    }
+
+    #[test]
+    fn trigger_target_groups_fail_closed_when_empty_illegal_or_unconsumed() {
+        let mut groups = VecDeque::new();
+        assert!(take_trigger_target_group(&mut groups)
+            .unwrap_err()
+            .contains("empty trigger_targets queue"));
+
+        let target = ObjectId(17);
+        let labels = HashMap::from([(target, "p1.creature".to_string())]);
+        let second_target = ObjectId(18);
+        let mut groups = VecDeque::from(vec![vec![target], vec![second_target]]);
+        assert_eq!(take_trigger_target_group(&mut groups), Ok(vec![target]));
+        assert_eq!(
+            take_trigger_target_group(&mut groups),
+            Ok(vec![second_target])
+        );
+
+        assert!(
+            trigger_target_for_slot(Some(target), &[], false, &labels, 0,)
+                .unwrap_err()
+                .contains("not legal")
+        );
+        assert!(trigger_target_for_slot(None, &[], false, &labels, 0)
+            .unwrap_err()
+            .contains("too few targets"));
+        assert!(ensure_trigger_target_group_consumed(2, 1)
+            .unwrap_err()
+            .contains("used 1"));
+
+        let groups = VecDeque::from(vec![vec![target]]);
+        assert!(ensure_trigger_target_groups_consumed(&groups)
+            .unwrap_err()
+            .contains("unconsumed"));
+    }
+
+    #[test]
+    fn simultaneous_trigger_target_prompts_consume_groups_in_fifo_order() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let trigger_text = "Whenever a creature enters the battlefield under your control, tap target creature an opponent controls.";
+                let first_source = scenario
+                    .add_enchantment_from_oracle(PlayerId(0), "First trigger", trigger_text)
+                    .id();
+                let second_source = scenario
+                    .add_enchantment_from_oracle(PlayerId(0), "Second trigger", trigger_text)
+                    .id();
+                let first_target = scenario
+                    .add_creature(PlayerId(1), "First target", 1, 1)
+                    .id();
+                let second_target = scenario
+                    .add_creature(PlayerId(1), "Second target", 1, 1)
+                    .id();
+                let entering_creature = scenario
+                    .add_creature_to_hand(PlayerId(0), "Triggering creature", 1, 1)
+                    .with_mana_cost(engine::types::mana::ManaCost::generic(0))
+                    .id();
+                let mut runner = scenario.build();
+                let labels = HashMap::from([
+                    (first_target, "first".to_string()),
+                    (second_target, "second".to_string()),
+                ]);
+                let mut groups = VecDeque::from(vec![vec![first_target], vec![second_target]]);
+
+                runner.cast(entering_creature).commit();
+                runner.advance_until_stack_empty();
+                let prompt_identity = |runner: &GameRunner| match &runner.state().waiting_for {
+                    WaitingFor::TriggerTargetSelection {
+                        source_id: Some(source),
+                        ..
+                    } => (
+                        *source,
+                        runner
+                            .state()
+                            .pending_trigger_entry
+                            .expect("trigger prompt has a pending stack entry"),
+                    ),
+                    waiting_for => panic!("expected trigger target prompt, got {waiting_for:?}"),
+                };
+
+                let (prompt_source_1, prompt_entry_1) = prompt_identity(&runner);
+                assert!([first_source, second_source].contains(&prompt_source_1));
+                apply_trigger_target_group(&mut runner, &labels, &mut groups).unwrap();
+                let (prompt_source_2, prompt_entry_2) = prompt_identity(&runner);
+                assert!([first_source, second_source].contains(&prompt_source_2));
+                assert_ne!(prompt_source_1, prompt_source_2);
+                assert_ne!(prompt_entry_1, prompt_entry_2);
+                apply_trigger_target_group(&mut runner, &labels, &mut groups).unwrap();
+
+                assert!(groups.is_empty());
+                let targets_by_source = runner
+                    .state()
+                    .stack
+                    .iter()
+                    .filter_map(|entry| match &entry.kind {
+                        engine::types::game_state::StackEntryKind::TriggeredAbility {
+                            ability,
+                            ..
+                        } => Some((entry.source_id, ability.targets.clone())),
+                        _ => None,
+                    })
+                    .collect::<HashMap<_, _>>();
+                assert_eq!(
+                    targets_by_source.get(&prompt_source_1),
+                    Some(&vec![TargetRef::Object(first_target)])
+                );
+                assert_eq!(
+                    targets_by_source.get(&prompt_source_2),
+                    Some(&vec![TargetRef::Object(second_target)])
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

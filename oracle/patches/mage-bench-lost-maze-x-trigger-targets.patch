@@ -1,0 +1,88 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -95,3 +95,9 @@
+         setStopAt(finalTurn, finalStep);
+         execute();
++        for (int index = 0; index < 2; index++) {
++            if (!player(index).getTargets().isEmpty()) {
++                throw new IllegalStateException("trigger target group(s) were unconsumed when the script ended: "
++                        + player(index).getTargets());
++            }
++        }
+         System.out.println(RESULT_PREFIX + GSON.toJson(result()));
+@@ -121,3 +127,23 @@
+                 case "cast" -> {
+                     String card = requiredString(action, "card");
++                    boolean hasX = action.has("x");
++                    int x = hasX ? exactInteger(action.get("x"), "cast.x") : 0;
++                    if (x < 0) {
++                        throw new IllegalArgumentException("cast.x must be a non-negative integer");
++                    }
++                    runCode("validate X announcement", turn, step, actingPlayer, (info, player, game) -> {
++                        Card spell = actingPlayer.getHand().getCards(game).stream()
++                                .filter(candidate -> candidate.getName().equals(card))
++                                .findFirst()
++                                .orElseThrow(() -> new IllegalStateException(card + " is not in the active player's hand"));
++                        boolean hasXCost = spell.getManaCost().getText().contains("{X}");
++                        if (hasXCost != hasX) {
++                            throw new IllegalStateException(hasXCost
++                                    ? "cast of an X-cost spell requires x"
++                                    : "x is only valid for a spell with an X cost");
++                        }
++                    });
++                    if (hasX) {
++                        setChoice(actingPlayer, "X=" + x);
++                    }
+                     List<String> targets = strings(array(action, "targets"));
+@@ -154,4 +180,18 @@
+                     }
+                     lastStep = step;
+                 }
++                case "trigger_targets" -> {
++                    List<String> targets = strings(array(action, "targets"));
++                    if (targets.isEmpty()) {
++                        throw new IllegalArgumentException("trigger_targets needs at least one target");
++                    }
++                    for (int index = 0; index < targets.size(); index++) {
++                        String label = targets.get(index);
++                        if (!labels.containsKey(label)) {
++                            throw new IllegalArgumentException("unknown target label " + label);
++                        }
++                        targets.set(index, "@" + label);
++                    }
++                    actingPlayer.addTarget(String.join("^", targets));
++                }
+                 case "activate" -> {
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -2384,9 +2399,9 @@ public class TestPlayer implements Player {
+                     }
+                     checkTargetDefinitionMarksSupport(target, targetDefinition, "^[]");
+                     String[] targetList = targetDefinition.split("\\^");
+-                    boolean targetFound = false;
++                    boolean targetFound = true;
+                     for (String targetName : targetList) {
+-                        targetFound = false; // must have all valid targets from list
++                        boolean currentTargetFound = false;
+                         boolean originOnly = false;
+                         boolean copyOnly = false;
+                         if (targetName.endsWith("]")) {
+@@ -2411,11 +2426,15 @@
+                                 if (target.possibleTargets(abilityControllerId, source, game).contains(permanent.getId())) {
+                                     if ((permanent.isCopy() && !originOnly) || (!permanent.isCopy() && !copyOnly)) {
+                                         target.addTarget(permanent.getId(), source, game);
+-                                        targetFound = true;
++                                        currentTargetFound = true;
+                                         break; // return to next targetName
+                                     }
+                                 }
+                             }
+                         }
++                        if (!currentTargetFound) {
++                            targetFound = false;
++                            break;
++                        }
+                     }
+                     if (targetFound) {

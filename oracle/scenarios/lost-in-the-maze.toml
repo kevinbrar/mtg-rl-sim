@@ -1,0 +1,89 @@
+[[scenarios]]
+name = "LM1 X=2 targets one creature per player"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "trigger_targets", targets = ["p0.target", "p1.target"] },
+  { action = "cast", card = "Lost in the Maze", x = 2 },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P1", zone = "battlefield", card = "Walking Corpse", tapped = true, counters = { stun = 1 }, tapped_labels = ["p0.target", "p1.target"] }
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "p0.island", card = "Island" },
+  { label = "p0.island.2", card = "Island" },
+  { label = "p0.plains", card = "Plains" },
+  { label = "p0.swamp", card = "Swamp" },
+  { label = "p0.target", card = "Grizzly Bears" },
+]
+hand = ["Lost in the Maze"]
+library_top = ["Island", "Island", "Island", "Island", "Island", "Island", "Island", "Island"]
+graveyard = []
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "p1.target", card = "Walking Corpse" },
+  { label = "p1.untargeted", card = "Grizzly Bears" },
+]
+hand = []
+library_top = ["Island", "Island", "Island", "Island", "Island", "Island", "Island", "Island"]
+graveyard = []
+
+[[scenarios]]
+name = "LM2 X=0 has no target prompt"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Lost in the Maze", x = 0 },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P1", zone = "battlefield", card = "Walking Corpse", tapped = false, counters = { stun = 0 } }
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "p0.island", card = "Island" },
+  { label = "p0.island.2", card = "Island" },
+]
+hand = ["Lost in the Maze"]
+library_top = ["Island", "Island", "Island", "Island", "Island", "Island", "Island", "Island"]
+graveyard = []
+
+[scenarios.setup.P1]
+battlefield = [{ label = "p1.target", card = "Walking Corpse" }]
+hand = []
+library_top = ["Island", "Island", "Island", "Island", "Island", "Island", "Island", "Island"]
+graveyard = []
+
+[[scenarios]]
+name = "LM3 X=3 targets all three opponent creatures"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "trigger_targets", targets = ["p1.target.0", "p1.target.1", "p1.target.2"] },
+  { action = "cast", card = "Lost in the Maze", x = 3 },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P1", zone = "battlefield", card = "Walking Corpse", tapped = true, counters = { stun = 1 }, tapped_labels = ["p1.target.0", "p1.target.1", "p1.target.2"] }
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "p0.island", card = "Island" },
+  { label = "p0.island.2", card = "Island" },
+  { label = "p0.plains", card = "Plains" },
+  { label = "p0.swamp", card = "Swamp" },
+  { label = "p0.forest", card = "Forest" },
+]
+hand = ["Lost in the Maze"]
+library_top = ["Island", "Island", "Island", "Island", "Island", "Island", "Island", "Island"]
+graveyard = []
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "p1.target.0", card = "Walking Corpse" },
+  { label = "p1.target.1", card = "Grizzly Bears" },
+  { label = "p1.target.2", card = "Runeclaw Bear" },
+]
+hand = []
+library_top = ["Island", "Island", "Island", "Island", "Island", "Island", "Island", "Island"]
+graveyard = []
