@@ -67,6 +67,10 @@ _Updated 2026-11-12._
 - Representative mutants measurement: 16 candidates; 4 missed, 1 timeout, 11 unknown after about 33 minutes. Log: `/home/ubuntu/ci-governance-worktrees/mutants-0017-tmpfs.log`.
 - Branch protection is enabled on the public repository: all six required checks, `enforce_admins` on, no approvals required.
 
+## In progress
+- Lost in the Maze X-cast and triggered-target harness: LM1–LM3 match Phase and XMage (3/3), and the prior 18 scenarios still match (21/21 combined). With patch 0001 reverted via pinned baseline card data, LM1 and LM3 diverge on missing stun counters; LM2 matches. Evidence: `runs/card-scenarios/lost-maze-x-trigger-targets-20261112/` and `runs/card-scenarios/lost-maze-no-0001-20261112/`.
+- `oracle/xmage-missing.txt` already lists Seasoned Cryomancer and Uldaros Theorix as unavailable at the pinned Mage-Bench revision.
+
 ## Merged / done
 - PR #21 merged: canonical unordered-zone comparison and semicolon-separated card lists.
 - PR #22 merged: deterministic XMage library fixtures, token projections, and forced scenario mana payments.

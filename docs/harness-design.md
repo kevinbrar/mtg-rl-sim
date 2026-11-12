@@ -56,6 +56,23 @@ payment and handles target-selection prompts like casts. XMage uses its regular
 XMage applies `tapped = true` battlefield fixtures during upkeep, after its
 opening untap step, so the precombat-main state matches the Phase fixture.
 
+## X casts and triggered-ability targets
+
+`cast` accepts an optional non-negative `x` value. Both runners require it for
+spells with X in their mana cost and reject it for spells without X; there is no
+default. Phase passes the value to the cast builder. XMage queues `X=<n>` for
+TestPlayer's X-announcement prompt. An X=0 spell that creates no target prompt
+does not need a `trigger_targets` action.
+
+`trigger_targets` queues one nonempty group of battlefield labels in FIFO
+order. Queue a group before the cast or other action that causes its trigger to
+go on the stack. The next triggered-ability target prompt consumes exactly one group.
+Phase rejects an empty queue, illegal labels, groups with too few required or
+too many targets, and groups left when the script ends. XMage uses one
+`addTarget` entry per group and strict choose mode fails on missing or illegal
+targets; the runner also rejects unconsumed target entries at script end.
+Optional target slots may be left unselected when the prompt allows it.
+
 ## Multi-turn scenario scripts
 
 `end_turn` advances to the next turn's precombat main when a later action is
@@ -67,8 +84,8 @@ first exposed state after the untap step.
 
 XMage automatically orders a trigger group only when every trigger has the
 same source and rule text; any other group fails with its pending triggers
-listed. Strict choose mode remains enabled. Phase's scenario helper drains
-pending trigger-order prompts using identity index order.
+listed. Strict choose mode remains enabled. Phase drains every pending
+trigger-order prompt by identity index, without an identical-only guard.
 
 ## Comparator v0
 
