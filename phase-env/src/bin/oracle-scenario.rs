@@ -400,14 +400,40 @@ fn validate_setup(scenario: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn advance_to_next_turn(runner: &mut GameRunner) -> Result<(), String> {
+fn advance_to_next_turn(
+    runner: &mut GameRunner,
+    continue_to_precombat_main: bool,
+) -> Result<(), String> {
     let turn = runner.state().turn_number;
-    for _ in 0..64 {
-        if runner.state().turn_number != turn {
-            return Ok(());
+    let mut next_turn = None;
+    for _ in 0..128 {
+        let (current_turn, phase, waiting_for, stack_empty) = {
+            let state = runner.state();
+            (
+                state.turn_number,
+                state.phase,
+                state.waiting_for.clone(),
+                state.stack.is_empty(),
+            )
+        };
+        if current_turn != turn {
+            if !continue_to_precombat_main {
+                return Ok(());
+            }
+            let expected_turn = *next_turn.get_or_insert(current_turn);
+            if current_turn != expected_turn {
+                return Err("turn advanced again before reaching precombat main".to_string());
+            }
+            if phase == Phase::PreCombatMain
+                && stack_empty
+                && matches!(waiting_for, WaitingFor::Priority { .. })
+            {
+                return Ok(());
+            }
         }
-        let waiting_for = runner.state().waiting_for.clone();
-        if matches!(waiting_for, WaitingFor::Priority { .. }) && !runner.state().stack.is_empty() {
+        if matches!(waiting_for, WaitingFor::OrderTriggers { .. })
+            || matches!(waiting_for, WaitingFor::Priority { .. }) && !stack_empty
+        {
             runner.advance_until_stack_empty();
             continue;
         }
@@ -426,7 +452,7 @@ fn advance_to_next_turn(runner: &mut GameRunner) -> Result<(), String> {
         };
         runner.act(action).map_err(|error| error.to_string())?;
     }
-    Err("turn did not advance within 64 actions".to_string())
+    Err("turn did not advance within 128 actions".to_string())
 }
 
 fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
@@ -540,7 +566,8 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
         targets.sort();
         legal = Some(targets);
     }
-    for action in spec["script"].as_array().into_iter().flatten() {
+    let actions = spec["script"].as_array().cloned().unwrap_or_default();
+    for (action_index, action) in actions.iter().enumerate() {
         match action["action"].as_str().unwrap_or_default() {
             "cast" => {
                 let card = action["card"].as_str().ok_or("cast needs card")?;
@@ -565,7 +592,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 runner.advance_until_stack_empty();
             }
             "end_turn" | "next_turn" => {
-                advance_to_next_turn(&mut runner)?;
+                advance_to_next_turn(&mut runner, action_index + 1 < actions.len())?;
             }
             other => return Err(format!("unsupported action {other}")),
         }
@@ -623,6 +650,7 @@ fn check_reach(
             "toughness",
             "creature",
             "tapped",
+            "counters",
         ]
         .iter()
         .any(|key| reach.get(key).is_some()));
@@ -697,6 +725,26 @@ fn matches_reach_characteristics(object: &GameObject, reach: &Value) -> Result<b
                 .collect::<Result<Vec<_>, _>>()?;
             expected.sort();
             if expected != actual {
+                return Ok(false);
+            }
+        }
+    }
+    if let Some(expected) = reach.get("counters") {
+        let Some(expected) = expected.as_object() else {
+            return Err("reach.counters must be an object".to_string());
+        };
+        for (name, count) in expected {
+            let Some(expected) = count.as_u64() else {
+                return Err(format!(
+                    "reach.counters.{name} must be a non-negative integer"
+                ));
+            };
+            let actual = object
+                .counters
+                .get(&parse_counter_type(name))
+                .copied()
+                .unwrap_or_default();
+            if u64::from(actual) != expected {
                 return Ok(false);
             }
         }
@@ -997,9 +1045,84 @@ mod tests {
                 assert!(!runner.state().objects[&creature].summoning_sick);
                 let turn = runner.state().turn_number;
 
-                advance_to_next_turn(&mut runner).unwrap();
+                advance_to_next_turn(&mut runner, false).unwrap();
 
                 assert_ne!(runner.state().turn_number, turn);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn end_turn_reaches_precombat_main_after_draw_and_trigger_resolution() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let _draw_trigger = scenario
+                    .add_creature_from_oracle(
+                        PlayerId(0),
+                        "Draw Trigger Creature",
+                        0,
+                        2,
+                        "Whenever you draw a card, you gain 2 life.",
+                    )
+                    .id();
+                let _second_draw_trigger = scenario
+                    .add_creature_from_oracle(
+                        PlayerId(0),
+                        "Second Draw Trigger Creature",
+                        0,
+                        2,
+                        "Whenever you draw a card, you gain 3 life.",
+                    )
+                    .id();
+                scenario.with_library_top(PlayerId(0), &["P0 draw"]);
+                scenario.with_library_top(PlayerId(1), &["P1 draw"]);
+                let mut runner = scenario.build();
+                let turn = runner.state().turn_number;
+
+                advance_to_next_turn(&mut runner, true).unwrap();
+
+                assert_ne!(runner.state().turn_number, turn);
+                assert_eq!(runner.state().active_player, PlayerId(1));
+                assert_eq!(runner.state().phase, Phase::PreCombatMain);
+                assert_eq!(runner.state().players[1].hand.len(), 1);
+
+                advance_to_next_turn(&mut runner, true).unwrap();
+
+                assert_eq!(runner.state().active_player, PlayerId(0));
+                assert_eq!(runner.state().phase, Phase::PreCombatMain);
+                assert_eq!(runner.state().players[0].hand.len(), 1);
+                assert_eq!(runner.state().players[0].life, 25);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn terminal_end_turn_stops_before_the_next_draw_step() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                scenario.with_library_top(PlayerId(1), &["P1 draw"]);
+                let p1_land = scenario.add_basic_land(PlayerId(1), ManaColor::Green);
+                let mut runner = scenario.build();
+                runner.state_mut().objects.get_mut(&p1_land).unwrap().tapped = true;
+                let turn = runner.state().turn_number;
+
+                advance_to_next_turn(&mut runner, false).unwrap();
+
+                assert_ne!(runner.state().turn_number, turn);
+                assert_eq!(runner.state().phase, Phase::Upkeep);
+                assert!(!runner.state().objects[&p1_land].tapped);
+                assert!(runner.state().players[1].hand.is_empty());
+                assert_eq!(runner.state().players[1].library.len(), 1);
             })
             .unwrap()
             .join()
@@ -1021,6 +1144,33 @@ mod tests {
         let value = project(runner.state(), &labels, None, true);
         assert_eq!(value["battlefield"][0]["power"], json!(3));
         assert_eq!(value["battlefield"][0]["toughness"], json!(3));
+    }
+
+    #[test]
+    fn reach_matches_counter_counts_and_treats_missing_counters_as_zero() {
+        let mut scenario = GameScenario::new();
+        let creature = scenario
+            .add_creature(PlayerId(0), "Counter Bear", 2, 2)
+            .id();
+        let mut runner = scenario.build();
+        runner
+            .state_mut()
+            .objects
+            .get_mut(&creature)
+            .unwrap()
+            .counters
+            .insert(parse_counter_type("ingenuity"), 2);
+        let object = &runner.state().objects[&creature];
+
+        assert!(
+            matches_reach_characteristics(object, &json!({"counters": {"ingenuity": 2}})).unwrap()
+        );
+        assert!(
+            matches_reach_characteristics(object, &json!({"counters": {"energy": 0}})).unwrap()
+        );
+        assert!(
+            !matches_reach_characteristics(object, &json!({"counters": {"ingenuity": 0}})).unwrap()
+        );
     }
 
     #[test]

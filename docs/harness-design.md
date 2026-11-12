@@ -56,6 +56,20 @@ payment and handles target-selection prompts like casts. XMage uses its regular
 XMage applies `tapped = true` battlefield fixtures during upkeep, after its
 opening untap step, so the precombat-main state matches the Phase fixture.
 
+## Multi-turn scenario scripts
+
+`end_turn` advances to the next turn's precombat main when a later action is
+scripted, passing through untap, upkeep, and draw and resolving triggers along
+the way. If `end_turn` is the final action, both runners stop at the next
+turn's Upkeep, after untap and before its draw step. XMage schedules this at
+`UPKEEP`; its previous `UNTAP` stop left permanents tapped, unlike Phase's
+first exposed state after the untap step.
+
+XMage automatically orders a trigger group only when every trigger has the
+same source and rule text; any other group fails with its pending triggers
+listed. Strict choose mode remains enabled. Phase's scenario helper drains
+pending trigger-order prompts using identity index order.
+
 ## Comparator v0
 
 At every decision boundary and after each applied action, compare a canonical
@@ -67,6 +81,9 @@ Battlefield object projections include sorted `types`, `subtypes`, and `colors`
 arrays. Type and subtype spelling is normalized by capitalization; colors use
 the single-letter W/U/B/R/G notation. These fields participate in exact
 projection comparison.
+Battlefield reach assertions may include `counters = { name = count }`; counter
+names use the projection's canonical spelling, and an absent counter counts as
+zero.
 
 Known noise sources to normalize: token names, DFC face names, card-name
 formatting (`Æ`, accents), zone ordering, phased-out permanents.
