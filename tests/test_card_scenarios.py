@@ -94,6 +94,47 @@ battlefield = [{ label = "p0.bf.0", card = "Walking Corpse", damage = 0 }]
         load_specs([spec])
 
 
+def test_load_specs_accepts_labeled_library_cards(tmp_path: Path) -> None:
+    spec = tmp_path / "labeled-library.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "labeled library card"
+script = [{ action = "choose_cards", cards = ["first"] }]
+
+[scenarios.setup.P0]
+library_top = [{ card = "Grizzly Bears", label = "first" }]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+
+    assert loaded["scenarios"][0]["setup"]["P0"]["library_top"] == [
+        {"card": "Grizzly Bears", "label": "first"}
+    ]
+
+
+def test_load_specs_rejects_duplicate_setup_labels_across_zones(
+    tmp_path: Path,
+) -> None:
+    spec = tmp_path / "duplicate-labels.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "duplicate labels"
+
+[scenarios.setup.P0]
+battlefield = [{ label = "same", card = "Forest" }]
+library_top = [{ label = "same", card = "Grizzly Bears" }]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="duplicate or empty setup label"):
+        load_specs([spec])
+
+
 def test_load_specs_rejects_unrepresentable_setup_fields(tmp_path: Path) -> None:
     spec = tmp_path / "unsupported.toml"
     spec.write_text(
@@ -114,6 +155,9 @@ def test_card_names_resolve_to_scenario_specs() -> None:
     root = Path(__file__).parents[1]
     assert scenario_paths_for_cards("essence burn") == [
         root / "oracle/scenarios/essence-burn.toml"
+    ]
+    assert scenario_paths_for_cards("Anzrag's Rampage") == [
+        root / "oracle/scenarios/anzrags-rampage.toml"
     ]
 
 

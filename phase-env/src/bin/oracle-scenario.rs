@@ -1,14 +1,15 @@
 use engine::database::CardDatabase;
 use engine::game::ability_utils::build_target_slots;
+use engine::game::filter::{matches_target_filter, FilterContext};
 use engine::game::game_object::GameObject;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::types::{
     actions::GameAction, parse_counter_type, AbilityKind, GameState, ManaColor, ObjectId, Phase,
-    PlayerId, ResolvedAbility, TargetRef, WaitingFor, Zone,
+    PlayerId, ResolvedAbility, TargetFilter, TargetRef, WaitingFor, Zone,
 };
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 fn card_name(state: &GameState, id: ObjectId) -> String {
@@ -142,7 +143,260 @@ fn resolve_label(labels: &HashMap<ObjectId, String>, label: &str) -> Result<Obje
         .iter()
         .find(|(_, value)| value.as_str() == label)
         .map(|(id, _)| *id)
-        .ok_or_else(|| format!("unknown battlefield label {label}"))
+        .ok_or_else(|| format!("unknown setup label {label}"))
+}
+
+fn resolve_card_choice_labels(
+    action: &Value,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<Vec<ObjectId>, String> {
+    action
+        .get("cards")
+        .and_then(Value::as_array)
+        .ok_or("choose_cards needs cards")?
+        .iter()
+        .map(|value| {
+            let label = value.as_str().ok_or("card choice labels must be strings")?;
+            resolve_label(labels, label).map_err(|_| format!("unknown card label {label}"))
+        })
+        .collect()
+}
+
+fn take_card_choice_group(groups: &mut VecDeque<Vec<ObjectId>>) -> Result<Vec<ObjectId>, String> {
+    groups
+        .pop_front()
+        .ok_or_else(|| "card-choice prompt arrived with an empty choose_cards queue".to_string())
+}
+
+fn validate_card_choice_group(
+    group: &[ObjectId],
+    offered: &[ObjectId],
+    min_count: usize,
+    max_count: usize,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<(), String> {
+    if group.len() < min_count {
+        return Err(format!(
+            "card choice group has {} cards but the prompt requires at least {min_count}",
+            group.len()
+        ));
+    }
+    if group.len() > max_count {
+        return Err(format!(
+            "card choice group has {} cards but the prompt allows at most {max_count}",
+            group.len()
+        ));
+    }
+    for id in group {
+        if !offered.contains(id) {
+            let label = labels.get(id).map(String::as_str).unwrap_or("<unknown>");
+            return Err(format!("card choice label {label} is not offered"));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_card_choice_groups_consumed(
+    groups: &VecDeque<Vec<ObjectId>>,
+    pending: &Option<Vec<ObjectId>>,
+) -> Result<(), String> {
+    if pending.is_some() {
+        return Err("card-choice group was not consumed by a selection prompt".to_string());
+    }
+    if groups.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} choose_cards group(s) were unconsumed when the script ended",
+        groups.len()
+    ))
+}
+
+fn optional_effect_is_card_zone_change(runner: &GameRunner) -> bool {
+    runner
+        .state()
+        .active_optional_effect_frame()
+        .is_some_and(|frame| {
+            matches!(
+                &frame.ability.effect,
+                engine::types::ability::Effect::ChangeZone { .. }
+                    | engine::types::ability::Effect::ChangeZoneAll { .. }
+            )
+        })
+}
+
+fn filter_requires_exiled_by_source(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::ExiledBySource => true,
+        TargetFilter::And { filters } => filters.iter().any(filter_requires_exiled_by_source),
+        TargetFilter::Or { filters } => {
+            !filters.is_empty() && filters.iter().all(filter_requires_exiled_by_source)
+        }
+        TargetFilter::TrackedSetFiltered { filter, .. } => filter_requires_exiled_by_source(filter),
+        _ => false,
+    }
+}
+
+fn optional_effect_uses_tracked_exile_choice(runner: &GameRunner) -> bool {
+    runner
+        .state()
+        .active_optional_effect_frame()
+        .is_some_and(|frame| {
+            matches!(
+                &frame.ability.effect,
+                engine::types::ability::Effect::ChangeZoneAll {
+                    origin: Some(Zone::Exile),
+                    target: TargetFilter::TrackedSetFiltered { filter, .. },
+                    ..
+                } if filter_requires_exiled_by_source(filter)
+            )
+        })
+}
+
+fn optional_effect_card_choice_offers(runner: &GameRunner) -> Result<Vec<ObjectId>, String> {
+    let state = runner.state();
+    let frame = state
+        .active_optional_effect_frame()
+        .ok_or("optional card-choice prompt has no active effect")?;
+    let engine::types::ability::Effect::ChangeZoneAll { target, .. } = &frame.ability.effect else {
+        return Err("optional card-choice prompt is not a mass zone change".to_string());
+    };
+    let TargetFilter::TrackedSetFiltered {
+        id,
+        filter,
+        caused_by,
+    } = target
+    else {
+        return Err("optional card-choice prompt has no tracked exile set".to_string());
+    };
+    let set_id = if id.0 == 0 {
+        state
+            .chain_tracked_set_id
+            .ok_or("optional card-choice prompt has no active tracked set")?
+    } else {
+        *id
+    };
+    let target = TargetFilter::TrackedSetFiltered {
+        id: set_id,
+        filter: filter.clone(),
+        caused_by: *caused_by,
+    };
+    let context = FilterContext::from_ability(&frame.ability);
+    let Some(members) = state.tracked_object_sets.get(&set_id) else {
+        return Ok(Vec::new());
+    };
+    Ok(members
+        .iter()
+        .copied()
+        .filter(|id| {
+            state.exile.contains(id)
+                && state
+                    .objects
+                    .get(id)
+                    .is_some_and(|object| object.zone == Zone::Exile)
+                && matches_target_filter(state, *id, &target, &context)
+        })
+        .collect())
+}
+
+fn optional_card_choice_decision(
+    group: &[ObjectId],
+    offered: &[ObjectId],
+    labels: &HashMap<ObjectId, String>,
+) -> Result<bool, String> {
+    if group.is_empty() {
+        return Ok(false);
+    }
+    for id in group {
+        if !offered.contains(id) {
+            let label = labels.get(id).map(String::as_str).unwrap_or("<unknown>");
+            return Err(format!(
+                "card choice label {label} is not in exile among cards exiled by this source"
+            ));
+        }
+    }
+    Ok(true)
+}
+
+fn apply_card_choice_group(
+    runner: &mut GameRunner,
+    labels: &HashMap<ObjectId, String>,
+    groups: &mut VecDeque<Vec<ObjectId>>,
+    pending: &mut Option<Vec<ObjectId>>,
+) -> Result<(), String> {
+    match runner.state().waiting_for.clone() {
+        WaitingFor::OptionalEffectChoice { .. } if optional_effect_is_card_zone_change(runner) => {
+            let group = take_card_choice_group(groups)?;
+            let consumes_group_at_prompt = optional_effect_uses_tracked_exile_choice(runner);
+            let offered = if consumes_group_at_prompt && !group.is_empty() {
+                optional_effect_card_choice_offers(runner)?
+            } else {
+                Vec::new()
+            };
+            let accept = if consumes_group_at_prompt {
+                optional_card_choice_decision(&group, &offered, labels)?
+            } else {
+                !group.is_empty()
+            };
+            runner
+                .act(GameAction::DecideOptionalEffect { accept })
+                .map_err(|error| error.to_string())?;
+            if accept && !consumes_group_at_prompt {
+                *pending = Some(group);
+            }
+            Ok(())
+        }
+        WaitingFor::EffectZoneChoice {
+            cards,
+            count,
+            min_count,
+            up_to,
+            ..
+        } => {
+            let group = pending
+                .take()
+                .map_or_else(|| take_card_choice_group(groups), Ok)?;
+            let min_count = if up_to { min_count } else { count };
+            validate_card_choice_group(&group, &cards, min_count, count, labels)?;
+            runner
+                .act(GameAction::SelectCards { cards: group })
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        WaitingFor::ChooseFromZoneChoice {
+            cards,
+            count,
+            up_to,
+            ..
+        } => {
+            let group = pending
+                .take()
+                .map_or_else(|| take_card_choice_group(groups), Ok)?;
+            let min_count = if up_to { 0 } else { count };
+            validate_card_choice_group(&group, &cards, min_count, count, labels)?;
+            runner
+                .act(GameAction::SelectCards { cards: group })
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        WaitingFor::DiscardChoice {
+            cards,
+            count,
+            up_to,
+            ..
+        } => {
+            let group = take_card_choice_group(groups)?;
+            let min_count = if up_to { 0 } else { count };
+            validate_card_choice_group(&group, &cards, min_count, count, labels)?;
+            runner
+                .act(GameAction::SelectCards { cards: group })
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
+        other => Err(format!(
+            "cannot apply card choice while waiting for {other:?}"
+        )),
+    }
 }
 
 fn normalize_ability_text(text: &str) -> String {
@@ -325,20 +579,34 @@ fn pass_until_resolved(
     runner: &mut GameRunner,
     labels: &HashMap<ObjectId, String>,
     groups: &mut VecDeque<Vec<ObjectId>>,
+    card_choice_groups: &mut VecDeque<Vec<ObjectId>>,
+    pending_card_choice: &mut Option<Vec<ObjectId>>,
 ) -> Result<(), String> {
     for _ in 0..128 {
-        if matches!(
-            runner.state().waiting_for,
-            WaitingFor::TriggerTargetSelection { .. }
-        ) {
-            apply_trigger_target_group(runner, labels, groups)?;
-        } else {
-            runner.advance_until_stack_empty();
+        match runner.state().waiting_for {
+            WaitingFor::TriggerTargetSelection { .. } => {
+                apply_trigger_target_group(runner, labels, groups)?;
+            }
+            WaitingFor::EffectZoneChoice { .. }
+            | WaitingFor::ChooseFromZoneChoice { .. }
+            | WaitingFor::DiscardChoice { .. } => {
+                apply_card_choice_group(runner, labels, card_choice_groups, pending_card_choice)?;
+            }
+            WaitingFor::OptionalEffectChoice { .. }
+                if optional_effect_is_card_zone_change(runner) =>
+            {
+                apply_card_choice_group(runner, labels, card_choice_groups, pending_card_choice)?;
+            }
+            _ => runner.advance_until_stack_empty(),
         }
         if runner.state().stack.is_empty()
             && !matches!(
                 runner.state().waiting_for,
                 WaitingFor::TriggerTargetSelection { .. }
+                    | WaitingFor::EffectZoneChoice { .. }
+                    | WaitingFor::ChooseFromZoneChoice { .. }
+                    | WaitingFor::DiscardChoice { .. }
+                    | WaitingFor::OptionalEffectChoice { .. }
             )
         {
             return Ok(());
@@ -460,6 +728,7 @@ fn validate_setup(scenario: &Value) -> Result<(), String> {
     let setup = scenario["setup"]
         .as_object()
         .ok_or("setup must be an object")?;
+    let mut labels = HashSet::new();
     for (player, player_setup) in setup {
         if player != "P0" && player != "P1" {
             return Err(format!("setup.{player} is unsupported"));
@@ -491,10 +760,30 @@ fn validate_setup(scenario: &Value) -> Result<(), String> {
                 let card = item
                     .as_object()
                     .ok_or_else(|| format!("setup.{player}.{field}[{index}] needs a card"))?;
-                if card.len() != 1 || !card.contains_key("card") || !card["card"].is_string() {
+                if card
+                    .keys()
+                    .any(|key| !["card", "label"].contains(&key.as_str()))
+                    || !card.get("card").is_some_and(Value::is_string)
+                {
                     return Err(format!(
-                        "setup.{player}.{field}[{index}] only supports card"
+                        "setup.{player}.{field}[{index}] needs card and optional label"
                     ));
+                }
+                if card["card"].as_str().is_none_or(str::is_empty) {
+                    return Err(format!("setup.{player}.{field}[{index}] needs a card"));
+                }
+                if let Some(label) = card.get("label") {
+                    let label = label
+                        .as_str()
+                        .filter(|label| !label.is_empty())
+                        .ok_or_else(|| {
+                            format!(
+                                "setup.{player}.{field}[{index}].label must be a non-empty string"
+                            )
+                        })?;
+                    if !labels.insert(label.to_string()) {
+                        return Err(format!("duplicate setup label {label}"));
+                    }
                 }
             }
         }
@@ -521,6 +810,10 @@ fn validate_setup(scenario: &Value) -> Result<(), String> {
                     || !permanent.get("card").is_some_and(Value::is_string)
                 {
                     return Err(format!("{context} needs label and card"));
+                }
+                let label = permanent["label"].as_str().unwrap();
+                if label.is_empty() || !labels.insert(label.to_string()) {
+                    return Err(format!("duplicate or empty setup label {label}"));
                 }
                 if permanent
                     .get("tapped")
@@ -633,6 +926,9 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 if field == "library_top" {
                     player_library_top.push(id);
                 }
+                if let Some(label) = item["label"].as_str() {
+                    labels.insert(id, label.to_string());
+                }
                 if field == "battlefield" {
                     let label = item["label"]
                         .as_str()
@@ -708,6 +1004,8 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     }
     let actions = spec["script"].as_array().cloned().unwrap_or_default();
     let mut trigger_target_groups = VecDeque::new();
+    let mut card_choice_groups = VecDeque::new();
+    let mut pending_card_choice = None;
     for (action_index, action) in actions.iter().enumerate() {
         match action["action"].as_str().unwrap_or_default() {
             "cast" => {
@@ -745,8 +1043,17 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 }
                 trigger_target_groups.push_back(targets);
             }
+            "choose_cards" => {
+                card_choice_groups.push_back(resolve_card_choice_labels(action, &labels)?);
+            }
             "pass_until_resolved" => {
-                pass_until_resolved(&mut runner, &labels, &mut trigger_target_groups)?;
+                pass_until_resolved(
+                    &mut runner,
+                    &labels,
+                    &mut trigger_target_groups,
+                    &mut card_choice_groups,
+                    &mut pending_card_choice,
+                )?;
             }
             "end_turn" | "next_turn" => {
                 advance_to_next_turn(&mut runner, action_index + 1 < actions.len())?;
@@ -755,6 +1062,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
         }
     }
     ensure_trigger_target_groups_consumed(&trigger_target_groups)?;
+    ensure_card_choice_groups_consumed(&card_choice_groups, &pending_card_choice)?;
     let reached = check_reach(runner.state(), &labels, spec.get("reach"))?;
     Ok(json!({
         "scenario": name,
@@ -1036,7 +1344,7 @@ mod tests {
         assert_eq!(resolve_label(&labels, "prairie"), Ok(id));
         assert!(resolve_label(&labels, "unknown")
             .unwrap_err()
-            .contains("unknown battlefield label"));
+            .contains("unknown setup label"));
     }
 
     #[test]
@@ -1115,6 +1423,75 @@ mod tests {
         assert!(ensure_trigger_target_groups_consumed(&groups)
             .unwrap_err()
             .contains("unconsumed"));
+    }
+
+    #[test]
+    fn card_choice_prompt_fails_when_queue_is_empty() {
+        assert!(take_card_choice_group(&mut VecDeque::new())
+            .unwrap_err()
+            .contains("empty choose_cards queue"));
+    }
+
+    #[test]
+    fn card_choice_group_rejects_a_label_not_offered_by_the_prompt() {
+        let selected = ObjectId(17);
+        let offered = ObjectId(18);
+        let labels = HashMap::from([(selected, "p0.library.creature".to_string())]);
+
+        assert!(
+            validate_card_choice_group(&[selected], &[offered], 0, 1, &labels)
+                .unwrap_err()
+                .contains("p0.library.creature is not offered")
+        );
+    }
+
+    #[test]
+    fn card_choice_group_rejects_more_cards_than_the_prompt_allows() {
+        let first = ObjectId(17);
+        let second = ObjectId(18);
+        let labels = HashMap::new();
+
+        assert!(
+            validate_card_choice_group(&[first, second], &[first, second], 0, 1, &labels)
+                .unwrap_err()
+                .contains("allows at most 1")
+        );
+    }
+
+    #[test]
+    fn optional_card_choice_accepts_only_nonempty_groups_of_source_exiles() {
+        let first = ObjectId(17);
+        let other = ObjectId(18);
+        let labels = HashMap::from([
+            (first, "p0.top.first-creature".to_string()),
+            (other, "p0.other-creature".to_string()),
+        ]);
+
+        assert_eq!(
+            optional_card_choice_decision(&[], &[first], &labels),
+            Ok(false)
+        );
+        assert_eq!(
+            optional_card_choice_decision(&[first], &[first], &labels),
+            Ok(true)
+        );
+        assert!(optional_card_choice_decision(&[other], &[first], &labels)
+            .unwrap_err()
+            .contains("p0.other-creature is not in exile"));
+    }
+
+    #[test]
+    fn card_choice_groups_left_at_script_end_fail_closed() {
+        let groups = VecDeque::from(vec![vec![ObjectId(17)]]);
+
+        assert!(ensure_card_choice_groups_consumed(&groups, &None)
+            .unwrap_err()
+            .contains("unconsumed"));
+        assert!(
+            ensure_card_choice_groups_consumed(&VecDeque::new(), &Some(vec![ObjectId(17)]))
+                .unwrap_err()
+                .contains("not consumed")
+        );
     }
 
     #[test]
