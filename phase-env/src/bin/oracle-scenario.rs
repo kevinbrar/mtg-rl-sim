@@ -1715,10 +1715,13 @@ mod tests {
                     cast_target_decision_slot_count(runner.state(), spell, player, None),
                     Ok(1)
                 );
-                assert_eq!(
-                    cast_target_decision_slot_count(runner.state(), spell, initial_active, None),
-                    Ok(0)
-                );
+                assert!(cast_target_decision_slot_count(
+                    runner.state(),
+                    spell,
+                    initial_active,
+                    None
+                )
+                .is_err());
             })
             .unwrap()
             .join()
