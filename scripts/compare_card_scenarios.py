@@ -24,7 +24,7 @@ def _normalize_card_name(value: str) -> str:
 def _normalize_projection_names(value: object) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
-            if key in {"name", "attached_to", "label"} and isinstance(item, str):
+            if key == "name" and isinstance(item, str):
                 value[key] = _normalize_card_name(item)
             else:
                 _normalize_projection_names(item)

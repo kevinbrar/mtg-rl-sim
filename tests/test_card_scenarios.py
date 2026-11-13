@@ -449,20 +449,20 @@ def test_projection_normalizes_names_before_unordered_zone_sorting() -> None:
         "S1",
         {
             "battlefield": [
-                {"name": "Kíli", "attached_to": "Kíli", "label": "Kíli"},
-                {"name": "Kettle", "attached_to": "Kíli", "label": "Kíli"},
+                {"name": "Kíli", "attached_to": "bear", "label": "equipment"},
+                {"name": "Kozilek", "attached_to": "bear", "label": "equipment"},
             ],
-            "exile": ["Kíli", "Kettle"],
+            "exile": ["Kíli", "Kozilek"],
         },
     )
     second = _projection_result(
         "S1",
         {
             "battlefield": [
-                {"name": "Kettle", "attached_to": "Kili", "label": "Kili"},
-                {"name": "Kili", "attached_to": "Kili", "label": "Kili"},
+                {"name": "Kozilek", "attached_to": "bear", "label": "equipment"},
+                {"name": "Kili", "attached_to": "bear", "label": "equipment"},
             ],
-            "exile": ["Kettle", "Kili"],
+            "exile": ["Kozilek", "Kili"],
         },
     )
 
@@ -470,6 +470,22 @@ def test_projection_normalizes_names_before_unordered_zone_sorting() -> None:
         second["projection"]
     )
     assert projection_sha256(first) == projection_sha256(second)
+
+
+@pytest.mark.parametrize("field", ("attached_to", "label"))
+def test_projection_preserves_exact_attachment_labels(field: str) -> None:
+    left_permanent = {
+        "name": "Kíli",
+        "attached_to": "bear",
+        "label": "bear",
+    }
+    right_permanent = copy.deepcopy(left_permanent)
+    right_permanent["name"] = "Kili"
+    right_permanent[field] = "béar"
+    left = _projection_result("S1", {"battlefield": [left_permanent]})
+    right = _projection_result("S1", {"battlefield": [right_permanent]})
+
+    assert compare({"S1": left}, {"S1": right}) == ["S1"]
 
 
 @pytest.mark.parametrize("zone", ("graveyard", "library"))
