@@ -27,6 +27,25 @@ ROOT = Path(__file__).resolve().parents[1]
 MAGE_RESULT_PREFIX = "CARD_SCENARIO_RESULT:"
 PLAYER_SETUP_FIELDS = {"life", "battlefield", "hand", "library_top", "graveyard"}
 PERMANENT_SETUP_FIELDS = {"label", "card", "tapped", "counters"}
+REACH_FIELDS = {
+    "all",
+    "player",
+    "zone",
+    "card",
+    "count",
+    "tapped_labels",
+    "types",
+    "subtypes",
+    "colors",
+    "power",
+    "toughness",
+    "power_is_null",
+    "toughness_is_null",
+    "creature",
+    "tapped",
+    "attached_to",
+    "counters",
+}
 KNOWN_DIFF_FIELDS = {
     "card",
     "category",
@@ -39,6 +58,26 @@ KNOWN_DIFF_FIELDS = {
     "mage_sha256",
 }
 KNOWN_DIFF_CATEGORIES = {"engine-bug", "xmage-bug", "unsupported"}
+
+
+def _validate_reach_fields(name: str, reach: object, path: str = "reach") -> None:
+    if not isinstance(reach, dict):
+        raise TypeError(f"{name}: {path} must be a table")
+    unknown = reach.keys() - REACH_FIELDS
+    if unknown:
+        raise ValueError(f"{name}: {path}.{min(unknown)} is unsupported")
+    if "all" in reach:
+        if len(reach) != 1:
+            raise ValueError(
+                f"{name}: reach.all cannot be combined with other reach fields"
+            )
+        checks = reach["all"]
+        if not isinstance(checks, list):
+            raise TypeError(f"{name}: reach.all must be an array of reach assertions")
+        if not checks:
+            raise ValueError(f"{name}: reach.all must contain at least one assertion")
+        for index, check in enumerate(checks):
+            _validate_reach_fields(name, check, f"{path}.all[{index}]")
 
 
 def _card_names(cards: str) -> list[str]:
@@ -439,6 +478,8 @@ def format_known_diff_report(report: dict) -> str:
 
 def _validate_setup(scenario: dict) -> None:
     name = scenario.get("name", "<unnamed>")
+    if "reach" in scenario:
+        _validate_reach_fields(name, scenario["reach"])
     setup = scenario.get("setup")
     if not isinstance(setup, dict):
         raise TypeError(f"{name}: setup must be a table")
@@ -523,6 +564,18 @@ def _validate_setup(scenario: dict) -> None:
     for index, action in enumerate(script):
         if not isinstance(action, dict):
             raise TypeError(f"{name}: script[{index}] must be a table")
+        if "behold" in action and action.get("action") != "play_land":
+            raise ValueError(
+                f"{name}: script[{index}].behold is only valid for play_land actions"
+            )
+        if action.get("action") == "play_land":
+            context = f"{name}: script[{index}]"
+            if not isinstance(action.get("card"), str) or not action["card"]:
+                raise ValueError(f"{context}.card needs a hand label")
+            if "behold" in action:
+                behold = action["behold"]
+                if not isinstance(behold, str) or not behold:
+                    raise ValueError(f"{context}.behold must be a label or decline")
         if "alternative_cost" not in action:
             continue
         context = f"{name}: script[{index}].alternative_cost"

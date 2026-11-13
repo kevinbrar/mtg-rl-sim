@@ -1,0 +1,168 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+index a0f98e55..77d5e8f6 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -12,6 +12,7 @@ import mage.ObjectColor;
+ import mage.abilities.SpellAbility;
+ import mage.cards.Card;
+ import mage.constants.PhaseStep;
++import mage.constants.SubType;
+ import mage.constants.Zone;
+ import mage.counters.Counter;
+ import mage.counters.CounterType;
+@@ -47,6 +48,8 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+     private final String scenarioName;
+     private final JsonObject scenario;
+     private final Map<String, UUID> labels = new LinkedHashMap<>();
++    private final Map<String, String> labelCards = new LinkedHashMap<>();
++    private final Map<String, Zone> labelZones = new LinkedHashMap<>();
+     private final Map<String, Map<String, Integer>> counters = new LinkedHashMap<>();
+     private JsonArray initialLegalTargets;
+ 
+@@ -129,6 +132,94 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             String kind = requiredString(action, "action");
+             TestPlayer actingPlayer = player(activeIndex);
+             switch (kind) {
++                case "play_land" -> {
++                    String cardLabel = requiredString(action, "card");
++                    UUID landId = labels.get(cardLabel);
++                    if (landId == null) {
++                        throw new IllegalArgumentException("unknown hand label " + cardLabel);
++                    }
++                    String card = labelCards.get(cardLabel);
++                    if (card == null) {
++                        throw new IllegalArgumentException("unknown hand label " + cardLabel);
++                    }
++                    String behold = action.has("behold") ? requiredString(action, "behold") : null;
++                    if (behold != null && behold.isBlank()) {
++                        throw new IllegalArgumentException("play_land.behold must be a label or decline");
++                    }
++                    if (behold != null && !behold.equals("decline") && !labels.containsKey(behold)) {
++                        throw new IllegalArgumentException("unknown behold label " + behold);
++                    }
++                    runCode("queue behold choices", turn, step, actingPlayer, (info, player, game) -> {
++                        actingPlayer.getHand().getCards(game).stream()
++                                .filter(candidate -> candidate.getId().equals(landId))
++                                .findFirst()
++                                .orElseThrow(() -> new IllegalStateException(
++                                        "play_land card label " + cardLabel
++                                                + " is not in the active player's hand"));
++                        List<Permanent> battlefieldJaces = game.getBattlefield().getAllActivePermanents().stream()
++                                .filter(permanent -> permanent.getControllerId().equals(actingPlayer.getId()))
++                                .filter(permanent -> permanent.hasSubtype(SubType.JACE, game))
++                                .toList();
++                        List<Card> handJaces = actingPlayer.getHand().getCards(game).stream()
++                                .filter(candidate -> candidate.hasSubtype(SubType.JACE, game))
++                                .toList();
++                        if (behold == null) {
++                            if (!battlefieldJaces.isEmpty() || !handJaces.isEmpty()) {
++                                throw new IllegalStateException(
++                                        "play_land behold prompt was offered without a behold field");
++                            }
++                            return;
++                        }
++                        if (battlefieldJaces.isEmpty() && handJaces.isEmpty()) {
++                            throw new IllegalStateException(
++                                    "play_land.behold was provided but no behold prompt was offered");
++                        }
++                        if (behold.equals("decline")) {
++                            setChoice(actingPlayer, false);
++                            return;
++                        }
++
++                        UUID selectedId = labels.get(behold);
++                        boolean selectedBattlefield = battlefieldJaces.stream()
++                                .anyMatch(permanent -> permanent.getId().equals(selectedId));
++                        boolean selectedHand = handJaces.stream()
++                                .anyMatch(candidate -> candidate.getId().equals(selectedId));
++                        if (!selectedBattlefield && !selectedHand) {
++                            throw new IllegalStateException(
++                                    "behold label " + behold + " is not among the offered candidates");
++                        }
++                        setChoice(actingPlayer, true);
++                        if (!battlefieldJaces.isEmpty() && !handJaces.isEmpty()) {
++                            setChoice(actingPlayer, selectedBattlefield);
++                        }
++                        if (selectedBattlefield) {
++                            setChoice(actingPlayer, "@" + behold);
++                        } else {
++                            actingPlayer.addCardChoiceGroup(List.of(behold));
++                        }
++                    });
++                    playLand(turn, step, actingPlayer, card);
++                    runCode("assert play_land choice was consumed", turn, step, actingPlayer,
++                            (info, player, game) -> {
++                                if (!actingPlayer.getChoices().isEmpty()) {
++                                    throw new IllegalStateException(
++                                            "play_land behold choice was provided but not consumed");
++                                }
++                                if (game.getPermanent(landId) == null) {
++                                    throw new IllegalStateException(
++                                            "play_land did not put the labeled land onto the battlefield");
++                                }
++                                if (behold != null && !behold.equals("decline")
++                                        && labelZones.get(behold) == Zone.HAND
++                                        && actingPlayer.getHand().getCards(game).stream()
++                                        .noneMatch(candidate -> candidate.getId().equals(labels.get(behold)))
++                                ) {
++                                    throw new IllegalStateException(
++                                            "beholding a hand card moved it out of the hand");
++                                }
++                            });
++                    lastStep = step;
++                }
+                 case "cast" -> {
+                     String card = requiredString(action, "card");
+                     boolean hasX = action.has("x");
+@@ -320,6 +411,8 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                 throw new IllegalArgumentException("XMage did not register setup label " + label);
+             }
+             labels.put(label, objectId);
++            labelCards.put(label, card);
++            labelZones.put(label, Zone.BATTLEFIELD);
+             JsonObject cardCounters = object(item, "counters");
+             if (!cardCounters.entrySet().isEmpty()) {
+                 Map<String, Integer> parsed = new LinkedHashMap<>();
+@@ -357,6 +450,8 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                 throw new IllegalArgumentException("XMage did not register setup label " + label);
+             }
+             labels.put(label, objectId);
++            labelCards.put(label, card);
++            labelZones.put(label, zone);
+         } else {
+             addCard(zone, player, card);
+         }
+@@ -538,7 +633,32 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         if (!scenario.has("reach")) {
+             return true;
+         }
+-        JsonObject reach = scenario.getAsJsonObject("reach");
++        return checkReach(scenario.getAsJsonObject("reach"));
++    }
++
++    private boolean checkReach(JsonObject reach) {
++        if (reach.has("all")) {
++            if (reach.size() != 1) {
++                throw new IllegalArgumentException("reach.all cannot be combined with other reach fields");
++            }
++            JsonElement value = reach.get("all");
++            if (!value.isJsonArray()) {
++                throw new IllegalArgumentException("reach.all must be an array of reach assertions");
++            }
++            JsonArray checks = value.getAsJsonArray();
++            if (checks.isEmpty()) {
++                throw new IllegalArgumentException("reach.all must contain at least one assertion");
++            }
++            for (JsonElement check : checks) {
++                if (!check.isJsonObject()) {
++                    throw new IllegalArgumentException("reach.all entries must be reach objects");
++                }
++                if (!checkReach(check.getAsJsonObject())) {
++                    return false;
++                }
++            }
++            return true;
++        }
+         long expectedCount = reach.has("count") ? reachCount(reach) : -1;
+         String playerName = string(reach, "player", "P0");
+         if (!playerName.equals("P0") && !playerName.equals("P1")) {

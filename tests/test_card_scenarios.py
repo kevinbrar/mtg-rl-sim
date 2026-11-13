@@ -190,6 +190,27 @@ battlefield = [{ label = "p0.bf.0", card = "Walking Corpse", damage = 0 }]
         load_specs([spec])
 
 
+def test_load_specs_rejects_unknown_reach_fields(tmp_path: Path) -> None:
+    spec = tmp_path / "unknown-reach-field.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "unknown reach field"
+
+[scenarios.setup.P0]
+
+[scenarios.reach]
+zone = "battlefield"
+card = "Jace"
+loyalty = 4
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"reach\.loyalty is unsupported"):
+        load_specs([spec])
+
+
 def test_load_specs_accepts_labeled_library_cards(tmp_path: Path) -> None:
     spec = tmp_path / "labeled-library.toml"
     spec.write_text(
@@ -209,6 +230,65 @@ library_top = [{ card = "Grizzly Bears", label = "first" }]
     assert loaded["scenarios"][0]["setup"]["P0"]["library_top"] == [
         {"card": "Grizzly Bears", "label": "first"}
     ]
+
+
+def test_load_specs_accepts_labeled_play_land_behold(tmp_path: Path) -> None:
+    spec = tmp_path / "play-land-behold.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "play a land and behold"
+script = [{ action = "play_land", card = "sanctum", behold = "jace" }]
+
+[scenarios.setup.P0]
+hand = [
+  { card = "Theorist's Sanctum", label = "sanctum" },
+  { card = "Jace Beleren", label = "jace" },
+]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+
+    assert loaded["scenarios"][0]["script"][0] == {
+        "action": "play_land",
+        "card": "sanctum",
+        "behold": "jace",
+    }
+
+
+@pytest.mark.parametrize(
+    ("action", "message"),
+    [
+        ('{ action = "play_land", behold = "jace" }', ".card needs a hand label"),
+        (
+            '{ action = "play_land", card = "sanctum", behold = "" }',
+            ".behold must be a label or decline",
+        ),
+        (
+            '{ action = "cast", card = "spell", behold = "jace" }',
+            "behold is only valid for play_land",
+        ),
+    ],
+)
+def test_load_specs_rejects_invalid_play_land_behold_fields(
+    tmp_path: Path, action: str, message: str
+) -> None:
+    spec = tmp_path / "invalid-play-land.toml"
+    spec.write_text(
+        f"""
+[[scenarios]]
+name = "invalid play land"
+script = [{action}]
+
+[scenarios.setup.P0]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        load_specs([spec])
 
 
 def test_load_specs_rejects_duplicate_setup_labels_across_zones(

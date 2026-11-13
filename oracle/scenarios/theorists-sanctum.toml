@@ -1,0 +1,155 @@
+[[scenarios]]
+name = "TS1 no Jace enters tapped without a behold prompt"
+active_player = 0
+script = [{ action = "play_land", card = "sanctum" }]
+
+[scenarios.setup.P0]
+hand = [{ card = "Theorist's Sanctum", label = "sanctum" }]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Theorist's Sanctum", tapped = true, count = 1 },
+  { zone = "hand", player = "P0", card = "Jace Beleren", count = 0 },
+]
+
+[[scenarios]]
+name = "TS2 behold a Jace card from hand"
+active_player = 0
+script = [{ action = "play_land", card = "sanctum", behold = "jace-hand" }]
+
+[scenarios.setup.P0]
+hand = [
+  { card = "Theorist's Sanctum", label = "sanctum" },
+  { card = "Jace Beleren", label = "jace-hand" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Theorist's Sanctum", tapped = false, count = 1 },
+  { zone = "hand", player = "P0", card = "Jace Beleren", count = 1 },
+]
+
+[[scenarios]]
+name = "TS3 behold a controlled Jace planeswalker"
+active_player = 0
+script = [{ action = "play_land", card = "sanctum", behold = "jace-battlefield" }]
+
+[scenarios.setup.P0]
+hand = [{ card = "Theorist's Sanctum", label = "sanctum" }]
+battlefield = [
+  { card = "Jace Beleren", label = "jace-battlefield", counters = { loyalty = 3 } },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Theorist's Sanctum", tapped = false, count = 1 },
+  { zone = "battlefield", player = "P0", card = "Jace Beleren", counters = { loyalty = 3 }, count = 1 },
+]
+
+[[scenarios]]
+name = "TS4 decline behold with a Jace in hand"
+active_player = 0
+script = [{ action = "play_land", card = "sanctum", behold = "decline" }]
+
+[scenarios.setup.P0]
+hand = [
+  { card = "Theorist's Sanctum", label = "sanctum" },
+  { card = "Jace Beleren", label = "jace-hand" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+zone = "battlefield"
+player = "P0"
+card = "Theorist's Sanctum"
+tapped = true
+count = 1
+
+[[scenarios]]
+name = "TS5 empower a Jace without changing the original's loyalty"
+active_player = 0
+script = [
+  { action = "activate", source = "sanctum", ability = "{2}{U}, {T}:" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { card = "Theorist's Sanctum", label = "sanctum" },
+  { card = "Jace Beleren", label = "jace", counters = { loyalty = 3 } },
+  { card = "Island", label = "island-1" },
+  { card = "Island", label = "island-2" },
+  { card = "Island", label = "island-3" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Jace", types = ["Planeswalker"], subtypes = ["Jace"], colors = ["U"], counters = { loyalty = 2 }, count = 1 },
+  { zone = "battlefield", player = "P0", card = "Jace Beleren", counters = { loyalty = 3 }, count = 1 },
+]
+
+[[scenarios]]
+name = "TS6 empower the same Jace token across turns"
+active_player = 0
+script = [
+  { action = "activate", source = "sanctum", ability = "{2}{U}, {T}:" },
+  { action = "pass_until_resolved" },
+  { action = "next_turn" },
+  { action = "next_turn" },
+  { action = "activate", source = "sanctum", ability = "{2}{U}, {T}:" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+library_top = ["Island"]
+battlefield = [
+  { card = "Theorist's Sanctum", label = "sanctum" },
+  { card = "Island", label = "island-1" },
+  { card = "Island", label = "island-2" },
+  { card = "Island", label = "island-3" },
+]
+
+[scenarios.setup.P1]
+library_top = ["Island"]
+
+[scenarios.reach]
+zone = "battlefield"
+player = "P0"
+card = "Jace"
+types = ["Planeswalker"]
+subtypes = ["Jace"]
+colors = ["U"]
+counters = { loyalty = 4 }
+count = 1
+
+[[scenarios]]
+name = "TS7 mixed-zone behold offers a two-candidate choice"
+active_player = 0
+script = [{ action = "play_land", card = "sanctum", behold = "jace-battlefield" }]
+
+[scenarios.setup.P0]
+hand = [
+  { card = "Theorist's Sanctum", label = "sanctum" },
+  { card = "Jace Beleren", label = "jace-hand" },
+]
+battlefield = [
+  { card = "Jace Beleren", label = "jace-battlefield", counters = { loyalty = 3 } },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Theorist's Sanctum", tapped = false, count = 1 },
+  { zone = "battlefield", player = "P0", card = "Jace Beleren", counters = { loyalty = 3 }, count = 1 },
+  { zone = "hand", player = "P0", card = "Jace Beleren", count = 1 },
+]
