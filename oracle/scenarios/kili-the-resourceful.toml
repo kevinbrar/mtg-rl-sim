@@ -1,3 +1,7 @@
+# K1–K4 retain Grizzly Bears as a non-counting second Equip target: without it,
+# Phase auto-selects the sole legal target and leaves the scripted target group
+# unconsumed.
+
 [[scenarios]]
 name = "K1 story offers the first equip for zero"
 active_player = 1
