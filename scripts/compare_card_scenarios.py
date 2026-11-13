@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import sys
+import unicodedata
 from pathlib import Path
 
 
@@ -12,13 +13,38 @@ def _json_sort_key(value: object) -> str:
     return json.dumps(value, sort_keys=True)
 
 
+def _normalize_card_name(value: str) -> str:
+    return "".join(
+        character
+        for character in unicodedata.normalize("NFKD", value)
+        if not unicodedata.category(character).startswith("M")
+    )
+
+
+def _normalize_projection_names(value: object) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "name" and isinstance(item, str):
+                value[key] = _normalize_card_name(item)
+            else:
+                _normalize_projection_names(item)
+    elif isinstance(value, list):
+        for item in value:
+            _normalize_projection_names(item)
+
+
 def normalize_projection(projection: object) -> object:
     if not isinstance(projection, dict):
         return projection
     normalized = copy.deepcopy(projection)
+    _normalize_projection_names(normalized)
     for zone in ("battlefield", "exile", "hand"):
         values = normalized.get(zone)
         if isinstance(values, list):
+            values = [
+                _normalize_card_name(value) if isinstance(value, str) else value
+                for value in values
+            ]
             normalized[zone] = sorted(values, key=_json_sort_key)
 
     players = normalized.get("players")
@@ -26,10 +52,18 @@ def normalize_projection(projection: object) -> object:
         for player in players.values():
             if not isinstance(player, dict):
                 continue
-            for zone in ("battlefield", "exile", "hand"):
+            for zone in ("battlefield", "exile", "hand", "library", "graveyard"):
                 values = player.get(zone)
                 if isinstance(values, list):
-                    player[zone] = sorted(values, key=_json_sort_key)
+                    values = [
+                        _normalize_card_name(value) if isinstance(value, str) else value
+                        for value in values
+                    ]
+                    player[zone] = (
+                        sorted(values, key=_json_sort_key)
+                        if zone in ("battlefield", "exile", "hand")
+                        else values
+                    )
 
     return normalized
 

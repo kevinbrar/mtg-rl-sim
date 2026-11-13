@@ -72,12 +72,18 @@ fn project(
         .iter()
         .filter_map(|id| {
             let object = state.objects.get(id)?;
+            let attached_to = object.attached_to.as_ref().and_then(|target| match target {
+                engine::types::object_data::AttachTarget::Object(host) => {
+                    labels.get(host).cloned()
+                }
+                engine::types::object_data::AttachTarget::Player(_) => None,
+            });
             let counters = object
                 .counters
                 .iter()
                 .map(|(kind, count)| (kind.as_str().to_string(), json!(count)))
                 .collect::<serde_json::Map<_, _>>();
-            Some(json!({
+            let mut projected = json!({
                 "label": labels.get(id),
                 "name": &object.name,
                 "token": object.is_token,
@@ -97,7 +103,11 @@ fn project(
                 "power": object.power,
                 "toughness": object.toughness,
                 "loyalty": object.counters.get(&parse_counter_type("loyalty")),
-            }))
+            });
+            if let Some(attached_to) = attached_to {
+                projected["attached_to"] = json!(attached_to);
+            }
+            Some(projected)
         })
         .collect::<Vec<_>>();
     battlefield
@@ -337,6 +347,78 @@ fn cast_x(action: &Value, has_x_cost: bool) -> Result<Option<u32>, String> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AlternativeCostDecision {
+    Accept,
+    Decline,
+}
+
+fn alternative_cost_decision(action: &Value) -> Result<Option<AlternativeCostDecision>, String> {
+    match action.get("alternative_cost") {
+        None => Ok(None),
+        Some(Value::String(value)) if value == "accept" => {
+            Ok(Some(AlternativeCostDecision::Accept))
+        }
+        Some(Value::String(value)) if value == "decline" => {
+            Ok(Some(AlternativeCostDecision::Decline))
+        }
+        Some(_) => Err("activate.alternative_cost must be accept or decline".to_string()),
+    }
+}
+
+fn base_activation_cost(
+    cost: &engine::types::ability::AbilityCost,
+) -> Option<&engine::types::ability::AbilityCost> {
+    use engine::types::ability::AbilityCost;
+
+    match cost {
+        AbilityCost::OneOf { costs } => costs.first(),
+        cost => Some(cost),
+    }
+}
+
+fn select_activation_cost_branch(
+    costs: &[engine::types::ability::AbilityCost],
+    base_cost: Option<&engine::types::ability::AbilityCost>,
+    decision: AlternativeCostDecision,
+) -> Result<usize, String> {
+    let base_cost = base_cost.ok_or_else(|| {
+        "activated ability has no original cost branch for alternative_cost".to_string()
+    })?;
+    let base_index = costs.iter().position(|cost| cost == base_cost);
+    match decision {
+        AlternativeCostDecision::Decline => base_index
+            .ok_or_else(|| "the original activation cost branch was not offered".to_string()),
+        AlternativeCostDecision::Accept => match base_index {
+            Some(base_index) => costs
+                .iter()
+                .enumerate()
+                .find_map(|(index, _)| (index != base_index).then_some(index))
+                .ok_or_else(|| {
+                    "no payable alternative activation cost branch was offered".to_string()
+                }),
+            None if !costs.is_empty() => Ok(0),
+            None => Err("no payable alternative activation cost branch was offered".to_string()),
+        },
+    }
+}
+
+fn ensure_activation_cost_prompt_matches_field(
+    decision: Option<AlternativeCostDecision>,
+    prompt_seen: bool,
+) -> Result<(), String> {
+    match (decision.is_some(), prompt_seen) {
+        (true, false) => Err(
+            "activate.alternative_cost was provided but no alternative-cost prompt appeared"
+                .to_string(),
+        ),
+        (false, true) => {
+            Err("an alternative-cost prompt appeared without activate.alternative_cost".to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
 fn apply_trigger_target_group(
     runner: &mut GameRunner,
     labels: &HashMap<ObjectId, String>,
@@ -436,16 +518,91 @@ fn ensure_trigger_target_groups_consumed(groups: &VecDeque<Vec<ObjectId>>) -> Re
     ))
 }
 
+fn apply_activation_target_group(
+    runner: &mut GameRunner,
+    labels: &HashMap<ObjectId, String>,
+    groups: &mut VecDeque<Vec<ObjectId>>,
+) -> Result<(), String> {
+    let group = groups
+        .pop_front()
+        .ok_or("activation target prompt arrived without activate.targets")?;
+    let mut target_index = 0;
+    loop {
+        let WaitingFor::TargetSelection {
+            target_slots,
+            selection,
+            ..
+        } = runner.state().waiting_for.clone()
+        else {
+            break;
+        };
+        let slot = target_slots
+            .get(selection.current_slot)
+            .ok_or("activation target slot is missing")?;
+        let id = group.get(target_index).copied();
+        let target = id.map(TargetRef::Object);
+        if target
+            .as_ref()
+            .is_some_and(|target| !slot.legal_targets.contains(target))
+        {
+            let label = id
+                .and_then(|id| labels.get(&id))
+                .map(String::as_str)
+                .unwrap_or("<unknown>");
+            return Err(format!(
+                "activation target label {label} is not legal for slot {}",
+                selection.current_slot
+            ));
+        }
+        if target.is_none() && !slot.optional {
+            return Err(format!(
+                "activation target group has too few targets for required slot {}",
+                selection.current_slot
+            ));
+        }
+        let has_target = target.is_some();
+        runner
+            .act(GameAction::ChooseTarget { target })
+            .map_err(|error| error.to_string())?;
+        if has_target {
+            target_index += 1;
+        }
+    }
+    if group.len() != target_index {
+        return Err(format!(
+            "activation target group has {} targets but used {target_index}",
+            group.len()
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_activation_target_groups_consumed(
+    groups: &VecDeque<Vec<ObjectId>>,
+) -> Result<(), String> {
+    if groups.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} activation target group(s) were unconsumed when the script ended",
+        groups.len()
+    ))
+}
+
 fn pass_until_resolved(
     runner: &mut GameRunner,
     labels: &HashMap<ObjectId, String>,
     groups: &mut VecDeque<Vec<ObjectId>>,
+    activation_target_groups: &mut VecDeque<Vec<ObjectId>>,
     card_choice_groups: &mut VecDeque<Vec<ObjectId>>,
 ) -> Result<(), String> {
     for _ in 0..128 {
         match runner.state().waiting_for {
             WaitingFor::TriggerTargetSelection { .. } => {
                 apply_trigger_target_group(runner, labels, groups)?;
+            }
+            WaitingFor::TargetSelection { .. } => {
+                apply_activation_target_group(runner, labels, activation_target_groups)?;
             }
             WaitingFor::EffectZoneChoice { .. }
             | WaitingFor::ChooseFromZoneChoice { .. }
@@ -458,6 +615,7 @@ fn pass_until_resolved(
             && !matches!(
                 runner.state().waiting_for,
                 WaitingFor::TriggerTargetSelection { .. }
+                    | WaitingFor::TargetSelection { .. }
                     | WaitingFor::EffectZoneChoice { .. }
                     | WaitingFor::ChooseFromZoneChoice { .. }
                     | WaitingFor::DiscardChoice { .. }
@@ -474,6 +632,7 @@ fn activate(
     runner: &mut GameRunner,
     labels: &HashMap<ObjectId, String>,
     action: &Value,
+    activation_target_groups: &mut VecDeque<Vec<ObjectId>>,
 ) -> Result<(), String> {
     let source_label = action["source"].as_str().ok_or("activate needs source")?;
     let source_id = resolve_label(labels, source_label)?;
@@ -491,6 +650,12 @@ fn activate(
             .map(|(index, ability)| (index, ability.kind, ability.description.clone())),
         prefix,
     )?;
+    let alternative_cost = alternative_cost_decision(action)?;
+    let base_cost = object.abilities[ability_index]
+        .cost
+        .as_ref()
+        .and_then(base_activation_cost)
+        .cloned();
     let target_ids = resolve_target_labels(action, labels)?;
     let stack_size = runner.state().stack.len();
     runner
@@ -502,6 +667,7 @@ fn activate(
         .map_err(|error| error.to_string())?;
 
     let mut target_index = 0;
+    let mut alternative_cost_prompt_seen = false;
     for _ in 0..64 {
         match runner.state().waiting_for.clone() {
             WaitingFor::TargetSelection {
@@ -530,6 +696,22 @@ fn activate(
                     target_index += 1;
                 }
             }
+            WaitingFor::ActivationCostOneOfChoice { costs, .. } => {
+                if alternative_cost_prompt_seen {
+                    return Err(
+                        "activated ability presented multiple alternative-cost prompts".to_string(),
+                    );
+                }
+                let decision = alternative_cost.ok_or_else(|| {
+                    "an alternative-cost prompt appeared without activate.alternative_cost"
+                        .to_string()
+                })?;
+                let index = select_activation_cost_branch(&costs, base_cost.as_ref(), decision)?;
+                runner
+                    .act(GameAction::ChooseActivationCostBranch { index })
+                    .map_err(|error| error.to_string())?;
+                alternative_cost_prompt_seen = true;
+            }
             WaitingFor::Priority { .. } => break,
             WaitingFor::ManaPayment { .. } => {
                 return Err("CastPaymentMode::Auto did not pay the activation cost".to_string());
@@ -539,17 +721,15 @@ fn activate(
             }
         }
     }
-    if target_index != target_ids.len() {
-        return Err(format!(
-            "activation received {} targets but used {target_index}",
-            target_ids.len()
-        ));
-    }
-    if runner.state().stack.len() <= stack_size {
-        return Err("activated ability did not commit to the stack".to_string());
-    }
     if !matches!(&runner.state().waiting_for, WaitingFor::Priority { .. }) {
         return Err("activation did not finish target selection".to_string());
+    }
+    if target_index < target_ids.len() {
+        activation_target_groups.push_back(target_ids[target_index..].to_vec());
+    }
+    ensure_activation_cost_prompt_matches_field(alternative_cost, alternative_cost_prompt_seen)?;
+    if runner.state().stack.len() <= stack_size {
+        return Err("activated ability did not commit to the stack".to_string());
     }
     Ok(())
 }
@@ -859,6 +1039,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     }
     let actions = spec["script"].as_array().cloned().unwrap_or_default();
     let mut trigger_target_groups = VecDeque::new();
+    let mut activation_target_groups = VecDeque::new();
     let mut card_choice_groups = VecDeque::new();
     for (action_index, action) in actions.iter().enumerate() {
         match action["action"].as_str().unwrap_or_default() {
@@ -889,7 +1070,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 let cast = if let Some(x) = x { cast.x(x) } else { cast };
                 let _ = cast.target_objects(&target_ids).commit();
             }
-            "activate" => activate(&mut runner, &labels, action)?,
+            "activate" => activate(&mut runner, &labels, action, &mut activation_target_groups)?,
             "trigger_targets" => {
                 let targets = resolve_target_labels(action, &labels)?;
                 if targets.is_empty() {
@@ -905,6 +1086,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     &mut runner,
                     &labels,
                     &mut trigger_target_groups,
+                    &mut activation_target_groups,
                     &mut card_choice_groups,
                 )?;
             }
@@ -915,6 +1097,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
         }
     }
     ensure_trigger_target_groups_consumed(&trigger_target_groups)?;
+    ensure_activation_target_groups_consumed(&activation_target_groups)?;
     ensure_card_choice_groups_consumed(&card_choice_groups)?;
     let reached = check_reach(runner.state(), &labels, spec.get("reach"))?;
     Ok(json!({
@@ -935,6 +1118,15 @@ fn check_reach(
     let player = reach["player"].as_str().unwrap_or("P0");
     let zone = reach["zone"].as_str().unwrap_or("graveyard");
     let card = reach["card"].as_str().ok_or("reach needs card")?;
+    let expected_count = reach
+        .get("count")
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|count| usize::try_from(count).ok())
+                .ok_or("reach.count must be a non-negative integer")
+        })
+        .transpose()?;
     let index = player
         .strip_prefix('P')
         .and_then(|value| value.parse::<usize>().ok())
@@ -943,7 +1135,7 @@ fn check_reach(
         return Err("reach player must be P0 or P1".to_string());
     }
     let in_zone = cards(state, index, zone).iter().any(|name| name == card);
-    if !in_zone {
+    if expected_count.is_none() && !in_zone {
         return Ok(false);
     }
     if let Some(tapped_labels) = reach.get("tapped_labels") {
@@ -961,6 +1153,15 @@ fn check_reach(
         }
     }
     if zone != "battlefield" {
+        if expected_count.is_some_and(|expected| {
+            cards(state, index, zone)
+                .iter()
+                .filter(|name| *name == card)
+                .count()
+                != expected
+        }) {
+            return Ok(false);
+        }
         return Ok(![
             "types",
             "subtypes",
@@ -969,12 +1170,14 @@ fn check_reach(
             "toughness",
             "creature",
             "tapped",
+            "attached_to",
             "counters",
         ]
         .iter()
         .any(|key| reach.get(key).is_some()));
     }
 
+    let mut matching_count = 0;
     for id in &state.battlefield {
         let Some(object) = state
             .objects
@@ -983,14 +1186,18 @@ fn check_reach(
         else {
             continue;
         };
-        if matches_reach_characteristics(object, reach)? {
-            return Ok(true);
+        if matches_reach_characteristics(object, reach, labels)? {
+            matching_count += 1;
         }
     }
-    Ok(false)
+    Ok(expected_count.map_or(matching_count > 0, |expected| matching_count == expected))
 }
 
-fn matches_reach_characteristics(object: &GameObject, reach: &Value) -> Result<bool, String> {
+fn matches_reach_characteristics(
+    object: &GameObject,
+    reach: &Value,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<bool, String> {
     for (key, actual) in [
         (
             "types",
@@ -1110,6 +1317,22 @@ fn matches_reach_characteristics(object: &GameObject, reach: &Value) -> Result<b
             return Err("reach.tapped must be a boolean".to_string());
         };
         if object.tapped != expected {
+            return Ok(false);
+        }
+    }
+    if let Some(expected) = reach.get("attached_to") {
+        let expected = expected
+            .as_str()
+            .ok_or("reach.attached_to must be a battlefield label")?;
+        let expected_id = labels
+            .iter()
+            .find_map(|(id, label)| (label == expected).then_some(*id))
+            .ok_or_else(|| format!("unknown battlefield label {expected}"))?;
+        if object.attached_to
+            != Some(engine::types::object_data::AttachTarget::Object(
+                expected_id,
+            ))
+        {
             return Ok(false);
         }
     }
@@ -1448,6 +1671,7 @@ mod tests {
                         "ability": "{T}:",
                         "targets": ["target"]
                     }),
+                    &mut VecDeque::new(),
                 )
                 .unwrap();
 
@@ -1460,6 +1684,104 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[test]
+    fn alternative_cost_decisions_select_the_original_or_alternative_branch() {
+        use engine::types::ability::AbilityCost;
+        use engine::types::mana::ManaCost;
+
+        let base = AbilityCost::Mana {
+            cost: ManaCost::generic(1),
+        };
+        let alternative = AbilityCost::Mana {
+            cost: ManaCost::generic(0),
+        };
+        let costs = vec![base.clone(), alternative];
+
+        assert_eq!(
+            select_activation_cost_branch(&costs, Some(&base), AlternativeCostDecision::Accept),
+            Ok(1)
+        );
+        assert_eq!(
+            select_activation_cost_branch(&costs, Some(&base), AlternativeCostDecision::Decline),
+            Ok(0)
+        );
+        assert!(select_activation_cost_branch(
+            &[base.clone()],
+            Some(&base),
+            AlternativeCostDecision::Accept
+        )
+        .is_err());
+
+        let zero = AbilityCost::Mana {
+            cost: ManaCost::generic(0),
+        };
+        let equal_costs = vec![zero.clone(), zero.clone()];
+        assert_eq!(
+            select_activation_cost_branch(
+                &equal_costs,
+                Some(&zero),
+                AlternativeCostDecision::Accept
+            ),
+            Ok(1)
+        );
+        assert_eq!(
+            select_activation_cost_branch(
+                &equal_costs,
+                Some(&zero),
+                AlternativeCostDecision::Decline
+            ),
+            Ok(0)
+        );
+    }
+
+    #[test]
+    fn alternative_cost_accepts_the_first_offered_branch_when_base_is_unpayable() {
+        use engine::types::ability::AbilityCost;
+        use engine::types::mana::ManaCost;
+
+        let base = AbilityCost::Mana {
+            cost: ManaCost::generic(1),
+        };
+        let only_payable_branch = AbilityCost::Mana {
+            cost: ManaCost::generic(0),
+        };
+
+        assert_eq!(
+            select_activation_cost_branch(
+                std::slice::from_ref(&only_payable_branch),
+                Some(&base),
+                AlternativeCostDecision::Accept
+            ),
+            Ok(0)
+        );
+        assert!(select_activation_cost_branch(
+            std::slice::from_ref(&only_payable_branch),
+            Some(&base),
+            AlternativeCostDecision::Decline
+        )
+        .is_err());
+        assert!(
+            select_activation_cost_branch(&[], Some(&base), AlternativeCostDecision::Accept)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn alternative_cost_field_and_prompt_must_appear_together() {
+        assert!(ensure_activation_cost_prompt_matches_field(None, false).is_ok());
+        assert!(ensure_activation_cost_prompt_matches_field(
+            Some(AlternativeCostDecision::Accept),
+            true
+        )
+        .is_ok());
+        assert!(ensure_activation_cost_prompt_matches_field(None, true).is_err());
+        assert!(ensure_activation_cost_prompt_matches_field(
+            Some(AlternativeCostDecision::Accept),
+            false
+        )
+        .is_err());
     }
 
     #[test]
@@ -1665,15 +1987,24 @@ mod tests {
             .insert(parse_counter_type("ingenuity"), 2);
         let object = &runner.state().objects[&creature];
 
-        assert!(
-            matches_reach_characteristics(object, &json!({"counters": {"ingenuity": 2}})).unwrap()
-        );
-        assert!(
-            matches_reach_characteristics(object, &json!({"counters": {"energy": 0}})).unwrap()
-        );
-        assert!(
-            !matches_reach_characteristics(object, &json!({"counters": {"ingenuity": 0}})).unwrap()
-        );
+        assert!(matches_reach_characteristics(
+            object,
+            &json!({"counters": {"ingenuity": 2}}),
+            &HashMap::new()
+        )
+        .unwrap());
+        assert!(matches_reach_characteristics(
+            object,
+            &json!({"counters": {"energy": 0}}),
+            &HashMap::new()
+        )
+        .unwrap());
+        assert!(!matches_reach_characteristics(
+            object,
+            &json!({"counters": {"ingenuity": 0}}),
+            &HashMap::new()
+        )
+        .unwrap());
     }
 
     #[test]

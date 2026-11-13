@@ -511,6 +511,21 @@ def _validate_setup(scenario: dict) -> None:
             if "counters" in permanent and not isinstance(permanent["counters"], dict):
                 raise TypeError(f"{context}.counters must be a table")
 
+    script = scenario.get("script", [])
+    if not isinstance(script, list):
+        raise TypeError(f"{name}: script must be an array")
+    for index, action in enumerate(script):
+        if not isinstance(action, dict):
+            raise TypeError(f"{name}: script[{index}] must be a table")
+        if "alternative_cost" not in action:
+            continue
+        context = f"{name}: script[{index}].alternative_cost"
+        if action.get("action") != "activate":
+            raise ValueError(f"{context} is only valid for activate actions")
+        decision = action["alternative_cost"]
+        if not isinstance(decision, str) or decision not in {"accept", "decline"}:
+            raise ValueError(f"{context} must be accept or decline")
+
 
 def load_specs(paths: list[Path]) -> dict:
     scenarios = []

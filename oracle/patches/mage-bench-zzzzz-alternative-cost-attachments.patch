@@ -1,0 +1,138 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+index bd533e98..61412f38 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -195,6 +195,17 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                 case "activate" -> {
+                     String source = requiredString(action, "source");
+                     String ability = requiredString(action, "ability");
++                    boolean hasAlternativeCost = action.has("alternative_cost");
++                    boolean acceptAlternativeCost = false;
++                    if (hasAlternativeCost) {
++                        String decision = requiredString(action, "alternative_cost");
++                        if (!decision.equals("accept") && !decision.equals("decline")) {
++                            throw new IllegalArgumentException(
++                                    "activate.alternative_cost must be accept or decline"
++                            );
++                        }
++                        acceptAlternativeCost = decision.equals("accept");
++                    }
+                     if (!labels.containsKey(source)) {
+                         throw new IllegalArgumentException("unknown battlefield label " + source);
+                     }
+@@ -210,6 +221,11 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                     }
+                     runCode("require unique activated ability", turn, step, actingPlayer,
+                             (info, player, game) -> actingPlayer.assertUniqueActivatedAbility(game, command));
++                    if (hasAlternativeCost) {
++                        boolean accepted = acceptAlternativeCost;
++                        runCode("queue alternative-cost choice", turn, step, actingPlayer,
++                                (info, player, game) -> setChoice(actingPlayer, accepted));
++                    }
+                     if (targets.isEmpty()) {
+                         activateAbility(turn, step, actingPlayer, command);
+                     } else {
+@@ -222,6 +238,16 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                             throw new IllegalStateException("activated ability did not commit to the stack");
+                         }
+                     });
++                    if (hasAlternativeCost) {
++                        runCode("assert alternative-cost choice was consumed", turn, step, actingPlayer,
++                                (info, player, game) -> {
++                                    if (!actingPlayer.getChoices().isEmpty()) {
++                                        throw new IllegalStateException(
++                                                "activate.alternative_cost was provided but no prompt consumed it"
++                                        );
++                                    }
++                                });
++                    }
+                     lastStep = step;
+                 }
+                 case "pass_until_resolved" -> {
+@@ -393,6 +419,12 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             } else {
+                 item.addProperty("label", label);
+             }
++            String attachedTo = permanent.getAttachedTo() == null
++                    ? null
++                    : labelOf(currentGame.getPermanent(permanent.getAttachedTo()));
++            if (attachedTo != null) {
++                item.addProperty("attached_to", attachedTo);
++            }
+             boolean token = permanent instanceof PermanentToken;
+             item.addProperty("name", projectedName(permanent.getName(), token));
+             item.addProperty("token", token);
+@@ -497,6 +529,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             return true;
+         }
+         JsonObject reach = scenario.getAsJsonObject("reach");
++        long expectedCount = reach.has("count") ? reachCount(reach) : -1;
+         String playerName = string(reach, "player", "P0");
+         if (!playerName.equals("P0") && !playerName.equals("P1")) {
+             throw new IllegalArgumentException("reach player must be P0 or P1");
+@@ -519,18 +552,25 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             }
+             default -> throw new IllegalArgumentException("unsupported reach zone " + zone);
+         };
+-        if (!names.contains(card)) {
++        if (zone.equals("battlefield") && expectedCount < 0 && !names.contains(card)) {
+             return false;
+         }
++        if (!zone.equals("battlefield")) {
++            long matchingNames = names.stream().filter(card::equals).count();
++            if (expectedCount >= 0 ? matchingNames != expectedCount : matchingNames == 0) {
++                return false;
++            }
++        }
+         if (!zone.equals("battlefield") && reach.has("counters")) {
+             return false;
+         }
+         if (zone.equals("battlefield")) {
+-            boolean matchingPermanent = currentGame.getBattlefield().getAllActivePermanents().stream()
++            long matchingPermanents = currentGame.getBattlefield().getAllActivePermanents().stream()
+                     .filter(candidate -> candidate.getControllerId().equals(player.getId()))
+                     .filter(candidate -> projectedName(candidate).equals(card))
+-                    .anyMatch(candidate -> matchesReachCharacteristics(reach, candidate));
+-            if (!matchingPermanent) {
++                    .filter(candidate -> matchesReachCharacteristics(reach, candidate))
++                    .count();
++            if (expectedCount >= 0 ? matchingPermanents != expectedCount : matchingPermanents == 0) {
+                 return false;
+             }
+         }
+@@ -547,6 +587,18 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         return true;
+     }
+ 
++    private long reachCount(JsonObject reach) {
++        JsonElement value = reach.get("count");
++        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
++            throw new IllegalArgumentException("reach.count must be a non-negative integer");
++        }
++        long count = value.getAsLong();
++        if (count < 0 || value.getAsDouble() != count) {
++            throw new IllegalArgumentException("reach.count must be a non-negative integer");
++        }
++        return count;
++    }
++
+     private boolean matchesReachCharacteristics(JsonObject reach, Permanent permanent) {
+         if (!matchesCharacteristicList(reach, "types", permanent.getCardType(currentGame).stream()
+                 .map(type -> normalizeCharacteristic(type.toString()))
+@@ -585,6 +637,16 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                 != (!permanent.isCreature(currentGame) || permanent.getToughness() == null)) {
+             return false;
+         }
++        if (reach.has("attached_to")) {
++            String label = reach.get("attached_to").getAsString();
++            UUID id = labels.get(label);
++            if (id == null) {
++                throw new IllegalArgumentException("unknown battlefield label " + label);
++            }
++            if (!id.equals(permanent.getAttachedTo())) {
++                return false;
++            }
++        }
+         if (reach.has("counters")) {
+             if (!reach.get("counters").isJsonObject()) {
+                 throw new IllegalArgumentException("reach.counters must be an object");
