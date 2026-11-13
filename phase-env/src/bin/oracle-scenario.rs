@@ -1183,7 +1183,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     Some(cast_target_decision_slot_count(
                         runner.state(),
                         spell,
-                        active,
+                        player,
                         x,
                     )?)
                 } else {
@@ -1660,6 +1660,48 @@ mod tests {
                     decision_slot_count
                 )
                 .is_err());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn cast_target_preflight_uses_new_active_player_after_next_turn() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let _artifact = scenario
+                    .add_artifact_from_oracle(PlayerId(0), "P0 artifact", "")
+                    .id();
+                let spell = scenario
+                    .add_spell_to_hand_from_oracle(
+                        PlayerId(1),
+                        "Shatter",
+                        true,
+                        "Destroy target artifact an opponent controls.",
+                    )
+                    .with_mana_cost(engine::types::mana::ManaCost::generic(0))
+                    .id();
+                scenario.with_library_top(PlayerId(1), &["P1 draw"]);
+                let mut runner = scenario.build();
+                let initial_active = runner.state().active_player;
+                assert_eq!(initial_active, PlayerId(0));
+
+                advance_to_next_turn(&mut runner, true).unwrap();
+
+                let player = runner.state().active_player;
+                assert_eq!(player, PlayerId(1));
+                assert_eq!(
+                    cast_target_decision_slot_count(runner.state(), spell, player, None),
+                    Ok(1)
+                );
+                assert_eq!(
+                    cast_target_decision_slot_count(runner.state(), spell, initial_active, None),
+                    Ok(0)
+                );
             })
             .unwrap()
             .join()
