@@ -1,0 +1,161 @@
+[[scenarios]]
+name = "K1 story offers the first equip for zero"
+active_player = 1
+step = "precombat_main"
+script = [
+  { action = "next_turn" },
+  { action = "activate", source = "equipment-1", ability = "Equip {1}", targets = ["kili"], alternative_cost = "accept" },
+  { action = "pass_until_resolved" },
+  { action = "activate", source = "equipment-2", ability = "Equip {1}", targets = ["kili"] },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Bonesplitter", count = 2, attached_to = "kili", tapped_labels = ["plains"] }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "kili", card = "Kili the Resourceful" },
+  { label = "equipment-1", card = "Bonesplitter" },
+  { label = "equipment-2", card = "Bonesplitter" },
+  { label = "plains", card = "Plains" },
+  { label = "support-creature", card = "Grizzly Bears" },
+]
+hand = []
+library_top = ["Walking Corpse", "Grizzly Bears"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = ["Forest"]
+graveyard = []
+
+[[scenarios]]
+name = "K2 one equipment does not establish a story"
+active_player = 1
+step = "precombat_main"
+script = [
+  { action = "next_turn" },
+  { action = "activate", source = "equipment", ability = "Equip {1}", targets = ["kili"] },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Bonesplitter", attached_to = "kili", tapped_labels = ["plains"] }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "kili", card = "Kili the Resourceful" },
+  { label = "equipment", card = "Bonesplitter" },
+  { label = "plains", card = "Plains" },
+  { label = "support-creature", card = "Grizzly Bears" },
+]
+hand = []
+library_top = ["Walking Corpse", "Grizzly Bears"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = ["Forest"]
+graveyard = []
+
+[[scenarios]]
+name = "K3 the zero-cost equip returns on the next turn"
+active_player = 1
+step = "precombat_main"
+script = [
+  { action = "next_turn" },
+  { action = "activate", source = "equipment-1", ability = "Equip {1}", targets = ["kili"], alternative_cost = "accept" },
+  { action = "pass_until_resolved" },
+  { action = "next_turn" },
+  { action = "next_turn" },
+  { action = "activate", source = "equipment-2", ability = "Equip {1}", targets = ["kili"], alternative_cost = "accept" },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Plains", tapped = false }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "kili", card = "Kili the Resourceful" },
+  { label = "equipment-1", card = "Bonesplitter" },
+  { label = "equipment-2", card = "Bonesplitter" },
+  { label = "plains", card = "Plains" },
+  { label = "support-creature", card = "Grizzly Bears" },
+]
+hand = []
+library_top = ["Walking Corpse", "Grizzly Bears"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = ["Forest"]
+graveyard = []
+
+[[scenarios]]
+name = "K4 declining the first zero-cost offer uses the normal equip cost"
+active_player = 1
+step = "precombat_main"
+script = [
+  { action = "next_turn" },
+  { action = "activate", source = "equipment-1", ability = "Equip {1}", targets = ["kili"], alternative_cost = "decline" },
+  { action = "pass_until_resolved" },
+  { action = "activate", source = "equipment-2", ability = "Equip {1}", targets = ["kili"] },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "battlefield", card = "Bonesplitter", count = 2, attached_to = "kili", tapped_labels = ["plains", "island"] }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "kili", card = "Kili the Resourceful" },
+  { label = "equipment-1", card = "Bonesplitter" },
+  { label = "equipment-2", card = "Bonesplitter" },
+  { label = "plains", card = "Plains" },
+  { label = "island", card = "Island" },
+  { label = "support-creature", card = "Grizzly Bears" },
+]
+hand = []
+library_top = ["Walking Corpse", "Grizzly Bears"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = ["Forest"]
+graveyard = []
+
+[[scenarios]]
+name = "K5 only the first equipment entering draws a card"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Bonesplitter" },
+  { action = "pass_until_resolved" },
+  { action = "cast", card = "Bonesplitter" },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P0", zone = "hand", card = "Walking Corpse", count = 1 }
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "kili", card = "Kili the Resourceful" },
+  { label = "plains", card = "Plains" },
+  { label = "island", card = "Island" },
+]
+hand = ["Bonesplitter", "Bonesplitter"]
+library_top = ["Walking Corpse", "Walking Corpse"]
+graveyard = []
+
+[scenarios.setup.P1]
+life = 20
+battlefield = []
+hand = []
+library_top = ["Forest"]
+graveyard = []

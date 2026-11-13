@@ -5,11 +5,20 @@ from __future__ import annotations
 import copy
 import json
 import sys
+import unicodedata
 from pathlib import Path
 
 
 def _json_sort_key(value: object) -> str:
     return json.dumps(value, sort_keys=True)
+
+
+def _normalize_card_name(value: str) -> str:
+    return "".join(
+        character
+        for character in unicodedata.normalize("NFKD", value)
+        if not unicodedata.category(character).startswith("M")
+    )
 
 
 def normalize_projection(projection: object) -> object:
@@ -21,15 +30,29 @@ def normalize_projection(projection: object) -> object:
         if isinstance(values, list):
             normalized[zone] = sorted(values, key=_json_sort_key)
 
+    permanents = normalized.get("battlefield")
+    if isinstance(permanents, list):
+        for permanent in permanents:
+            if isinstance(permanent, dict) and isinstance(permanent.get("name"), str):
+                permanent["name"] = _normalize_card_name(permanent["name"])
+
     players = normalized.get("players")
     if isinstance(players, dict):
         for player in players.values():
             if not isinstance(player, dict):
                 continue
-            for zone in ("battlefield", "exile", "hand"):
+            for zone in ("battlefield", "exile", "hand", "library", "graveyard"):
                 values = player.get(zone)
                 if isinstance(values, list):
-                    player[zone] = sorted(values, key=_json_sort_key)
+                    names = [
+                        _normalize_card_name(value) if isinstance(value, str) else value
+                        for value in values
+                    ]
+                    player[zone] = (
+                        sorted(names, key=_json_sort_key)
+                        if zone in ("battlefield", "exile", "hand")
+                        else names
+                    )
 
     return normalized
 

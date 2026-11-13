@@ -1,9 +1,9 @@
 diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 new file mode 100644
-index 00000000..1576c76f
+index 00000000..aebbe4ac
 --- /dev/null
 +++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-@@ -0,0 +1,719 @@
+@@ -0,0 +1,868 @@
 +package org.mage.test.testapi;
 +
 +import com.google.gson.Gson;
@@ -109,8 +109,19 @@ index 00000000..1576c76f
 +        setStrictChooseMode(true);
 +        player(0).setAutoOrderIdenticalTriggers(true);
 +        player(1).setAutoOrderIdenticalTriggers(true);
++        player(0).setStrictTargetQueue(true);
++        player(1).setStrictTargetQueue(true);
++        player(0).setStrictCardChoiceQueue(true);
++        player(1).setStrictCardChoiceQueue(true);
 +        setStopAt(finalTurn, finalStep);
 +        execute();
++        for (int index = 0; index < 2; index++) {
++            if (!player(index).getTargets().isEmpty()) {
++                throw new IllegalStateException("trigger target group(s) were unconsumed when the script ended: "
++                        + player(index).getTargets());
++            }
++            player(index).assertNoCardChoiceGroups();
++        }
 +        System.out.println(RESULT_PREFIX + GSON.toJson(result()));
 +    }
 +
@@ -126,6 +137,27 @@ index 00000000..1576c76f
 +            switch (kind) {
 +                case "cast" -> {
 +                    String card = requiredString(action, "card");
++                    boolean hasX = action.has("x");
++                    int x = hasX ? exactInteger(action.get("x"), "cast.x") : 0;
++                    if (x < 0) {
++                        throw new IllegalArgumentException("cast.x must be a non-negative integer");
++                    }
++                    runCode("validate X announcement", turn, step, actingPlayer, (info, player, game) -> {
++                        Card spell = actingPlayer.getHand().getCards(game).stream()
++                                .filter(candidate -> candidate.getName().equals(card))
++                                .findFirst()
++                                .orElseThrow(() -> new IllegalStateException(card + " is not in the active player's hand"));
++                        boolean hasXCost = spell.getManaCost().getText().contains("{X}");
++                        if (hasXCost != hasX) {
++                            throw new IllegalStateException(hasXCost
++                                    ? "cast of an X-cost spell requires x"
++                                    : "x is only valid for a spell with an X cost");
++                        }
++                    });
++                    if (hasX) {
++                        runCode("queue X choice", turn, step, actingPlayer,
++                                (info, player, game) -> setChoice(actingPlayer, "X=" + x));
++                    }
 +                    List<String> targets = strings(array(action, "targets"));
 +                    for (int index = 0; index < targets.size(); index++) {
 +                        String label = targets.get(index);
@@ -139,11 +171,57 @@ index 00000000..1576c76f
 +                    } else {
 +                        castSpell(turn, step, actingPlayer, card, String.join("^", targets));
 +                    }
++                    if (hasX) {
++                        runCode("assert X choice was consumed", turn, step, actingPlayer, (info, player, game) -> {
++                            if (!actingPlayer.getChoices().isEmpty()) {
++                                throw new IllegalStateException(
++                                        "cast.x was provided but no X choice prompt consumed it"
++                                );
++                            }
++                        });
++                    }
 +                    lastStep = step;
++                }
++                case "trigger_targets" -> {
++                    List<String> targets = strings(array(action, "targets"));
++                    if (targets.isEmpty()) {
++                        throw new IllegalArgumentException("trigger_targets needs at least one target");
++                    }
++                    for (int index = 0; index < targets.size(); index++) {
++                        String label = targets.get(index);
++                        if (!labels.containsKey(label)) {
++                            throw new IllegalArgumentException("unknown target label " + label);
++                        }
++                        targets.set(index, "@" + label);
++                    }
++                    actingPlayer.addTarget(String.join("^", targets));
++                }
++                case "choose_cards" -> {
++                    if (!action.has("cards") || !action.get("cards").isJsonArray()) {
++                        throw new IllegalArgumentException("choose_cards needs cards");
++                    }
++                    List<String> cards = strings(action.getAsJsonArray("cards"));
++                    for (String label : cards) {
++                        if (!labels.containsKey(label)) {
++                            throw new IllegalArgumentException("unknown card label " + label);
++                        }
++                    }
++                    actingPlayer.addCardChoiceGroup(cards);
 +                }
 +                case "activate" -> {
 +                    String source = requiredString(action, "source");
 +                    String ability = requiredString(action, "ability");
++                    boolean hasAlternativeCost = action.has("alternative_cost");
++                    boolean acceptAlternativeCost = false;
++                    if (hasAlternativeCost) {
++                        String decision = requiredString(action, "alternative_cost");
++                        if (!decision.equals("accept") && !decision.equals("decline")) {
++                            throw new IllegalArgumentException(
++                                    "activate.alternative_cost must be accept or decline"
++                            );
++                        }
++                        acceptAlternativeCost = decision.equals("accept");
++                    }
 +                    if (!labels.containsKey(source)) {
 +                        throw new IllegalArgumentException("unknown battlefield label " + source);
 +                    }
@@ -159,6 +237,11 @@ index 00000000..1576c76f
 +                    }
 +                    runCode("require unique activated ability", turn, step, actingPlayer,
 +                            (info, player, game) -> actingPlayer.assertUniqueActivatedAbility(game, command));
++                    if (hasAlternativeCost) {
++                        boolean accepted = acceptAlternativeCost;
++                        runCode("queue alternative-cost choice", turn, step, actingPlayer,
++                                (info, player, game) -> setChoice(actingPlayer, accepted));
++                    }
 +                    if (targets.isEmpty()) {
 +                        activateAbility(turn, step, actingPlayer, command);
 +                    } else {
@@ -171,6 +254,16 @@ index 00000000..1576c76f
 +                            throw new IllegalStateException("activated ability did not commit to the stack");
 +                        }
 +                    });
++                    if (hasAlternativeCost) {
++                        runCode("assert alternative-cost choice was consumed", turn, step, actingPlayer,
++                                (info, player, game) -> {
++                                    if (!actingPlayer.getChoices().isEmpty()) {
++                                        throw new IllegalStateException(
++                                                "activate.alternative_cost was provided but no prompt consumed it"
++                                        );
++                                    }
++                                });
++                    }
 +                    lastStep = step;
 +                }
 +                case "pass_until_resolved" -> {
@@ -208,7 +301,7 @@ index 00000000..1576c76f
 +            List<JsonElement> library = new ArrayList<>();
 +            array(playerSetup, "library_top").forEach(library::add);
 +            for (int cardIndex = library.size() - 1; cardIndex >= 0; cardIndex--) {
-+                addCard(Zone.LIBRARY, player, cardName(library.get(cardIndex)));
++                addSetupCard(Zone.LIBRARY, player, library.get(cardIndex));
 +            }
 +            addCards(Zone.GRAVEYARD, player, array(playerSetup, "graveyard"));
 +        }
@@ -253,7 +346,25 @@ index 00000000..1576c76f
 +
 +    private void addCards(Zone zone, TestPlayer player, JsonArray cards) {
 +        for (JsonElement card : cards) {
-+            addCard(zone, player, cardName(card));
++            addSetupCard(zone, player, card);
++        }
++    }
++
++    private void addSetupCard(Zone zone, TestPlayer player, JsonElement item) {
++        String card = cardName(item);
++        if (item.isJsonObject() && item.getAsJsonObject().has("label")) {
++            String label = requiredString(item.getAsJsonObject(), "label");
++            if (labels.containsKey(label)) {
++                throw new IllegalArgumentException("duplicate setup label " + label);
++            }
++            addCard(zone, player, card + "@" + label);
++            UUID objectId = player.getAliasByName(label);
++            if (objectId == null) {
++                throw new IllegalArgumentException("XMage did not register setup label " + label);
++            }
++            labels.put(label, objectId);
++        } else {
++            addCard(zone, player, card);
 +        }
 +    }
 +
@@ -323,6 +434,12 @@ index 00000000..1576c76f
 +                item.add("label", JsonNull.INSTANCE);
 +            } else {
 +                item.addProperty("label", label);
++            }
++            String attachedTo = permanent.getAttachedTo() == null
++                    ? null
++                    : labelOf(currentGame.getPermanent(permanent.getAttachedTo()));
++            if (attachedTo != null) {
++                item.addProperty("attached_to", attachedTo);
 +            }
 +            boolean token = permanent instanceof PermanentToken;
 +            item.addProperty("name", projectedName(permanent.getName(), token));
@@ -428,6 +545,7 @@ index 00000000..1576c76f
 +            return true;
 +        }
 +        JsonObject reach = scenario.getAsJsonObject("reach");
++        long expectedCount = reach.has("count") ? reachCount(reach) : -1;
 +        String playerName = string(reach, "player", "P0");
 +        if (!playerName.equals("P0") && !playerName.equals("P1")) {
 +            throw new IllegalArgumentException("reach player must be P0 or P1");
@@ -450,18 +568,25 @@ index 00000000..1576c76f
 +            }
 +            default -> throw new IllegalArgumentException("unsupported reach zone " + zone);
 +        };
-+        if (!names.contains(card)) {
++        if (zone.equals("battlefield") && expectedCount < 0 && !names.contains(card)) {
 +            return false;
++        }
++        if (!zone.equals("battlefield")) {
++            long matchingNames = names.stream().filter(card::equals).count();
++            if (expectedCount >= 0 ? matchingNames != expectedCount : matchingNames == 0) {
++                return false;
++            }
 +        }
 +        if (!zone.equals("battlefield") && reach.has("counters")) {
 +            return false;
 +        }
 +        if (zone.equals("battlefield")) {
-+            boolean matchingPermanent = currentGame.getBattlefield().getAllActivePermanents().stream()
++            long matchingPermanents = currentGame.getBattlefield().getAllActivePermanents().stream()
 +                    .filter(candidate -> candidate.getControllerId().equals(player.getId()))
 +                    .filter(candidate -> projectedName(candidate).equals(card))
-+                    .anyMatch(candidate -> matchesReachCharacteristics(reach, candidate));
-+            if (!matchingPermanent) {
++                    .filter(candidate -> matchesReachCharacteristics(reach, candidate))
++                    .count();
++            if (expectedCount >= 0 ? matchingPermanents != expectedCount : matchingPermanents == 0) {
 +                return false;
 +            }
 +        }
@@ -476,6 +601,18 @@ index 00000000..1576c76f
 +            }
 +        }
 +        return true;
++    }
++
++    private long reachCount(JsonObject reach) {
++        JsonElement value = reach.get("count");
++        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
++            throw new IllegalArgumentException("reach.count must be a non-negative integer");
++        }
++        long count = value.getAsLong();
++        if (count < 0 || value.getAsDouble() != count) {
++            throw new IllegalArgumentException("reach.count must be a non-negative integer");
++        }
++        return count;
 +    }
 +
 +    private boolean matchesReachCharacteristics(JsonObject reach, Permanent permanent) {
@@ -515,6 +652,16 @@ index 00000000..1576c76f
 +                && reach.get("toughness_is_null").getAsBoolean()
 +                != (!permanent.isCreature(currentGame) || permanent.getToughness() == null)) {
 +            return false;
++        }
++        if (reach.has("attached_to")) {
++            String label = reach.get("attached_to").getAsString();
++            UUID id = labels.get(label);
++            if (id == null) {
++                throw new IllegalArgumentException("unknown battlefield label " + label);
++            }
++            if (!id.equals(permanent.getAttachedTo())) {
++                return false;
++            }
 +        }
 +        if (reach.has("counters")) {
 +            if (!reach.get("counters").isJsonObject()) {
@@ -664,7 +811,7 @@ index 00000000..1576c76f
 +            return value.getAsString();
 +        }
 +        JsonObject card = value.getAsJsonObject();
-+        rejectUnknownKeys(card, Set.of("card"), "card setup");
++        rejectUnknownKeys(card, Set.of("card", "label"), "card setup");
 +        return requiredString(card, "card");
 +    }
 +
@@ -723,128 +870,3 @@ index 00000000..1576c76f
 +        return value == null || value.isJsonNull() ? fallback : value.getAsBoolean();
 +    }
 +}
-diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioLibraryOrderTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioLibraryOrderTest.java
-new file mode 100644
-index 00000000..c36d02d2
---- /dev/null
-+++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioLibraryOrderTest.java
-@@ -0,0 +1,49 @@
-+package org.mage.test.testapi;
-+
-+import mage.constants.PhaseStep;
-+import mage.constants.Zone;
-+import org.junit.Test;
-+import org.mage.test.serverside.base.CardTestPlayerBase;
-+
-+import static org.junit.Assert.assertEquals;
-+import static org.junit.Assert.assertTrue;
-+
-+public final class CardScenarioLibraryOrderTest extends CardTestPlayerBase {
-+
-+    @Test
-+    public void fixtureLibraryTopIsFirstDrawn() {
-+        removeAllCardsFromLibrary(playerA);
-+        removeAllCardsFromLibrary(playerB);
-+        skipInitShuffling();
-+        addCard(Zone.LIBRARY, playerA, "Swamp");
-+        addCard(Zone.LIBRARY, playerA, "Mountain");
-+        addCard(Zone.LIBRARY, playerA, "Forest");
-+        addCard(Zone.LIBRARY, playerB, "Swamp");
-+        addCard(Zone.LIBRARY, playerB, "Mountain");
-+        addCard(Zone.LIBRARY, playerB, "Forest");
-+
-+        runCode("check ordered library then draw once", 1, PhaseStep.PRECOMBAT_MAIN, playerA,
-+                (info, player, game) -> {
-+                    assertTrue(player.getHand().getCards(game).isEmpty());
-+                    assertEquals("Forest", player.getLibrary().getCards(game).get(0).getName());
-+                    assertEquals("Mountain", player.getLibrary().getCards(game).get(1).getName());
-+                    assertEquals("Swamp", player.getLibrary().getCards(game).get(2).getName());
-+                    player.drawCards(1, null, game);
-+                    assertEquals(1, player.getHand().getCards(game).size());
-+                    assertEquals("Forest", player.getHand().getCards(game).iterator().next().getName());
-+                    assertEquals("Mountain", player.getLibrary().getCards(game).get(0).getName());
-+                    assertEquals("Swamp", player.getLibrary().getCards(game).get(1).getName());
-+                });
-+
-+        setStrictChooseMode(true);
-+        setStopAt(1, PhaseStep.PRECOMBAT_MAIN);
-+        execute();
-+    }
-+
-+    @Test
-+    public void tokenNameSuffixIsRemovedOnlyForTokenPermanents() {
-+        assertEquals("Rat", CardScenarioProjectionTest.projectedName("Rat Token", true));
-+        assertEquals("Rat Token", CardScenarioProjectionTest.projectedName("Rat Token", false));
-+        assertEquals("Rat", CardScenarioProjectionTest.projectedName("Rat", true));
-+    }
-+}
-diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
-index 1fb66017..26c9ae85 100644
---- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
-+++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
-@@ -118,6 +118,7 @@ public class TestPlayer implements Player {
-     // - enable inner choice dialogs accessable by set up choices
-     //   (example: card call TestPlayer's choice, but it uses another choices, see docs in TestComputerPlayer)
-     private boolean strictChooseMode = false;
-+    private boolean autoOrderIdenticalTriggers = false;
- 
-     private String[] groupsForTargetHandling = null; // predefined targets list from cast/activate command
- 
-@@ -159,6 +160,7 @@ public class TestPlayer implements Player {
-         }
-         this.isSkipAllNextChooseCommands = testPlayer.isSkipAllNextChooseCommands;
-         this.strictChooseMode = testPlayer.strictChooseMode;
-+        this.autoOrderIdenticalTriggers = testPlayer.autoOrderIdenticalTriggers;
-     }
- 
-     public void addChoice(String choice) {
-@@ -180,6 +182,10 @@ public class TestPlayer implements Player {
-         return this.choices;
-     }
- 
-+    public void setAutoOrderIdenticalTriggers(boolean autoOrderIdenticalTriggers) {
-+        this.autoOrderIdenticalTriggers = autoOrderIdenticalTriggers;
-+    }
-+
-     public List<String> getTargets() {
-         return this.targets;
-     }
-@@ -445,6 +451,15 @@ public class TestPlayer implements Player {
-         return foundObject && foundAbility;
-     }
- 
-+    public void assertUniqueActivatedAbility(Game game, String nameOrAlias) {
-+        List<ActivatedAbility> matches = computerPlayer.getPlayable(game, true, Zone.BATTLEFIELD, false).stream()
-+                .filter(Ability::isNonManaActivatedAbility)
-+                .filter(ability -> hasAbilityTargetNameOrAlias(game, ability, nameOrAlias))
-+                .toList();
-+        Assert.assertEquals("Expected exactly one matching non-mana activated ability: " + nameOrAlias,
-+                1, matches.size());
-+    }
-+
-     public boolean hasObjectTargetNameOrAlias(MageObject object, String nameOrAlias) {
-         if (object == null || nameOrAlias == null) {
-             return false;
-@@ -2697,6 +2712,22 @@ public class TestPlayer implements Player {
-     @Override
-     public TriggeredAbility chooseTriggeredAbility(List<TriggeredAbility> abilities, Game game) {
-         assertAliasSupportInChoices(false);
-+        if (autoOrderIdenticalTriggers) {
-+            if (!abilities.isEmpty()) {
-+                TriggeredAbility first = abilities.get(0);
-+                UUID sourceId = first.getSourceId();
-+                String rule = first.getRule();
-+                if (sourceId != null && rule != null && !rule.isBlank()
-+                        && abilities.stream().allMatch(ability -> sourceId.equals(ability.getSourceId())
-+                        && rule.equals(ability.getRule()))) {
-+                    return first;
-+                }
-+            }
-+            throw new IllegalStateException("Cannot auto-order non-identical triggered abilities:\n"
-+                    + abilities.stream()
-+                    .map(ability -> "Source: " + ability.getSourceId() + "\n" + getInfo(ability, game))
-+                    .collect(Collectors.joining("\n")));
-+        }
-         if (!choices.isEmpty()) {
-             String choice = choices.get(0);
- 

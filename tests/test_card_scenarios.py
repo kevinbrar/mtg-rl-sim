@@ -419,6 +419,31 @@ def test_projection_comparator_compares_battlefield_characteristics() -> None:
         assert compare(left, right) == ["S1"]
 
 
+def test_projection_comparison_normalizes_card_name_diacritics() -> None:
+    left = {
+        "S1": {
+            "scenario": "S1",
+            "projection": {
+                "battlefield": [{"name": "Kíli the Resourceful"}],
+                "players": {"P0": {"hand": ["Kíli the Resourceful"]}},
+            },
+            "reach": True,
+        }
+    }
+    right = {
+        "S1": {
+            "scenario": "S1",
+            "projection": {
+                "battlefield": [{"name": "Kili the Resourceful"}],
+                "players": {"P0": {"hand": ["Kili the Resourceful"]}},
+            },
+            "reach": True,
+        }
+    }
+
+    assert compare(left, right) == []
+
+
 @pytest.mark.parametrize("zone", ("graveyard", "library"))
 def test_projection_comparator_preserves_ordered_zone_permutations(
     zone: str,
@@ -786,3 +811,56 @@ def test_projection_sha256_uses_comparator_unordered_zone_normalization() -> Non
 
     assert projection_sha256(first) == projection_sha256(second)
     assert projection_sha256(first) != projection_sha256(ordered_change)
+
+
+@pytest.mark.parametrize("decision", ["accept", "decline"])
+def test_load_specs_accepts_activated_alternative_cost_decision(
+    tmp_path: Path, decision: str
+) -> None:
+    spec = tmp_path / "alternative-cost.toml"
+    spec.write_text(
+        f"""
+[[scenarios]]
+name = "alternative cost"
+script = [{{ action = "activate", alternative_cost = "{decision}" }}]
+
+[scenarios.setup.P0]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+
+    assert loaded["scenarios"][0]["script"][0]["alternative_cost"] == decision
+
+
+@pytest.mark.parametrize(
+    ("action", "error"),
+    [
+        (
+            '{ action = "cast", alternative_cost = "accept" }',
+            "only valid for activate",
+        ),
+        (
+            '{ action = "activate", alternative_cost = "sometimes" }',
+            "must be accept or decline",
+        ),
+    ],
+)
+def test_load_specs_rejects_invalid_alternative_cost_decision(
+    tmp_path: Path, action: str, error: str
+) -> None:
+    spec = tmp_path / "invalid-alternative-cost.toml"
+    spec.write_text(
+        f"""
+[[scenarios]]
+name = "invalid alternative cost"
+script = [{action}]
+
+[scenarios.setup.P0]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=error):
+        load_specs([spec])
