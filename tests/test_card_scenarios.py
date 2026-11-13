@@ -51,6 +51,37 @@ def test_load_specs_rejects_duplicate_names(tmp_path: Path) -> None:
         load_specs([first, second])
 
 
+def test_load_specs_rejects_setup_labels_with_reserved_at_prefix(
+    tmp_path: Path,
+) -> None:
+    graveyard = tmp_path / "reserved-graveyard-label.toml"
+    graveyard.write_text(
+        """
+[[scenarios]]
+name = "reserved label"
+[scenarios.setup.P0]
+graveyard = [{card = "Walking Corpse", label = "@skip"}]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="reserved @ prefix"):
+        load_specs([graveyard])
+
+    battlefield = tmp_path / "reserved-battlefield-label.toml"
+    battlefield.write_text(
+        """
+[[scenarios]]
+name = "reserved label"
+[scenarios.setup.P0]
+battlefield = [{card = "Walking Corpse", label = "@skip"}]
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="reserved @ prefix"):
+        load_specs([battlefield])
+
+
 def test_runner_rejects_empty_second_suite_with_file_and_exit_two(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

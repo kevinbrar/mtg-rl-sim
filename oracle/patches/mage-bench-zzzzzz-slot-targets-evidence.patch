@@ -1,0 +1,161 @@
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -2387,6 +2387,13 @@
+     public boolean chooseTarget(Outcome outcome, Target target, Ability source, Game game) {
+         UUID abilityControllerId = target.getAffectedAbilityControllerId(this.getId());
+ 
++        if (strictTargetQueue && !target.isNotTarget()
++                && skipOptionalTargetWithoutCandidates(target, abilityControllerId, source, game, null)) {
++            return true;
++        }
++        if (strictTargetQueue && targets.isEmpty() && !target.isNotTarget()) {
++            Assert.fail("target prompt arrived with an empty cast.targets queue");
++        }
+         if (!targets.isEmpty()) {
+ 
+             // skip targets
+@@ -2394,7 +2401,7 @@
+                 Assert.assertTrue("found skip target, but it require more targets, needs "
+                                 + (target.getMinNumberOfTargets() - target.getTargets().size()) + " more",
+                         target.getTargets().size() >= target.getMinNumberOfTargets());
+-                return target.getSize() > 0 && target.isChosen(game);
++                return target.isChosen(game);
+             }
+ 
+             Set<Zone> targetCardZonesChecked = new HashSet<>(); // control miss implementation
+@@ -2706,6 +2713,13 @@
+     public boolean chooseTarget(Outcome outcome, Cards cards, TargetCard target, Ability source, Game game) {
+         UUID abilityControllerId = target.getAffectedAbilityControllerId(this.getId());
+ 
++        if (strictTargetQueue && !target.isNotTarget()
++                && skipOptionalTargetWithoutCandidates(target, abilityControllerId, source, game, cards)) {
++            return true;
++        }
++        if (strictTargetQueue && targets.isEmpty() && !target.isNotTarget()) {
++            Assert.fail("target prompt arrived with an empty cast.targets queue");
++        }
+         if (!targets.isEmpty()) {
+ 
+             // skip targets
+@@ -2713,7 +2727,7 @@
+                 Assert.assertTrue("found skip target, but it require more targets, needs "
+                                 + (target.getMinNumberOfTargets() - target.getTargets().size()) + " more",
+                         target.getTargets().size() >= target.getMinNumberOfTargets());
+-                return target.getSize() > 0 && target.isChosen(game);
++                return target.isChosen(game);
+             }
+             for (String targetDefinition : targetDefinitionsForChoose()) {
+                 String[] targetList = targetDefinition.split("\\^");
+@@ -4195,6 +4209,22 @@
+         return false;
+     }
+ 
++    private boolean skipOptionalTargetWithoutCandidates(
++            Target target, UUID controllerId, Ability source, Game game, Cards cards) {
++        if (target.getSize() < target.getMinNumberOfTargets()
++                || target.getSize() >= target.getMaxNumberOfTargets()) {
++            return false;
++        }
++        Set<UUID> possible = cards == null
++                ? target.possibleTargets(controllerId, source, game)
++                : target.possibleTargets(controllerId, source, game, cards);
++        if (!possible.isEmpty()) {
++            return false;
++        }
++        target.setSkipChoice(true);
++        return target.isChosen(game);
++    }
++
+     private boolean makeChoose(Outcome outcome, Target target, Ability source, Game game, Cards fromCards) {
+         if (strictCardChoiceQueue && target instanceof TargetCard) {
+             return makeScenarioCardChoice(outcome, target, source, game, fromCards);
+@@ -4312,7 +4342,7 @@
+         List<String> group = cardChoiceGroups.remove(0);
+         int min = target.getMinNumberOfTargets() - target.getSize();
+         int max = target.getMaxNumberOfTargets() - target.getSize();
+-        if (group.size() < min) {
++        if (!group.isEmpty() && group.size() < min) {
+             throw new IllegalStateException("card choice group has " + group.size()
+                     + " cards but the prompt requires at least " + min);
+         }
+@@ -4339,6 +4369,7 @@
+                             "card choice label " + label + " is not offered"));
+             target.add(selected.getId(), game);
+         }
++        target.setSkipChoice(true);
+         return target.isChosen(game);
+     }
+ 
+@@ -4372,7 +4403,7 @@
+                 Assert.assertTrue("found skip target, but it require more targets, needs "
+                                 + (target.getMinNumberOfTargets() - target.getTargets().size()) + " more",
+                         target.getTargets().size() >= target.getMinNumberOfTargets());
+-                return target.getSize() > 0 && target.isChosen(game);
++                return target.isChosen(game);
+             }
+ 
+             // only target amount needs
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -111,7 +111,7 @@
+         execute();
+         for (int index = 0; index < 2; index++) {
+             if (!player(index).getTargets().isEmpty()) {
+-                throw new IllegalStateException("trigger target group(s) were unconsumed when the script ended: "
++                throw new IllegalStateException("target group(s) were unconsumed when the script ended: "
+                         + player(index).getTargets());
+             }
+             player(index).assertNoCardChoiceGroups();
+@@ -152,18 +152,22 @@
+                         setChoice(actingPlayer, "X=" + x);
+                     }
+                     List<String> targets = strings(array(action, "targets"));
+-                    for (int index = 0; index < targets.size(); index++) {
+-                        String label = targets.get(index);
+-                        if (!labels.containsKey(label)) {
+-                            throw new IllegalArgumentException("unknown target label " + label);
++                    for (String label : targets) {
++                        if (label.equals("@skip")) {
++                            actingPlayer.addTarget(TestPlayer.TARGET_SKIP);
++                        } else {
++                            if (label.startsWith("@")) {
++                                throw new IllegalArgumentException(
++                                        "cast.targets allows only the reserved @skip token"
++                                );
++                            }
++                            if (!labels.containsKey(label)) {
++                                throw new IllegalArgumentException("unknown target label " + label);
++                            }
++                            actingPlayer.addTarget("@" + label);
+                         }
+-                        targets.set(index, "@" + label);
+-                    }
+-                    if (targets.isEmpty()) {
+-                        castSpell(turn, step, actingPlayer, card);
+-                    } else {
+-                        castSpell(turn, step, actingPlayer, card, String.join("^", targets));
+                     }
++                    castSpell(turn, step, actingPlayer, card);
+                     lastStep = step;
+                 }
+                 case "trigger_targets" -> {
+@@ -302,6 +306,9 @@
+                 );
+             }
+             String label = requiredString(item, "label");
++            if (label.startsWith("@")) {
++                throw new IllegalArgumentException("setup label " + label + " uses reserved @ prefix");
++            }
+             if (labels.containsKey(label)) {
+                 throw new IllegalArgumentException("duplicate setup label " + label);
+             }
+@@ -338,6 +345,9 @@
+         String card = cardName(item);
+         if (item.isJsonObject() && item.getAsJsonObject().has("label")) {
+             String label = requiredString(item.getAsJsonObject(), "label");
++            if (label.startsWith("@")) {
++                throw new IllegalArgumentException("setup label " + label + " uses reserved @ prefix");
++            }
+             if (labels.containsKey(label)) {
+                 throw new IllegalArgumentException("duplicate setup label " + label);
+             }

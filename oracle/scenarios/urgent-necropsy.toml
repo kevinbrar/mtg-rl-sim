@@ -1,0 +1,148 @@
+[[scenarios]]
+name = "U1 artifact and creature use exactly three evidence"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["evidence.mv1", "evidence.mv2"] },
+  { action = "cast", card = "Urgent Necropsy", targets = ["p1.artifact", "p1.creature"] },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P1", zone = "graveyard", card = "Bonesplitter", count = 1 }
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.plains", card = "Plains" },
+  { label = "land.island", card = "Island" },
+  { label = "land.swamp", card = "Swamp" },
+  { label = "land.forest", card = "Forest" },
+]
+hand = ["Urgent Necropsy"]
+library_top = []
+graveyard = [
+  { label = "evidence.mv1", card = "Bonesplitter" },
+  { label = "evidence.mv2", card = "Walking Corpse" },
+  { label = "evidence.mv4", card = "Giant Spider" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "p1.artifact", card = "Bonesplitter" },
+  { label = "p1.creature", card = "Walking Corpse" },
+]
+hand = []
+library_top = []
+graveyard = []
+
+[[scenarios]]
+name = "U2 all four types lock evidence at nine"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["evidence.mv2", "evidence.mv3", "evidence.mv4"] },
+  { action = "cast", card = "Urgent Necropsy", targets = ["p1.artifact", "p1.creature", "p1.enchantment", "p1.planeswalker"] },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P1", zone = "graveyard", card = "Jace Beleren", count = 1 }
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.plains", card = "Plains" },
+  { label = "land.island", card = "Island" },
+  { label = "land.swamp", card = "Swamp" },
+  { label = "land.forest", card = "Forest" },
+]
+hand = ["Urgent Necropsy"]
+library_top = []
+graveyard = [
+  { label = "evidence.mv0", card = "Memnite" },
+  { label = "evidence.mv1", card = "Bonesplitter" },
+  { label = "evidence.mv2", card = "Walking Corpse" },
+  { label = "evidence.mv3", card = "Phyrexian Arena" },
+  { label = "evidence.mv4", card = "Giant Spider" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "p1.artifact", card = "Bonesplitter" },
+  { label = "p1.creature", card = "Walking Corpse" },
+  { label = "p1.enchantment", card = "Phyrexian Arena" },
+  { label = "p1.planeswalker", card = "Jace Beleren" },
+]
+hand = []
+library_top = []
+graveyard = []
+
+[[scenarios]]
+name = "U3 skip a legal creature while destroying the artifact and enchantment"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["evidence.mv1", "evidence.mv3"] },
+  { action = "cast", card = "Urgent Necropsy", targets = ["p1.artifact", "@skip", "p1.enchantment", "@skip"] },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P1", zone = "battlefield", card = "Walking Corpse", count = 1 }
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.plains", card = "Plains" },
+  { label = "land.island", card = "Island" },
+  { label = "land.swamp", card = "Swamp" },
+  { label = "land.forest", card = "Forest" },
+]
+hand = ["Urgent Necropsy"]
+library_top = []
+graveyard = [
+  { label = "evidence.mv1", card = "Bonesplitter" },
+  { label = "evidence.mv2", card = "Walking Corpse" },
+  { label = "evidence.mv3", card = "Phyrexian Arena" },
+  { label = "evidence.mv4", card = "Giant Spider" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "p1.artifact", card = "Bonesplitter" },
+  { label = "p1.creature", card = "Walking Corpse" },
+  { label = "p1.enchantment", card = "Phyrexian Arena" },
+  { label = "p1.planeswalker", card = "Jace Beleren" },
+]
+hand = []
+library_top = []
+graveyard = []
+
+[[scenarios]]
+name = "U4 skip every target slot at zero"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = [] },
+  { action = "cast", card = "Urgent Necropsy", targets = ["@skip", "@skip", "@skip", "@skip"] },
+  { action = "pass_until_resolved" },
+]
+reach = { player = "P1", zone = "battlefield", card = "Walking Corpse", count = 1 }
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.plains", card = "Plains" },
+  { label = "land.island", card = "Island" },
+  { label = "land.swamp", card = "Swamp" },
+  { label = "land.forest", card = "Forest" },
+]
+hand = ["Urgent Necropsy"]
+library_top = []
+graveyard = [
+  { label = "evidence.mv1", card = "Bonesplitter" },
+  { label = "evidence.mv2", card = "Walking Corpse" },
+  { label = "evidence.mv4", card = "Giant Spider" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "p1.artifact", card = "Bonesplitter" },
+  { label = "p1.creature", card = "Walking Corpse" },
+  { label = "p1.enchantment", card = "Phyrexian Arena" },
+  { label = "p1.planeswalker", card = "Jace Beleren" },
+]
+hand = []
+library_top = []
+graveyard = []

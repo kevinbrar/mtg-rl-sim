@@ -364,3 +364,12 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
   (4,714 bytes; SHA-256
   `edb31b5f9b951a595e80cd12a68153b11122987093305644113f5465944dd3b5`). Patch
   0031 passes the forward-apply check.
+
+## Patch 0032 — explicit scenario target slots and evidence choices
+
+- Adds slot-ordered target declarations, explicit optional-slot skips, and a
+  FIFO card-choice path for announcement-time Collect Evidence costs to the
+  Phase scenario harness. Auto-selected targets are left for the outer
+  `oracle-scenario` runner to verify against the stack after the cast.
+- Adds a production-pipeline regression for Urgent Necropsy target selection,
+  evidence exiling, and destruction; harness validation is pending.
