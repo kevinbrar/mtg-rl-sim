@@ -385,17 +385,21 @@ fn select_activation_cost_branch(
     let base_cost = base_cost.ok_or_else(|| {
         "activated ability has no original cost branch for alternative_cost".to_string()
     })?;
-    let base_index = costs
-        .iter()
-        .position(|cost| cost == base_cost)
-        .ok_or_else(|| "the original activation cost branch was not offered".to_string())?;
+    let base_index = costs.iter().position(|cost| cost == base_cost);
     match decision {
-        AlternativeCostDecision::Decline => Ok(base_index),
-        AlternativeCostDecision::Accept => costs
-            .iter()
-            .enumerate()
-            .find_map(|(index, _)| (index != base_index).then_some(index))
-            .ok_or_else(|| "no payable alternative activation cost branch was offered".to_string()),
+        AlternativeCostDecision::Decline => base_index
+            .ok_or_else(|| "the original activation cost branch was not offered".to_string()),
+        AlternativeCostDecision::Accept => match base_index {
+            Some(base_index) => costs
+                .iter()
+                .enumerate()
+                .find_map(|(index, _)| (index != base_index).then_some(index))
+                .ok_or_else(|| {
+                    "no payable alternative activation cost branch was offered".to_string()
+                }),
+            None if !costs.is_empty() => Ok(0),
+            None => Err("no payable alternative activation cost branch was offered".to_string()),
+        },
     }
 }
 
@@ -1729,6 +1733,38 @@ mod tests {
                 AlternativeCostDecision::Decline
             ),
             Ok(0)
+        );
+    }
+
+    #[test]
+    fn alternative_cost_accepts_the_first_offered_branch_when_base_is_unpayable() {
+        use engine::types::ability::AbilityCost;
+        use engine::types::mana::ManaCost;
+
+        let base = AbilityCost::Mana {
+            cost: ManaCost::generic(1),
+        };
+        let only_payable_branch = AbilityCost::Mana {
+            cost: ManaCost::generic(0),
+        };
+
+        assert_eq!(
+            select_activation_cost_branch(
+                std::slice::from_ref(&only_payable_branch),
+                Some(&base),
+                AlternativeCostDecision::Accept
+            ),
+            Ok(0)
+        );
+        assert!(select_activation_cost_branch(
+            std::slice::from_ref(&only_payable_branch),
+            Some(&base),
+            AlternativeCostDecision::Decline
+        )
+        .is_err());
+        assert!(
+            select_activation_cost_branch(&[], Some(&base), AlternativeCostDecision::Accept)
+                .is_err()
         );
     }
 
