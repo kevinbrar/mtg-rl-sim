@@ -16,7 +16,7 @@ structure without relying on a sibling clause; leave plural wording alone.
  .../tests/integration/kili_the_resourceful.rs      |  10 +-
  .../phase-parser/src/parser/oracle_effect/mod.rs   | 125 ++++++-
  .../phase-parser/src/parser/oracle_effect/tests.rs | 177 ++++++++++
- 6 files changed, 825 insertions(+), 69 deletions(-)
+ 8 files changed, 930 insertions(+), 69 deletions(-)
 
 diff --git a/crates/engine/src/game/effects/change_zone.rs b/crates/engine/src/game/effects/change_zone.rs
 index cde564b695bb311a2d958477b4c53dcf43bac6ba..9cb4f2cd5da3fd8a4277a532ec9084211f004d1c 100644
@@ -1014,3 +1014,124 @@ index dcdb6f848ba9a6dab6ae31fc93455e98ef3a16a6..a2b2683ba81c46245cfffd28c05e6373
 +}
 +
  #[test]
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index 3e17b0e08..8fd685a71 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -239,6 +239,7 @@ mod screaming_nemesis_combat_damage_multi_trigger;
+ mod seasoned_cryomancer;
+ mod self_exile_cast_permission;
+ mod seven_of_nine_differently_named_lands;
++mod singular_zone_choice_routing;
+ mod sliver_static_grants;
+ mod smaug_noncombat_damage_treasure;
+ mod sovereign_okinec_ahau;
+diff --git a/crates/engine/tests/integration/singular_zone_choice_routing.rs b/crates/engine/tests/integration/singular_zone_choice_routing.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/engine/tests/integration/singular_zone_choice_routing.rs
+@@ -0,0 +1,104 @@
++use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
++use engine::types::actions::GameAction;
++use engine::types::game_state::WaitingFor;
++use engine::types::mana::ManaCost;
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const BURNING_RUNE_DEMON_ORACLE: &str = "Flying\nWhen this creature enters, you may search your \
++library for exactly two cards not named Burning-Rune Demon that have different names. If you \
++do, reveal those cards. An opponent chooses one of them. Put the chosen card into your hand and \
++the other into your graveyard, then shuffle.";
++
++/// CR 608.2c-d: resolve the opponent's choice, moving the selected card to hand
++/// and the unchosen complement to the graveyard.
++#[test]
++fn chosen_card_goes_to_hand_and_the_other_to_graveyard() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let first = scenario.add_card_to_library_top(P0, "Card A");
++    let second = scenario.add_card_to_library_top(P0, "Card B");
++    let demon = scenario
++        .add_creature_to_hand_from_oracle(P0, "Burning-Rune Demon", 6, 6, BURNING_RUNE_DEMON_ORACLE)
++        .with_mana_cost(ManaCost::zero())
++        .id();
++    let mut runner: GameRunner = scenario.build();
++
++    runner.cast(demon).commit();
++    for _ in 0..8 {
++        if !matches!(runner.state().waiting_for, WaitingFor::Priority { .. }) {
++            break;
++        }
++        runner
++            .act(GameAction::PassPriority)
++            .expect("priority pass while the ETB trigger resolves");
++    }
++    assert!(
++        matches!(
++            runner.state().waiting_for,
++            WaitingFor::OptionalEffectChoice { player: P0, .. }
++        ),
++        "expected the optional search prompt, got {:?}",
++        runner.state().waiting_for
++    );
++
++    runner
++        .act(GameAction::DecideOptionalEffect { accept: true })
++        .expect("accepting the optional search");
++    match runner.state().waiting_for.clone() {
++        WaitingFor::SearchChoice {
++            player,
++            mut cards,
++            count,
++            up_to,
++            ..
++        } => {
++            assert_eq!(player, P0);
++            cards.sort();
++            let mut expected = vec![first, second];
++            expected.sort();
++            assert_eq!(cards, expected);
++            assert_eq!(count, 2);
++            assert!(!up_to);
++        }
++        other => panic!("expected the two-card search choice, got {other:?}"),
++    }
++
++    runner
++        .act(GameAction::SelectCards {
++            cards: vec![first, second],
++        })
++        .expect("selecting the two differently named cards");
++    match runner.state().waiting_for.clone() {
++        WaitingFor::ChooseFromZoneChoice {
++            player,
++            mut cards,
++            count,
++            up_to,
++            ..
++        } => {
++            assert_eq!(player, P1);
++            cards.sort();
++            let mut expected = vec![first, second];
++            expected.sort();
++            assert_eq!(cards, expected);
++            assert_eq!(count, 1);
++            assert!(!up_to);
++        }
++        other => panic!("expected the opponent's one-card choice, got {other:?}"),
++    }
++
++    runner
++        .act(GameAction::SelectCards {
++            cards: vec![second],
++        })
++        .expect("the opponent chooses the second card");
++
++    assert_eq!(runner.state().objects[&second].zone, Zone::Hand);
++    assert_eq!(runner.state().objects[&first].zone, Zone::Graveyard);
++    assert!(runner.state().stack.is_empty());
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::Priority { .. }
++    ));
++}

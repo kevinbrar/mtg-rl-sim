@@ -599,12 +599,22 @@ jobs:
         run: |
           set -o pipefail
           test_filter=()
-          changed_modules="$(git diff --name-only --no-renames "$BASE_PATCHED" "$HEAD_PATCHED" -- crates/engine/tests/integration)"
-          if [[ "$(printf '%s\n' "$changed_modules" | sed '/^$/d' | wc -l)" -eq 1 ]]; then
-            module="$(basename "$changed_modules" .rs)"
-            if [[ "$module" =~ ^[a-zA-Z0-9_]+$ ]]; then
-              test_filter=("$module")
+          changed_files="$(git diff --name-only --diff-filter=AM --no-renames "$BASE_PATCHED" "$HEAD_PATCHED" -- crates/engine/tests/integration)"
+          changed_modules=()
+          while IFS= read -r path; do
+            [[ "$path" == *.rs ]] || continue
+            module="${path##*/}"
+            module="${module%.rs}"
+            if [[ "$module" =~ ^[a-zA-Z0-9_]+$ && "$module" != main ]]; then
+              changed_modules+=("$module")
             fi
+          done <<< "$changed_files"
+          if ((${#changed_modules[@]} > 0)); then
+            mapfile -t test_filter < <(printf '%s\n' "${changed_modules[@]}" | sort -u)
+          fi
+          cargo_test_args=()
+          if ((${#test_filter[@]} > 0)); then
+            cargo_test_args+=(--cargo-test-arg=--)
           fi
           set +e
           cargo mutants \
@@ -616,6 +626,7 @@ jobs:
             --timeout 60 \
             --build-timeout 300 \
             --output "$RUNNER_TEMP/mutants.out" \
+            "${cargo_test_args[@]}" \
             -- "${test_filter[@]}" \
             2>&1 | tee "$RUNNER_TEMP/mutants.log"
           mutants_status=${PIPESTATUS[0]}

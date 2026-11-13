@@ -337,3 +337,18 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
   `local-fixes`; the phase submodule was returned to `local-fixes`.
 - Card-data generation ran in an isolated worktree; generator side effects
   were not applied to the active phase worktree.
+
+## Patch 0031 — Anzrag's Rampage
+
+- Patch 0031 now exports 8 Phase files, with 930 insertions and 69 deletions.
+  The production-entry-point Burning-Rune Demon test covers count-one routing:
+  the opponent-selected card goes to hand and its complement goes to the
+  graveyard.
+- `singular_zone_choice_routing` passes normally (1/1) and fails when the
+  `!` in `!chosen.is_empty()` is manually deleted. The selected card then
+  reaches the graveyard instead of the hand.
+- A current `ChangeZone::resolve -> Ok(None)` mutant was caught by the
+  Anzrag/Kíli filters (4 pass, 6 fail); removing the ChooseFromZone decline
+  guard makes both Anzrag decline tests fail with a second Exile choice.
+- The earlier full mutants run reported 4 caught, 2 missed, 16 timeouts, and
+  2 unviable. It has not been rerun after adding the focused routing module.
