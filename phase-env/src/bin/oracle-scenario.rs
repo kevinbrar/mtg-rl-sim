@@ -1,5 +1,7 @@
 use engine::database::CardDatabase;
-use engine::game::ability_utils::build_target_slots;
+use engine::game::ability_utils::{
+    build_resolved_from_def, build_target_slots, declared_targets_in_chain,
+};
 use engine::game::game_object::GameObject;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::game::scenario_db::GameScenarioDbExt;
@@ -264,6 +266,13 @@ fn apply_card_choice_group(
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         }
+        WaitingFor::CollectEvidenceChoice { .. } => {
+            let group = take_card_choice_group(groups)?;
+            runner
+                .act(GameAction::SelectCards { cards: group })
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }
         other => Err(format!(
             "cannot apply card choice while waiting for {other:?}"
         )),
@@ -330,6 +339,104 @@ fn resolve_target_labels(
             resolve_label(labels, label).map_err(|_| format!("unknown target label {label}"))
         })
         .collect()
+}
+
+fn resolve_cast_target_slots(
+    action: &Value,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<Vec<Option<TargetRef>>, String> {
+    let Some(targets) = action.get("targets") else {
+        return Ok(Vec::new());
+    };
+    let targets = targets.as_array().ok_or("cast.targets must be an array")?;
+    targets
+        .iter()
+        .map(|value| {
+            let label = value
+                .as_str()
+                .ok_or("cast.targets entries must be strings")?;
+            if label == "@skip" {
+                return Ok(None);
+            }
+            if label.starts_with('@') {
+                return Err(format!(
+                    "cast.targets label {label} uses reserved @ prefix; only @skip is valid"
+                ));
+            }
+            resolve_label(labels, label)
+                .map(TargetRef::Object)
+                .map(Some)
+                .map_err(|_| format!("unknown target label {label}"))
+        })
+        .collect()
+}
+
+fn validate_cast_target_entries(
+    entries: &[Option<TargetRef>],
+    decision_slot_count: usize,
+    engine_targets: &[TargetRef],
+) -> Result<(), String> {
+    if entries.len() != decision_slot_count {
+        return Err(format!(
+            "cast.targets has {} entries for {decision_slot_count} target decision slots",
+            entries.len()
+        ));
+    }
+    let declared_targets: Vec<TargetRef> = entries.iter().filter_map(Clone::clone).collect();
+    if declared_targets == engine_targets {
+        return Ok(());
+    }
+    Err(format!(
+        "cast.targets do not match the spell's engine-chosen targets: declared {declared_targets:?}, engine chose {engine_targets:?}"
+    ))
+}
+
+fn cast_target_decision_slot_count(
+    state: &GameState,
+    spell: ObjectId,
+    player: PlayerId,
+    x: Option<u32>,
+) -> Result<usize, String> {
+    let definition = state
+        .objects
+        .get(&spell)
+        .and_then(|object| object.abilities.first())
+        .ok_or_else(|| "cast.targets could not find the spell's ability".to_string())?;
+    let mut resolved = build_resolved_from_def(definition, spell, player);
+    resolved.kind = AbilityKind::Spell;
+    if let Some(x) = x {
+        resolved.set_chosen_x_recursive(x);
+    }
+    let slots = build_target_slots(state, &resolved).map_err(|error| error.to_string())?;
+    Ok(slots
+        .iter()
+        .filter(|slot| !slot.legal_targets.is_empty())
+        .count())
+}
+
+fn validate_engine_chosen_cast_targets(
+    state: &GameState,
+    spell: ObjectId,
+    entries: &[Option<TargetRef>],
+    decision_slot_count: usize,
+) -> Result<(), String> {
+    let spell_entry = state
+        .stack
+        .iter()
+        .rev()
+        .find(|entry| {
+            entry.source_id == spell
+                && matches!(
+                    &entry.kind,
+                    engine::types::game_state::StackEntryKind::Spell { .. }
+                )
+        })
+        .ok_or_else(|| "cast.targets could not find the spell's stack entry".to_string())?;
+    let ability = spell_entry
+        .ability()
+        .ok_or_else(|| "cast.targets could not read the spell's stack ability".to_string())?;
+    let engine_targets = declared_targets_in_chain(ability);
+    validate_cast_target_entries(entries, decision_slot_count, &engine_targets)
 }
 
 fn cast_x(action: &Value, has_x_cost: bool) -> Result<Option<u32>, String> {
@@ -516,6 +623,19 @@ fn ensure_trigger_target_groups_consumed(groups: &VecDeque<Vec<ObjectId>>) -> Re
         "{} trigger target group(s) were unconsumed when the script ended",
         groups.len()
     ))
+}
+
+fn ensure_targeted_cast_has_no_pending_trigger_targets(
+    action: &Value,
+    trigger_target_groups: &VecDeque<Vec<ObjectId>>,
+) -> Result<(), String> {
+    if action.get("targets").is_some() && !trigger_target_groups.is_empty() {
+        return Err(
+            "trigger_targets queued before a targeted cast; list them after the action whose trigger consumes them"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn apply_activation_target_group(
@@ -816,6 +936,9 @@ fn validate_setup(scenario: &Value) -> Result<(), String> {
                                 "setup.{player}.{field}[{index}].label must be a non-empty string"
                             )
                         })?;
+                    if label.starts_with('@') {
+                        return Err(format!("setup label {label} uses reserved @ prefix"));
+                    }
                     if !labels.insert(label.to_string()) {
                         return Err(format!("duplicate setup label {label}"));
                     }
@@ -847,6 +970,9 @@ fn validate_setup(scenario: &Value) -> Result<(), String> {
                     return Err(format!("{context} needs label and card"));
                 }
                 let label = permanent["label"].as_str().unwrap();
+                if label.starts_with('@') {
+                    return Err(format!("setup label {label} uses reserved @ prefix"));
+                }
                 if label.is_empty() || !labels.insert(label.to_string()) {
                     return Err(format!("duplicate or empty setup label {label}"));
                 }
@@ -1044,6 +1170,10 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     for (action_index, action) in actions.iter().enumerate() {
         match action["action"].as_str().unwrap_or_default() {
             "cast" => {
+                ensure_targeted_cast_has_no_pending_trigger_targets(
+                    action,
+                    &trigger_target_groups,
+                )?;
                 let card = action["card"].as_str().ok_or("cast needs card")?;
                 let player = runner.state().active_player;
                 let spell = runner.state().players[player.0 as usize]
@@ -1065,10 +1195,35 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     _ => false,
                 };
                 let x = cast_x(action, has_x_cost)?;
-                let target_ids = resolve_target_labels(action, &labels)?;
+                let target_slots = resolve_cast_target_slots(action, &labels)?;
+                let target_decision_slot_count = if action.get("targets").is_some() {
+                    Some(cast_target_decision_slot_count(
+                        runner.state(),
+                        spell,
+                        player,
+                        x,
+                    )?)
+                } else {
+                    None
+                };
                 let cast = runner.cast(spell);
                 let cast = if let Some(x) = x { cast.x(x) } else { cast };
-                let _ = cast.target_objects(&target_ids).commit();
+                let cast = if action.get("targets").is_some() {
+                    cast.target_slot_selections(&target_slots)
+                } else {
+                    cast
+                };
+                let committed = cast
+                    .commit_with_card_choices(&mut card_choice_groups)
+                    .map_err(|error| error.to_string())?;
+                if let Some(decision_slot_count) = target_decision_slot_count {
+                    validate_engine_chosen_cast_targets(
+                        committed.state(),
+                        spell,
+                        &target_slots,
+                        decision_slot_count,
+                    )?;
+                }
             }
             "activate" => activate(&mut runner, &labels, action, &mut activation_target_groups)?,
             "trigger_targets" => {
@@ -1424,6 +1579,173 @@ mod tests {
     }
 
     #[test]
+    fn cast_target_slots_require_labels_or_the_explicit_skip_token() {
+        let id = ObjectId(17);
+        let labels = HashMap::from([(id, "artifact".to_string())]);
+
+        assert_eq!(
+            resolve_cast_target_slots(&json!({"targets": ["artifact", "@skip"]}), &labels),
+            Ok(vec![Some(TargetRef::Object(id)), None])
+        );
+        assert!(
+            resolve_cast_target_slots(&json!({"targets": ["missing"]}), &labels)
+                .unwrap_err()
+                .contains("unknown target label")
+        );
+        assert!(
+            resolve_cast_target_slots(&json!({"targets": ["@other"]}), &labels)
+                .unwrap_err()
+                .contains("only @skip is valid")
+        );
+    }
+
+    #[test]
+    fn cast_target_entries_match_auto_selected_stack_targets() {
+        let target = TargetRef::Object(ObjectId(17));
+        let other = TargetRef::Object(ObjectId(18));
+
+        assert!(
+            validate_cast_target_entries(&[Some(target.clone())], 1, &[target.clone()]).is_ok()
+        );
+        assert!(validate_cast_target_entries(&[Some(other)], 1, &[target.clone()]).is_err());
+        assert!(validate_cast_target_entries(&[], 1, &[target.clone()]).is_err());
+        assert!(validate_cast_target_entries(
+            &[Some(target.clone()), Some(TargetRef::Object(ObjectId(19)))],
+            1,
+            &[target.clone()]
+        )
+        .is_err());
+        assert!(
+            validate_cast_target_entries(&[None, Some(target.clone())], 2, &[target.clone()])
+                .is_ok()
+        );
+        assert!(validate_cast_target_entries(&[Some(target.clone()), None], 1, &[target]).is_err());
+    }
+
+    #[test]
+    fn cast_target_validation_reads_the_spell_stack_after_auto_selection() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let artifact = scenario
+                    .add_artifact_from_oracle(PlayerId(1), "Target Artifact", "")
+                    .id();
+                let spell = scenario
+                    .add_spell_to_hand_from_oracle(
+                        PlayerId(0),
+                        "Shatter",
+                        true,
+                        "Destroy target artifact.",
+                    )
+                    .with_mana_cost(engine::types::mana::ManaCost::generic(0))
+                    .id();
+                let selections = [Some(TargetRef::Object(artifact))];
+                let mut runner = scenario.build();
+                let decision_slot_count =
+                    cast_target_decision_slot_count(runner.state(), spell, PlayerId(0), None)
+                        .unwrap();
+                assert_eq!(decision_slot_count, 1);
+                let committed = runner
+                    .cast(spell)
+                    .target_slot_selections(&selections)
+                    .commit();
+
+                assert!(matches!(
+                    &committed.state().waiting_for,
+                    WaitingFor::Priority { .. }
+                ));
+                assert!(validate_engine_chosen_cast_targets(
+                    committed.state(),
+                    spell,
+                    &selections,
+                    decision_slot_count
+                )
+                .is_ok());
+                assert!(validate_engine_chosen_cast_targets(
+                    committed.state(),
+                    spell,
+                    &[Some(TargetRef::Object(ObjectId(u64::MAX)))],
+                    decision_slot_count
+                )
+                .is_err());
+                assert!(validate_engine_chosen_cast_targets(
+                    committed.state(),
+                    spell,
+                    &[Some(TargetRef::Object(artifact)), None],
+                    decision_slot_count
+                )
+                .is_err());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn cast_target_preflight_uses_new_active_player_after_next_turn() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let _artifact = scenario
+                    .add_artifact_from_oracle(PlayerId(0), "P0 artifact", "")
+                    .id();
+                let spell = scenario
+                    .add_spell_to_hand_from_oracle(
+                        PlayerId(1),
+                        "Shatter",
+                        true,
+                        "Destroy target artifact an opponent controls.",
+                    )
+                    .with_mana_cost(engine::types::mana::ManaCost::generic(0))
+                    .id();
+                scenario.with_library_top(PlayerId(1), &["P1 draw"]);
+                let mut runner = scenario.build();
+                let initial_active = runner.state().active_player;
+                assert_eq!(initial_active, PlayerId(0));
+
+                advance_to_next_turn(&mut runner, true).unwrap();
+
+                let player = runner.state().active_player;
+                assert_eq!(player, PlayerId(1));
+                assert_eq!(
+                    cast_target_decision_slot_count(runner.state(), spell, player, None),
+                    Ok(1)
+                );
+                assert!(cast_target_decision_slot_count(
+                    runner.state(),
+                    spell,
+                    initial_active,
+                    None
+                )
+                .is_err());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn setup_labels_cannot_use_the_reserved_at_prefix() {
+        let graveyard = json!({
+            "setup": {"P0": {"graveyard": [{"card": "Walking Corpse", "label": "@skip"}]}}
+        });
+        assert!(validate_setup(&graveyard)
+            .unwrap_err()
+            .contains("reserved @ prefix"));
+
+        let battlefield = json!({
+            "setup": {"P0": {"battlefield": [{"card": "Walking Corpse", "label": "@skip"}]}}
+        });
+        assert!(validate_setup(&battlefield)
+            .unwrap_err()
+            .contains("reserved @ prefix"));
+    }
+
+    #[test]
     fn activation_selector_requires_one_described_prefix_match() {
         let candidates = vec![
             (0, AbilityKind::Activated, Some("{T}: Add {G}".to_string())),
@@ -1502,10 +1824,56 @@ mod tests {
     }
 
     #[test]
+    fn targeted_cast_rejects_pending_trigger_target_groups() {
+        let action = json!({"action": "cast", "targets": ["artifact"]});
+        let groups = VecDeque::from([vec![ObjectId(17)]]);
+
+        assert_eq!(
+            ensure_targeted_cast_has_no_pending_trigger_targets(&action, &groups),
+            Err(
+                "trigger_targets queued before a targeted cast; list them after the action whose trigger consumes them"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn targeted_cast_order_guard_allows_untargeted_actions_or_empty_queue() {
+        let groups = VecDeque::from([vec![ObjectId(17)]]);
+        assert!(ensure_targeted_cast_has_no_pending_trigger_targets(
+            &json!({"action": "cast"}),
+            &groups
+        )
+        .is_ok());
+
+        assert!(ensure_targeted_cast_has_no_pending_trigger_targets(
+            &json!({"action": "cast", "targets": ["artifact"]}),
+            &VecDeque::new()
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn card_choice_prompt_fails_when_queue_is_empty() {
         assert!(take_card_choice_group(&mut VecDeque::new())
             .unwrap_err()
             .contains("empty choose_cards queue"));
+    }
+
+    #[test]
+    fn collect_evidence_choice_uses_fail_closed_card_choice_queue() {
+        assert!(take_card_choice_group(&mut VecDeque::new())
+            .unwrap_err()
+            .contains("empty choose_cards queue"));
+
+        let mut empty_group = VecDeque::from([Vec::new()]);
+        assert!(take_card_choice_group(&mut empty_group).unwrap().is_empty());
+        assert!(empty_group.is_empty());
+
+        let groups = VecDeque::from(vec![vec![ObjectId(17)]]);
+        assert!(ensure_card_choice_groups_consumed(&groups)
+            .unwrap_err()
+            .contains("unconsumed"));
     }
 
     #[test]

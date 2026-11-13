@@ -473,6 +473,10 @@ def _validate_setup(scenario: dict) -> None:
                             raise ValueError(
                                 f"{name}: setup.{player}.{field}[{index}].label must be a non-empty string"
                             )
+                        if label.startswith("@"):
+                            raise ValueError(
+                                f"{name}: setup label {label} uses reserved @ prefix"
+                            )
                         if label in labels:
                             raise ValueError(f"{name}: duplicate setup label {label}")
                         labels.add(label)
@@ -503,6 +507,8 @@ def _validate_setup(scenario: dict) -> None:
             ):
                 raise TypeError(f"{context} needs label and card")
             label = permanent["label"]
+            if label.startswith("@"):
+                raise ValueError(f"{name}: setup label {label} uses reserved @ prefix")
             if not label or label in labels:
                 raise ValueError(f"{name}: duplicate or empty setup label {label}")
             labels.add(label)
