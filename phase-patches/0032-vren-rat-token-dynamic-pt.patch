@@ -1,0 +1,228 @@
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index 8fd685a..937a47a 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -270,6 +270,7 @@ mod urgent_necropsy;
+ mod vengeful_ancestor_goaded_attack_trigger;
+ mod viewer_projection_ingest_gate;
+ mod void_winnower_announced_x;
++mod vren_rat_token_pt;
+ mod vren_relentless;
+ mod vrestin_menoptra_leader_5949;
+ mod vulcan_mind_meld_exiler_plays;
+diff --git a/crates/engine/tests/integration/vren_rat_token_pt.rs b/crates/engine/tests/integration/vren_rat_token_pt.rs
+new file mode 100644
+index 0000000..6c58508
+--- /dev/null
++++ b/crates/engine/tests/integration/vren_rat_token_pt.rs
+@@ -0,0 +1,118 @@
++use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
++use engine::types::actions::GameAction;
++use engine::types::game_state::WaitingFor;
++use engine::types::identifiers::ObjectId;
++use engine::types::mana::{ManaType, ManaUnit};
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const VREN_ORACLE: &str = "Ward {2}\n\
++If a creature an opponent controls would die, exile it instead.\n\
++At the beginning of each end step, create X 1/1 black Rat creature tokens with \"This token gets +1/+1 for each other Rat you control,\" where X is the number of creatures that were exiled under your opponents' control this turn.";
++const SHOCK_ORACLE: &str = "Shock deals 2 damage to any target.";
++
++fn rat_tokens(runner: &GameRunner) -> Vec<ObjectId> {
++    runner
++        .state()
++        .objects
++        .iter()
++        .filter(|(_, object)| {
++            object.zone == Zone::Battlefield
++                && object.is_token
++                && object.name.eq_ignore_ascii_case("Rat")
++        })
++        .map(|(id, _)| *id)
++        .collect()
++}
++
++#[test]
++fn vren_rat_tokens_get_dynamic_power_and_toughness_from_other_rats() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    scenario
++        .add_creature_from_oracle(P0, "Vren, the Relentless", 2, 2, VREN_ORACLE)
++        .with_subtypes(vec!["Rat", "Rogue"]);
++    let non_rat = scenario
++        .add_creature(P0, "Grizzly Bears", 2, 2)
++        .with_subtypes(vec!["Bear"])
++        .id();
++    let first_opponent_creature = scenario
++        .add_creature(P1, "First opponent creature", 1, 1)
++        .id();
++    let second_opponent_creature = scenario
++        .add_creature(P1, "Second opponent creature", 1, 1)
++        .id();
++    let first_shock = scenario
++        .add_spell_to_hand_from_oracle(P0, "Shock", true, SHOCK_ORACLE)
++        .id();
++    let second_shock = scenario
++        .add_spell_to_hand_from_oracle(P0, "Shock", true, SHOCK_ORACLE)
++        .id();
++    let source = ObjectId(9_999);
++    scenario.with_mana_pool(
++        P0,
++        vec![
++            ManaUnit::new(ManaType::Red, source, false, vec![]),
++            ManaUnit::new(ManaType::Red, source, false, vec![]),
++        ],
++    );
++    let mut runner = scenario.build();
++
++    runner
++        .cast(first_shock)
++        .target_object(first_opponent_creature)
++        .resolve();
++    runner
++        .cast(second_shock)
++        .target_object(second_opponent_creature)
++        .resolve();
++    assert_eq!(
++        runner.state().objects[&first_opponent_creature].zone,
++        Zone::Exile
++    );
++    assert_eq!(
++        runner.state().objects[&second_opponent_creature].zone,
++        Zone::Exile
++    );
++
++    for _ in 0..128 {
++        if runner.state().phase == Phase::End
++            && runner.state().stack.is_empty()
++            && matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
++        {
++            break;
++        }
++        match runner.state().waiting_for.clone() {
++            WaitingFor::Priority { .. } => {
++                runner.act(GameAction::PassPriority).expect("pass priority");
++            }
++            WaitingFor::DeclareAttackers { .. } => {
++                runner
++                    .act(GameAction::DeclareAttackers {
++                        attacks: vec![],
++                        bands: vec![],
++                    })
++                    .expect("declare no attackers");
++            }
++            WaitingFor::DeclareBlockers { .. } => {
++                runner
++                    .act(GameAction::DeclareBlockers {
++                        assignments: vec![],
++                    })
++                    .expect("declare no blockers");
++            }
++            other => panic!("unexpected action while advancing to end step: {other:?}"),
++        }
++    }
++
++    assert_eq!(runner.state().phase, Phase::End);
++    assert!(runner.state().stack.is_empty());
++    let tokens = rat_tokens(&runner);
++    assert_eq!(tokens.len(), 2);
++    for token in tokens {
++        let token = &runner.state().objects[&token];
++        assert_eq!((token.power, token.toughness), (Some(3), Some(3)));
++    }
++    let non_rat = &runner.state().objects[&non_rat];
++    assert_eq!((non_rat.power, non_rat.toughness), (Some(2), Some(2)));
++}
+diff --git a/crates/phase-parser/src/parser/oracle_effect/token.rs b/crates/phase-parser/src/parser/oracle_effect/token.rs
+index a3240af..87c7e31 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/token.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/token.rs
+@@ -1490,9 +1490,10 @@ fn push_parsed_statics(
+         let token_refs = granting_self_reference_count(&normalized).saturating_sub(creator_refs);
+         (normalized, token_refs)
+     };
+-    let mut defs = parse_static_line_multi(&static_text);
++    let static_text = static_text.trim().trim_end_matches(',').trim();
++    let mut defs = parse_static_line_multi(static_text);
+     if defs.is_empty() {
+-        let modifications = classify_quoted_inner(&static_text);
++        let modifications = classify_quoted_inner(static_text);
+         if !modifications.is_empty() {
+             defs.push(
+                 StaticDefinition::continuous()
+@@ -4786,3 +4787,74 @@ mod token_attachment_connector_tests {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod vren_token_dynamic_pt_tests {
++    use super::*;
++
++    const VREN_TOKEN_TEXT: &str = "Create X 1/1 black Rat creature tokens with \"This token gets +1/+1 for each other Rat you control,\" where X is the number of creatures that were exiled under your opponents' control this turn.";
++
++    fn assert_other_rat_count(value: &QuantityExpr) {
++        let QuantityExpr::Ref {
++            qty:
++                QuantityRef::ObjectCount {
++                    filter: TargetFilter::Typed(filter),
++                },
++        } = value
++        else {
++            panic!("expected ObjectCount over a typed Rat filter, got {value:?}");
++        };
++        assert_eq!(filter.controller, Some(ControllerRef::You));
++        assert!(
++            filter
++                .type_filters
++                .contains(&TypeFilter::Subtype("Rat".to_string())),
++            "count must be restricted to the Rat subtype: {:?}",
++            filter.type_filters
++        );
++        assert!(filter.properties.contains(&FilterProp::Another));
++    }
++
++    /// CR 613.4c: Vren's token modifier scales dynamically with other Rats.
++    #[test]
++    fn vren_token_static_counts_other_rats_for_dynamic_power_and_toughness() {
++        let effect = try_parse_token(
++            &VREN_TOKEN_TEXT.to_lowercase(),
++            VREN_TOKEN_TEXT,
++            &mut ParseContext::default(),
++        )
++        .expect("Vren's token creation clause must parse");
++        let Effect::Token {
++            static_abilities, ..
++        } = effect
++        else {
++            panic!("expected token effect");
++        };
++        assert_eq!(static_abilities.len(), 1);
++        let modifications = &static_abilities[0].modifications;
++        let dynamic_power = modifications
++            .iter()
++            .find_map(|modification| match modification {
++                ContinuousModification::AddDynamicPower { value } => Some(value),
++                _ => None,
++            })
++            .expect("expected dynamic power");
++        let dynamic_toughness = modifications
++            .iter()
++            .find_map(|modification| match modification {
++                ContinuousModification::AddDynamicToughness { value } => Some(value),
++                _ => None,
++            })
++            .expect("expected dynamic toughness");
++        assert_other_rat_count(dynamic_power);
++        assert_other_rat_count(dynamic_toughness);
++        assert!(
++            !modifications.iter().any(|modification| matches!(
++                modification,
++                ContinuousModification::AddPower { .. }
++                    | ContinuousModification::AddToughness { .. }
++            )),
++            "the quoted +1/+1 must not fall back to fixed modifiers: {modifications:?}"
++        );
++    }
++}
