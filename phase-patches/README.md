@@ -340,15 +340,27 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
 
 ## Patch 0031 — Anzrag's Rampage
 
-- Patch 0031 now exports 8 Phase files, with 930 insertions and 69 deletions.
-  The production-entry-point Burning-Rune Demon test covers count-one routing:
-  the opponent-selected card goes to hand and its complement goes to the
-  graveyard.
-- `singular_zone_choice_routing` passes normally (1/1) and fails when the
-  `!` in `!chosen.is_empty()` is manually deleted. The selected card then
-  reaches the graveyard instead of the hand.
-- A current `ChangeZone::resolve -> Ok(None)` mutant was caught by the
-  Anzrag/Kíli filters (4 pass, 6 fail); removing the ChooseFromZone decline
-  guard makes both Anzrag decline tests fail with a second Exile choice.
-- The earlier full mutants run reported 4 caught, 2 missed, 16 timeouts, and
-  2 unviable. It has not been rerun after adding the focused routing module.
+- Patch 0031 exports 8 Phase files, with 894 insertions and 44 deletions.
+  The production-entry-point Burning-Rune Demon regression verifies that the
+  selected card moves to hand and its complement to the graveyard; Anzrag's
+  non-movement rider remains bound to the selected card.
+- `singular_zone_choice_routing` passes normally (1/1) and fails under the
+  hand-applied `!chosen.is_empty()` mutant. Parser tests pass 2/2; Anzrag
+  integration 8/8; Burning-Rune Demon 4/4; Invasion of Alara 17/17; and the
+  receiver unit test 1/1.
+- The 11-row full-card-data receiver scan found 0 violations. The focused
+  XMage gate matched 28 scenarios, with 0 triaged and 0 failed (Anzrag A1–A7
+  and 21 scenarios from the six regression suites).
+- The latest full engine suite passed 29,425 tests, with 0 failures and 18
+  ignored. The required Phase-engine all-targets and workspace Clippy commands
+  passed. An extra workspace all-targets experiment failed on an unchanged
+  `manabrew-compat` test initializer in the saved 0001–0030 base.
+- The exact cargo-mutants 27.1.0 run tested 11 mutants in 21 minutes: 2 caught,
+  0 MISSED, 7 timeouts, and 2 unviable. Its filtered baseline passed 11 tests
+  (2,897 filtered out). The `ChangeZone::resolve -> Ok(None)` mutant timed out
+  in this run; the focused saved repro catches it (4/10 passed, 6/10 failed),
+  so stale artifact reuse remains plausible but unconfirmed.
+- Re-generated Anzrag-only card data is byte-identical to the published entry
+  (4,714 bytes; SHA-256
+  `edb31b5f9b951a595e80cd12a68153b11122987093305644113f5465944dd3b5`). Patch
+  0031 passes the forward-apply check.

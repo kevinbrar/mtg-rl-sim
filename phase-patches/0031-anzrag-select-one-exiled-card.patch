@@ -1,28 +1,28 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Devin <devin@users.noreply.github.com>
-Date: Thu, 12 Nov 2026 14:30:19 +0000
+From d84e1e24e652aa4dd9216415325764407f8899d6 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Fri, 13 Nov 2026 06:08:33 +0000
 Subject: [PATCH] Fix singular exiled-card placement
 
-Lower singular a/an card-exiled-this-way placement to an up-to-one
-tracked-exile choice followed by a single-object move. Keep mandatory
-wording exact-one, make optional decline a no-op, and bind the Haste and
-delayed-return continuation to the chosen object. Handle the choice/move
-structure without relying on a sibling clause; leave plural wording alone.
-
+Lower singular a/an card-exiled-this-way placement to an up-to-one tracked-exile choice followed by a single-object move. Keep mandatory wording exact-one, make optional decline a no-op, and bind the Haste and delayed-return continuation to the chosen object. Forward complements only to direct zone-move receivers.
 ---
- crates/engine/src/game/effects/change_zone.rs      |   7 +-
- .../engine/src/game/engine_resolution_choices.rs   | 215 +++++++++---
- crates/engine/tests/integration/anzrags_rampage.rs | 360 ++++++++++++++++++++-
- .../tests/integration/kili_the_resourceful.rs      |  10 +-
- .../phase-parser/src/parser/oracle_effect/mod.rs   | 125 ++++++-
- .../phase-parser/src/parser/oracle_effect/tests.rs | 177 ++++++++++
- 8 files changed, 930 insertions(+), 69 deletions(-)
+ crates/engine/src/game/effects/change_zone.rs |   7 +-
+ .../src/game/engine_resolution_choices.rs     | 154 ++++++--
+ .../tests/integration/anzrags_rampage.rs      | 360 +++++++++++++++++-
+ .../tests/integration/kili_the_resourceful.rs |  10 +-
+ crates/engine/tests/integration/main.rs       |   1 +
+ .../singular_zone_choice_routing.rs           | 104 +++++
+ .../src/parser/oracle_effect/mod.rs           | 125 +++++-
+ .../src/parser/oracle_effect/tests.rs         | 177 +++++++++
+ 8 files changed, 894 insertions(+), 44 deletions(-)
+ create mode 100644 crates/engine/tests/integration/singular_zone_choice_routing.rs
 
 diff --git a/crates/engine/src/game/effects/change_zone.rs b/crates/engine/src/game/effects/change_zone.rs
-index cde564b695bb311a2d958477b4c53dcf43bac6ba..9cb4f2cd5da3fd8a4277a532ec9084211f004d1c 100644
+index cde564b69..9cb4f2cd5 100644
 --- a/crates/engine/src/game/effects/change_zone.rs
 +++ b/crates/engine/src/game/effects/change_zone.rs
-@@ -987,4 +987,7 @@ pub fn resolve(
+@@ -985,8 +985,11 @@ pub fn resolve(
+     // before `resolved_targets`, whose unresolved-`ParentTarget` fallback would
+     // otherwise bind the ability's own source — an empty-library Tainted Pact
      // would put itself into its controller's hand.
 -    if matches!(target_filter, TargetFilter::ParentTarget)
 -        && ability.parent_target_missing_reason.is_some()
@@ -32,11 +32,16 @@ index cde564b695bb311a2d958477b4c53dcf43bac6ba..9cb4f2cd5da3fd8a4277a532ec908421
 +            && ability.parent_target_missing_reason
 +                == Some(crate::types::ability::ParentTargetMissingReason::ChooseFromZone))
      {
+         events.push(GameEvent::EffectResolved {
+             kind: EffectKind::from(&ability.effect),
 diff --git a/crates/engine/src/game/engine_resolution_choices.rs b/crates/engine/src/game/engine_resolution_choices.rs
-index fdbd47e38db2d52da0c3a79176d78aa1494766bd..e1702a7935fd69b400d156f3c6ae9c9e502be901 100644
+index fdbd47e38..8eb35b5ff 100644
 --- a/crates/engine/src/game/engine_resolution_choices.rs
 +++ b/crates/engine/src/game/engine_resolution_choices.rs
-@@ -40,11 +40,34 @@ use crate::types::proposed_event::TokenAttackRequest;
+@@ -37,16 +37,30 @@ use super::{
+ };
+ use crate::types::proposed_event::TokenAttackRequest;
+ 
 -/// CR 608.2c: does the parked zone-choice continuation `chain` treat
 -/// the objects NOT picked as "the rest" for its next instruction (a
 -/// `ChooseFromZone` partition)?
@@ -47,31 +52,20 @@ index fdbd47e38db2d52da0c3a79176d78aa1494766bd..e1702a7935fd69b400d156f3c6ae9c9e
 -/// `sub_ability` is an independent trailing clause), nor for a parked
 -/// untargeted `TargetOnly` chooser, whose pick is the whole choice (CR 115.10a).
 -/// A `Stack`-timed `TargetOnly` is an ordinary wrapper and keeps the forward.
--fn continuation_forwards_unchosen_complement(chain: &ResolvedAbility) -> bool {
++/// A `ChangeZone { target: Any }` continuation consumes the selected card(s).
++/// Its unchosen complement belongs only to a direct zone-move sub-ability
++/// ("the other"/"the rest"), never to a rider such as haste or a delayed return.
+ fn continuation_forwards_unchosen_complement(chain: &ResolvedAbility) -> bool {
 -    use crate::types::ability::{Effect, TargetChoiceTiming};
-+/// A one-card `ChangeZone Any` consumes the selected card itself. Its unchosen
-+/// complement belongs to a direct zone-move sub-ability, but not to a
-+/// non-movement rider such as haste or a delayed return. An empty optional
-+/// selection has no complement to forward. Counter-placement continuations,
-+/// resolution-timed `TargetOnly` choosers, and sticker-recipient answers also
-+/// do not partition the offered objects.
-+fn continuation_forwards_unchosen_complement(
-+    chain: &ResolvedAbility,
-+    count_one_choice: bool,
-+    has_selected_cards: bool,
-+) -> bool {
 +    use crate::types::ability::{Effect, TargetChoiceTiming, TargetFilter};
-+    let selected_object_move = count_one_choice
-+        && matches!(
-+            &chain.effect,
-+            Effect::ChangeZone {
-+                target: TargetFilter::Any,
-+                ..
-+            }
-+        );
-+    let selected_move_has_complement_receiver = selected_object_move
-+        && has_selected_cards
-+        && chain.sub_ability.as_deref().is_some_and(|sub| {
++    if matches!(
++        &chain.effect,
++        Effect::ChangeZone {
++            target: TargetFilter::Any,
++            ..
++        }
++    ) {
++        return chain.sub_ability.as_deref().is_some_and(|sub| {
 +            matches!(
 +                &sub.effect,
 +                Effect::ChangeZone { .. }
@@ -79,16 +73,13 @@ index fdbd47e38db2d52da0c3a79176d78aa1494766bd..e1702a7935fd69b400d156f3c6ae9c9e
 +                    | Effect::PutAtLibraryPosition { .. }
 +            )
 +        });
++    }
      !matches!(
-@@ -52,4 +75,5 @@ fn continuation_forwards_unchosen_complement(chain: &ResolvedAbility) -> bool {
+         chain.effect,
          Effect::PutCounter { .. } | Effect::ChooseCounterKind { .. }
--    ) && !(matches!(chain.effect, Effect::TargetOnly { .. })
--        && chain.target_choice_timing == TargetChoiceTiming::Resolution)
-+    ) && (!selected_object_move || selected_move_has_complement_receiver)
-+        && !(matches!(chain.effect, Effect::TargetOnly { .. })
-+            && chain.target_choice_timing == TargetChoiceTiming::Resolution)
- }
-@@ -6238,2 +6262,16 @@ pub(super) fn handle_resolution_choice(
+@@ -6236,6 +6250,20 @@ pub(super) fn handle_resolution_choice(
+             let empty_complement_binding = unchosen
+                 .is_empty()
                  .then(|| Box::new(ForwardedResultContext::from_object_ids(state, &unchosen)));
 +            let empty_selected_move_binding = (up_to
 +                && chosen.is_empty()
@@ -105,7 +96,11 @@ index fdbd47e38db2d52da0c3a79176d78aa1494766bd..e1702a7935fd69b400d156f3c6ae9c9e
 +                    }))
 +            .then(|| Box::new(ForwardedResultContext::from_object_ids(state, &[])));
              if let Some(frame) = state.active_ability_continuation_frame_mut() {
-@@ -6256,2 +6294,7 @@ pub(super) fn handle_resolution_choice(
+                 let cont = &mut frame.pending;
+                 if let Some((id, pin)) = sticker_recipient {
+@@ -6254,6 +6282,11 @@ pub(super) fn handle_resolution_choice(
+                         chosen.iter().map(|&id| TargetRef::Object(id)).collect(),
+                     );
                  }
 +                if let Some(binding) = empty_selected_move_binding {
 +                    cont.chain.parent_target_missing_reason =
@@ -113,7 +108,11 @@ index fdbd47e38db2d52da0c3a79176d78aa1494766bd..e1702a7935fd69b400d156f3c6ae9c9e
 +                    cont.chain.context.forwarded_result_context = Some(binding);
 +                }
                  // CR 607.2a + CR 608.2g: A `FreeCastFromZones` continuation
-@@ -6279,18 +6322,17 @@ pub(super) fn handle_resolution_choice(
+                 // over "the other cards exiled this way" (Plargg and Nassari)
+                 // must confine its offer to THIS resolution's exile batch. The
+@@ -6277,20 +6310,14 @@ pub(super) fn handle_resolution_choice(
+                         cards.iter().map(|&id| TargetRef::Object(id)).collect(),
+                     );
                  }
 -                // CR 700.2 + CR 608.2c: The "unchosen" partition is forwarded
 -                // to the sub-ability ONLY for the zone-partition pattern
@@ -129,25 +128,20 @@ index fdbd47e38db2d52da0c3a79176d78aa1494766bd..e1702a7935fd69b400d156f3c6ae9c9e
 -                // rest". A sticker-recipient answer selects only that
 -                // recipient, so it forwards nothing either. Gate the forward
 -                // on the continuation's own effect.
--                let is_partition = continuation_forwards_unchosen_complement(&cont.chain)
--                    && sticker_recipient.is_none();
-+                // CR 608.2c-d: Forward the unchosen complement to a one-card
-+                // `ChangeZone Any` only when its direct sub-ability is another
-+                // zone move ("the other"/"the rest"). Non-movement riders
-+                // follow the selected card through the ordinary continuation
-+                // binding. An empty optional selection has no complement to
-+                // forward. Counter placement (Bolster; Gluntch's "they put
-+                // counters on a creature they control") and a parked untargeted
-+                // `TargetOnly` chooser ("choose a creature you control", CR
-+                // 115.10a) are not partitions. A sticker-recipient answer
++                // CR 608.2c-d: Forward a `ChangeZone Any` complement only to
++                // a direct zone-move receiver ("the other"/"the rest").
++                // Non-movement riders bind to the selected card. On an
++                // optional decline, the entire offered pool is the complement
++                // and `empty_complement_binding` keeps it bound. Counter
++                // placement and a parked untargeted `TargetOnly` chooser
++                // (CR 115.10a) are not partitions. A sticker-recipient answer
 +                // selects only that recipient, so it forwards nothing either.
-+                let is_partition = continuation_forwards_unchosen_complement(
-+                    &cont.chain,
-+                    count == 1,
-+                    !chosen.is_empty(),
-+                ) && sticker_recipient.is_none();
+                 let is_partition = continuation_forwards_unchosen_complement(&cont.chain)
+                     && sticker_recipient.is_none();
                  if is_partition {
-@@ -16000,8 +16042,6 @@ mod tests {
+@@ -15998,13 +16025,14 @@ mod tests {
+         );
+     }
  
 -    /// CR 115.10a: only a parked UNTARGETED (Resolution-timed)
 -    /// `TargetOnly` chooser, and the counter-placement continuations, decline the
@@ -157,9 +151,18 @@ index fdbd47e38db2d52da0c3a79176d78aa1494766bd..e1702a7935fd69b400d156f3c6ae9c9e
 +    /// single-object moves without a zone-move receiver decline the complement.
      #[test]
 -    fn only_untargeted_choosers_and_counter_placements_skip_the_complement_forward() {
+-        use crate::types::ability::{Effect, QuantityExpr, TargetChoiceTiming, TargetFilter};
 +    fn zone_choice_forwards_complement_only_to_zone_move_receivers() {
-         use crate::types::ability::{Effect, QuantityExpr, TargetChoiceTiming, TargetFilter};
-@@ -16015,8 +16055,24 @@ mod tests {
++        use crate::types::ability::{
++            Effect, LibraryPosition, MassLibraryShuffleMode, QuantityExpr, TargetChoiceTiming,
++            TargetFilter,
++        };
+         let chain = |effect: Effect, timing: TargetChoiceTiming| {
+             let mut chain = ResolvedAbility::new(effect, vec![], ObjectId(1), PlayerId(0));
+             chain.target_choice_timing = timing;
+@@ -16013,6 +16041,21 @@ mod tests {
+         let target_only = || Effect::TargetOnly {
+             target: TargetFilter::Any,
          };
 +        let selected_object_move = || Effect::ChangeZone {
 +            origin: Some(crate::types::zones::Zone::Exile),
@@ -178,79 +181,50 @@ index fdbd47e38db2d52da0c3a79176d78aa1494766bd..e1702a7935fd69b400d156f3c6ae9c9e
 +        };
  
          assert!(
--            !continuation_forwards_unchosen_complement(&chain(
--                target_only(),
--                TargetChoiceTiming::Resolution
--            )),
-+            !continuation_forwards_unchosen_complement(
-+                &chain(target_only(), TargetChoiceTiming::Resolution),
-+                false,
-+                true
-+            ),
-             "the Resolution-timed chooser's pick is the whole choice"
-@@ -16024,6 +16080,7 @@ mod tests {
-         assert!(
--            continuation_forwards_unchosen_complement(&chain(
--                target_only(),
--                TargetChoiceTiming::Stack
--            )),
-+            continuation_forwards_unchosen_complement(
-+                &chain(target_only(), TargetChoiceTiming::Stack),
-+                false,
-+                true
-+            ),
-             "reach: the same effect Stack-timed still forwards the complement"
-@@ -16031,19 +16088,71 @@ mod tests {
-         assert!(
--            continuation_forwards_unchosen_complement(&chain(
--                Effect::Draw {
--                    count: QuantityExpr::Fixed { value: 1 },
--                    target: TargetFilter::Controller,
--                },
--                TargetChoiceTiming::Resolution
--            )),
-+            continuation_forwards_unchosen_complement(
-+                &chain(
-+                    Effect::Draw {
-+                        count: QuantityExpr::Fixed { value: 1 },
-+                        target: TargetFilter::Controller,
-+                    },
-+                    TargetChoiceTiming::Resolution
-+                ),
-+                false,
-+                true
-+            ),
+             !continuation_forwards_unchosen_complement(&chain(
+@@ -16038,6 +16081,61 @@ mod tests {
+             )),
              "an ordinary head keeps the forward"
          );
--        assert!(!continuation_forwards_unchosen_complement(&chain(
--            Effect::PutCounter {
--                counter_type: crate::types::counter::CounterType::Plus1Plus1,
--                count: QuantityExpr::Fixed { value: 1 },
--                target: TargetFilter::Any,
 +        assert!(
-+            !continuation_forwards_unchosen_complement(
-+                &chain(selected_object_move(), TargetChoiceTiming::Resolution),
-+                true,
-+                true
-+            ),
++            !continuation_forwards_unchosen_complement(&chain(
++                selected_object_move(),
++                TargetChoiceTiming::Resolution
++            )),
 +            "a selected-object move without a zone-move receiver has no complement consumer"
 +        );
 +
-+        let mut move_with_zone_move_followup =
-+            chain(selected_object_move(), TargetChoiceTiming::Resolution);
-+        move_with_zone_move_followup.sub_ability = Some(Box::new(chain(
++        let zone_move_receivers = [
 +            selected_object_move(),
-+            TargetChoiceTiming::Resolution,
-+        )));
-+        assert!(continuation_forwards_unchosen_complement(
-+            &move_with_zone_move_followup,
-+            true,
-+            true
-+        ));
-+        assert!(
-+            !continuation_forwards_unchosen_complement(&move_with_zone_move_followup, true, false),
-+            "a declined optional selection forwards no complement"
-+        );
++            Effect::ChangeZoneAll {
++                origin: Some(crate::types::zones::Zone::Exile),
++                destination: crate::types::zones::Zone::Library,
++                target: TargetFilter::Any,
++                enters_under: None,
++                enter_tapped: crate::types::zones::EtbTapState::Unspecified,
++                enters_attacking: false,
++                enter_with_counters: vec![],
++                face_down_profile: None,
++                library_position: Some(LibraryPosition::Bottom),
++                library_shuffle: MassLibraryShuffleMode::default(),
++                random_order: false,
++            },
++            Effect::PutAtLibraryPosition {
++                target: TargetFilter::Any,
++                count: QuantityExpr::Fixed { value: 1 },
++                position: LibraryPosition::Bottom,
++                arranger: None,
++            },
++        ];
++        for receiver in zone_move_receivers {
++            let mut move_with_zone_move_followup =
++                chain(selected_object_move(), TargetChoiceTiming::Resolution);
++            move_with_zone_move_followup.sub_ability =
++                Some(Box::new(chain(receiver, TargetChoiceTiming::Resolution)));
++            assert!(continuation_forwards_unchosen_complement(
++                &move_with_zone_move_followup
++            ));
++        }
 +
 +        let mut move_with_non_move_followup =
 +            chain(selected_object_move(), TargetChoiceTiming::Resolution);
@@ -260,36 +234,21 @@ index fdbd47e38db2d52da0c3a79176d78aa1494766bd..e1702a7935fd69b400d156f3c6ae9c9e
 +                duration: None,
 +                target: Some(TargetFilter::ParentTarget),
 +                end_cost: None,
-             },
--            TargetChoiceTiming::Resolution
++            },
 +            TargetChoiceTiming::Resolution,
-         )));
++        )));
 +        assert!(
-+            !continuation_forwards_unchosen_complement(&move_with_non_move_followup, true, true),
++            !continuation_forwards_unchosen_complement(&move_with_non_move_followup),
 +            "a non-zone-move rider follows the selected card, not the complement"
 +        );
-+        assert!(
-+            continuation_forwards_unchosen_complement(&move_with_non_move_followup, false, true),
-+            "non-single-card choices retain their existing complement behavior"
-+        );
-+        assert!(!continuation_forwards_unchosen_complement(
-+            &chain(
-+                Effect::PutCounter {
-+                    counter_type: crate::types::counter::CounterType::Plus1Plus1,
-+                    count: QuantityExpr::Fixed { value: 1 },
-+                    target: TargetFilter::Any,
-+                },
-+                TargetChoiceTiming::Resolution
-+            ),
-+            false,
-+            true
-+        ));
-     }
+         assert!(!continuation_forwards_unchosen_complement(&chain(
+             Effect::PutCounter {
+                 counter_type: crate::types::counter::CounterType::Plus1Plus1,
 diff --git a/crates/engine/tests/integration/anzrags_rampage.rs b/crates/engine/tests/integration/anzrags_rampage.rs
-index 92081531a346f11cb1b441e4cd4237533520db0f..f52fa1471f6525e563fffff20e3eb75ed283b90e 100644
+index 92081531a..f52fa1471 100644
 --- a/crates/engine/tests/integration/anzrags_rampage.rs
 +++ b/crates/engine/tests/integration/anzrags_rampage.rs
-@@ -1,4 +1,7 @@
+@@ -1,11 +1,96 @@
 -use engine::game::scenario::{GameScenario, P0, P1};
 +use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 +use engine::game::scenario_db::GameScenarioDbExt;
@@ -298,7 +257,8 @@ index 92081531a346f11cb1b441e4cd4237533520db0f..f52fa1471f6525e563fffff20e3eb75e
  use engine::types::identifiers::ObjectId;
 +use engine::types::keywords::Keyword;
  use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
-@@ -7,3 +10,85 @@ use engine::types::zones::Zone;
+ use engine::types::phase::Phase;
+ use engine::types::zones::Zone;
  
 +use crate::support::shared_card_db;
 +
@@ -384,7 +344,11 @@ index 92081531a346f11cb1b441e4cd4237533520db0f..f52fa1471f6525e563fffff20e3eb75e
 +    (scenario.build(), spell, bears, elves)
 +}
  
-@@ -23,3 +108,6 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
+ #[test]
+ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
+@@ -21,7 +106,10 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
+     let friendly_artifact = scenario
+         .add_artifact_from_oracle(P0, "Friendly Relic", "")
          .id();
 -    scenario.with_library_top(P0, &["Library Top A", "Library Top B", "Library Top C"]);
 +    let db = shared_card_db().expect("integration card fixture must load");
@@ -392,7 +356,11 @@ index 92081531a346f11cb1b441e4cd4237533520db0f..f52fa1471f6525e563fffff20e3eb75e
 +    let second = scenario.add_real_card(P0, "Llanowar Elves", Zone::Library, db);
 +    let third = scenario.add_real_card(P0, "Forest", Zone::Library, db);
      scenario.with_mana_pool(
-@@ -48,8 +136,9 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
+         P0,
+         [
+@@ -46,23 +134,277 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
+     let mut runner = scenario.build();
+     let library = runner.state().players[0].library.clone();
      assert_eq!(library.len(), 3);
 -    let top = *library.get(0).expect("library top should exist");
 -    let second = *library.get(1).expect("second library card should exist");
@@ -407,17 +375,20 @@ index 92081531a346f11cb1b441e4cd4237533520db0f..f52fa1471f6525e563fffff20e3eb75e
 +    resolve_card_choice(&mut runner, spell, &[top], &[top, second]);
 +    let state = runner.state();
  
-@@ -58,3 +147,3 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
+     assert_eq!(state.objects[&enemy_artifact_a].zone, Zone::Graveyard);
+     assert_eq!(state.objects[&enemy_artifact_b].zone, Zone::Graveyard);
      assert_eq!(state.objects[&friendly_artifact].zone, Zone::Battlefield);
 -    assert_eq!(state.objects[&top].zone, Zone::Exile);
 +    assert_eq!(state.objects[&top].zone, Zone::Battlefield);
      assert_eq!(state.objects[&second].zone, Zone::Exile);
-@@ -64,3 +153,3 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
+     assert_eq!(state.objects[&third].zone, Zone::Library);
+     assert_eq!(state.objects[&spell].zone, Zone::Graveyard);
+     assert!(state.stack.is_empty());
      assert!(matches!(
 -        outcome.final_waiting_for(),
 +        state.waiting_for,
          WaitingFor::Priority { player: P0 }
-@@ -68 +157,254 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
+     ));
  }
 +
 +#[test]
@@ -673,10 +644,12 @@ index 92081531a346f11cb1b441e4cd4237533520db0f..f52fa1471f6525e563fffff20e3eb75e
 +    assert!(!runner.state().objects[&elves].has_keyword(&Keyword::Haste));
 +}
 diff --git a/crates/engine/tests/integration/kili_the_resourceful.rs b/crates/engine/tests/integration/kili_the_resourceful.rs
-index 06eefe2a10fe1ed396ef9c9c84b5483df223856d..6c96f7d70c6f5d3d51d102401c641fb01bb9b246 100644
+index 06eefe2a1..6c96f7d70 100644
 --- a/crates/engine/tests/integration/kili_the_resourceful.rs
 +++ b/crates/engine/tests/integration/kili_the_resourceful.rs
-@@ -39,6 +39,8 @@ fn activate_equip(
+@@ -37,10 +37,12 @@ fn activate_equip(
+             ability_index: 0,
+             payment_mode: CastPaymentMode::Auto,
          })
 -        .expect(&format!(
 -            "Equip activation should be legal for {equipment:?} with mana {}",
@@ -689,15 +662,145 @@ index 06eefe2a10fe1ed396ef9c9c84b5483df223856d..6c96f7d70c6f5d3d51d102401c641fb0
 +            )
 +        })
  }
+ 
+ fn advance_to_postcombat(runner: &mut engine::game::scenario::GameRunner) {
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index 3e17b0e08..8fd685a71 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -239,6 +239,7 @@ mod screaming_nemesis_combat_damage_multi_trigger;
+ mod seasoned_cryomancer;
+ mod self_exile_cast_permission;
+ mod seven_of_nine_differently_named_lands;
++mod singular_zone_choice_routing;
+ mod sliver_static_grants;
+ mod smaug_noncombat_damage_treasure;
+ mod sovereign_okinec_ahau;
+diff --git a/crates/engine/tests/integration/singular_zone_choice_routing.rs b/crates/engine/tests/integration/singular_zone_choice_routing.rs
+new file mode 100644
+index 000000000..4894519c6
+--- /dev/null
++++ b/crates/engine/tests/integration/singular_zone_choice_routing.rs
+@@ -0,0 +1,104 @@
++use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
++use engine::types::actions::GameAction;
++use engine::types::game_state::WaitingFor;
++use engine::types::mana::ManaCost;
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const BURNING_RUNE_DEMON_ORACLE: &str = "Flying\nWhen this creature enters, you may search your \
++library for exactly two cards not named Burning-Rune Demon that have different names. If you \
++do, reveal those cards. An opponent chooses one of them. Put the chosen card into your hand and \
++the other into your graveyard, then shuffle.";
++
++/// CR 608.2c-d: resolve the opponent's choice, moving the selected card to hand
++/// and the unchosen complement to the graveyard.
++#[test]
++fn chosen_card_goes_to_hand_and_the_other_to_graveyard() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let first = scenario.add_card_to_library_top(P0, "Card A");
++    let second = scenario.add_card_to_library_top(P0, "Card B");
++    let demon = scenario
++        .add_creature_to_hand_from_oracle(P0, "Burning-Rune Demon", 6, 6, BURNING_RUNE_DEMON_ORACLE)
++        .with_mana_cost(ManaCost::zero())
++        .id();
++    let mut runner: GameRunner = scenario.build();
++
++    runner.cast(demon).commit();
++    for _ in 0..8 {
++        if !matches!(runner.state().waiting_for, WaitingFor::Priority { .. }) {
++            break;
++        }
++        runner
++            .act(GameAction::PassPriority)
++            .expect("priority pass while the ETB trigger resolves");
++    }
++    assert!(
++        matches!(
++            runner.state().waiting_for,
++            WaitingFor::OptionalEffectChoice { player: P0, .. }
++        ),
++        "expected the optional search prompt, got {:?}",
++        runner.state().waiting_for
++    );
++
++    runner
++        .act(GameAction::DecideOptionalEffect { accept: true })
++        .expect("accepting the optional search");
++    match runner.state().waiting_for.clone() {
++        WaitingFor::SearchChoice {
++            player,
++            mut cards,
++            count,
++            up_to,
++            ..
++        } => {
++            assert_eq!(player, P0);
++            cards.sort();
++            let mut expected = vec![first, second];
++            expected.sort();
++            assert_eq!(cards, expected);
++            assert_eq!(count, 2);
++            assert!(!up_to);
++        }
++        other => panic!("expected the two-card search choice, got {other:?}"),
++    }
++
++    runner
++        .act(GameAction::SelectCards {
++            cards: vec![first, second],
++        })
++        .expect("selecting the two differently named cards");
++    match runner.state().waiting_for.clone() {
++        WaitingFor::ChooseFromZoneChoice {
++            player,
++            mut cards,
++            count,
++            up_to,
++            ..
++        } => {
++            assert_eq!(player, P1);
++            cards.sort();
++            let mut expected = vec![first, second];
++            expected.sort();
++            assert_eq!(cards, expected);
++            assert_eq!(count, 1);
++            assert!(!up_to);
++        }
++        other => panic!("expected the opponent's one-card choice, got {other:?}"),
++    }
++
++    runner
++        .act(GameAction::SelectCards {
++            cards: vec![second],
++        })
++        .expect("the opponent chooses the second card");
++
++    assert_eq!(runner.state().objects[&second].zone, Zone::Hand);
++    assert_eq!(runner.state().objects[&first].zone, Zone::Graveyard);
++    assert!(runner.state().stack.is_empty());
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::Priority { .. }
++    ));
++}
 diff --git a/crates/phase-parser/src/parser/oracle_effect/mod.rs b/crates/phase-parser/src/parser/oracle_effect/mod.rs
-index e63e5dbf1310e7d771094484613c02e62afe454b..ab4ca0c7a273f020054af2e5bc01c2b6aaea6147 100644
+index e63e5dbf1..ab4ca0c7a 100644
 --- a/crates/phase-parser/src/parser/oracle_effect/mod.rs
 +++ b/crates/phase-parser/src/parser/oracle_effect/mod.rs
-@@ -21905,2 +21905,3 @@ fn lower_imperative_clause(
+@@ -21903,6 +21903,7 @@ fn lower_imperative_clause(
+     if let Some(previous) = restore {
+         ctx.stated_clause_duration = previous;
      }
 +    lower_singular_exiled_card_placement(stripped, &mut clause);
      // CR 601.2c: paired with the reset at the top of this function. The count is
-@@ -22116,2 +22117,91 @@ fn try_parse_put_one_exiled_card_into_hand(
+     // produced by the same parse that produced the target filter
+     // (`parse_each_of_target_distribution`), so it is the primary authority for
+@@ -22114,6 +22115,95 @@ fn try_parse_put_one_exiled_card_into_hand(
+     Some(clause)
+ }
  
 +fn target_filter_contains_exiled_by_source(filter: &TargetFilter) -> bool {
 +    match filter {
@@ -789,7 +892,11 @@ index e63e5dbf1310e7d771094484613c02e62afe454b..ab4ca0c7a273f020054af2e5bc01c2b6
 +}
 +
  fn try_parse_return_opponent_choice_from_graveyard(text: &str) -> Option<ParsedEffectClause> {
-@@ -28292,3 +28382,25 @@ fn chain_has_prior_parent_target_carrier(clauses: &[ClauseIr]) -> bool {
+     let lower = text.to_lowercase();
+     let (_, filter_text) =
+@@ -28290,7 +28380,29 @@ fn chain_has_prior_parent_target_carrier(clauses: &[ClauseIr]) -> bool {
+             return false;
+         }
      }
 -    effect_is_parent_target_carrier(&prev.parsed.effect)
 +    let selected_exile_move = matches!(
@@ -816,7 +923,11 @@ index e63e5dbf1310e7d771094484613c02e62afe454b..ab4ca0c7a273f020054af2e5bc01c2b6
 +        });
 +    effect_is_parent_target_carrier(&prev.parsed.effect) || selected_exile_move
  }
-@@ -50194,2 +50306,13 @@ fn parse_effect_chain_ir_body(
+ 
+ /// CR 611.2a + CR 400.7: An `Otherwise, return it ... and it's a <animation>` else
+@@ -50192,6 +50304,17 @@ fn parse_effect_chain_ir_body(
+                 *up_to = true;
+                 false
              }
 +            Effect::ChooseFromZone {
 +                zone: Zone::Exile,
@@ -830,11 +941,15 @@ index e63e5dbf1310e7d771094484613c02e62afe454b..ab4ca0c7a273f020054af2e5bc01c2b6
 +                false
 +            }
              _ => is_optional,
+         };
+ 
 diff --git a/crates/phase-parser/src/parser/oracle_effect/tests.rs b/crates/phase-parser/src/parser/oracle_effect/tests.rs
-index dcdb6f848ba9a6dab6ae31fc93455e98ef3a16a6..a2b2683ba81c46245cfffd28c05e637363760178 100644
+index dcdb6f848..a2b2683ba 100644
 --- a/crates/phase-parser/src/parser/oracle_effect/tests.rs
 +++ b/crates/phase-parser/src/parser/oracle_effect/tests.rs
-@@ -32,2 +32,179 @@ use crate::types::statics::CostModifyMode;
+@@ -30,6 +30,183 @@ use crate::types::card_type::CoreType;
+ use crate::types::mana::{ManaCost, ManaCostShard};
+ use crate::types::statics::CostModifyMode;
  
 +#[test]
 +fn singular_exiled_card_placement_uses_an_up_to_one_zone_choice() {
@@ -1014,124 +1129,8 @@ index dcdb6f848ba9a6dab6ae31fc93455e98ef3a16a6..a2b2683ba81c46245cfffd28c05e6373
 +}
 +
  #[test]
-diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
-index 3e17b0e08..8fd685a71 100644
---- a/crates/engine/tests/integration/main.rs
-+++ b/crates/engine/tests/integration/main.rs
-@@ -239,6 +239,7 @@ mod screaming_nemesis_combat_damage_multi_trigger;
- mod seasoned_cryomancer;
- mod self_exile_cast_permission;
- mod seven_of_nine_differently_named_lands;
-+mod singular_zone_choice_routing;
- mod sliver_static_grants;
- mod smaug_noncombat_damage_treasure;
- mod sovereign_okinec_ahau;
-diff --git a/crates/engine/tests/integration/singular_zone_choice_routing.rs b/crates/engine/tests/integration/singular_zone_choice_routing.rs
-new file mode 100644
---- /dev/null
-+++ b/crates/engine/tests/integration/singular_zone_choice_routing.rs
-@@ -0,0 +1,104 @@
-+use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
-+use engine::types::actions::GameAction;
-+use engine::types::game_state::WaitingFor;
-+use engine::types::mana::ManaCost;
-+use engine::types::phase::Phase;
-+use engine::types::zones::Zone;
-+
-+const BURNING_RUNE_DEMON_ORACLE: &str = "Flying\nWhen this creature enters, you may search your \
-+library for exactly two cards not named Burning-Rune Demon that have different names. If you \
-+do, reveal those cards. An opponent chooses one of them. Put the chosen card into your hand and \
-+the other into your graveyard, then shuffle.";
-+
-+/// CR 608.2c-d: resolve the opponent's choice, moving the selected card to hand
-+/// and the unchosen complement to the graveyard.
-+#[test]
-+fn chosen_card_goes_to_hand_and_the_other_to_graveyard() {
-+    let mut scenario = GameScenario::new();
-+    scenario.at_phase(Phase::PreCombatMain);
-+    let first = scenario.add_card_to_library_top(P0, "Card A");
-+    let second = scenario.add_card_to_library_top(P0, "Card B");
-+    let demon = scenario
-+        .add_creature_to_hand_from_oracle(P0, "Burning-Rune Demon", 6, 6, BURNING_RUNE_DEMON_ORACLE)
-+        .with_mana_cost(ManaCost::zero())
-+        .id();
-+    let mut runner: GameRunner = scenario.build();
-+
-+    runner.cast(demon).commit();
-+    for _ in 0..8 {
-+        if !matches!(runner.state().waiting_for, WaitingFor::Priority { .. }) {
-+            break;
-+        }
-+        runner
-+            .act(GameAction::PassPriority)
-+            .expect("priority pass while the ETB trigger resolves");
-+    }
-+    assert!(
-+        matches!(
-+            runner.state().waiting_for,
-+            WaitingFor::OptionalEffectChoice { player: P0, .. }
-+        ),
-+        "expected the optional search prompt, got {:?}",
-+        runner.state().waiting_for
-+    );
-+
-+    runner
-+        .act(GameAction::DecideOptionalEffect { accept: true })
-+        .expect("accepting the optional search");
-+    match runner.state().waiting_for.clone() {
-+        WaitingFor::SearchChoice {
-+            player,
-+            mut cards,
-+            count,
-+            up_to,
-+            ..
-+        } => {
-+            assert_eq!(player, P0);
-+            cards.sort();
-+            let mut expected = vec![first, second];
-+            expected.sort();
-+            assert_eq!(cards, expected);
-+            assert_eq!(count, 2);
-+            assert!(!up_to);
-+        }
-+        other => panic!("expected the two-card search choice, got {other:?}"),
-+    }
-+
-+    runner
-+        .act(GameAction::SelectCards {
-+            cards: vec![first, second],
-+        })
-+        .expect("selecting the two differently named cards");
-+    match runner.state().waiting_for.clone() {
-+        WaitingFor::ChooseFromZoneChoice {
-+            player,
-+            mut cards,
-+            count,
-+            up_to,
-+            ..
-+        } => {
-+            assert_eq!(player, P1);
-+            cards.sort();
-+            let mut expected = vec![first, second];
-+            expected.sort();
-+            assert_eq!(cards, expected);
-+            assert_eq!(count, 1);
-+            assert!(!up_to);
-+        }
-+        other => panic!("expected the opponent's one-card choice, got {other:?}"),
-+    }
-+
-+    runner
-+        .act(GameAction::SelectCards {
-+            cards: vec![second],
-+        })
-+        .expect("the opponent chooses the second card");
-+
-+    assert_eq!(runner.state().objects[&second].zone, Zone::Hand);
-+    assert_eq!(runner.state().objects[&first].zone, Zone::Graveyard);
-+    assert!(runner.state().stack.is_empty());
-+    assert!(matches!(
-+        runner.state().waiting_for,
-+        WaitingFor::Priority { .. }
-+    ));
-+}
+ fn bringer_of_the_last_gift_tracks_sacrificed_creatures_as_excluded() {
+     let parsed = parse_oracle_text(
+-- 
+2.56.0
+
