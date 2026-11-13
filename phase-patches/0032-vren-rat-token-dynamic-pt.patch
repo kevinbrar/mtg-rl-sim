@@ -1,3 +1,16 @@
+From e51ebc8c129c31564dc4735974215f76dddafed0 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Fri, 13 Nov 2026 16:54:01 +0000
+Subject: [PATCH] Fix Vren Rat token dynamic power and toughness
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/tests/integration/main.rs       |   1 +
+ .../tests/integration/vren_rat_token_pt.rs    | 118 ++++++++++++++++++
+ .../src/parser/oracle_effect/token.rs         |  76 ++++++++++-
+ 3 files changed, 193 insertions(+), 2 deletions(-)
+ create mode 100644 crates/engine/tests/integration/vren_rat_token_pt.rs
+
 diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
 index 8fd685a..937a47a 100644
 --- a/crates/engine/tests/integration/main.rs
@@ -226,3 +239,6 @@ index a3240af..87c7e31 100644
 +        );
 +    }
 +}
+-- 
+2.56.0
+
