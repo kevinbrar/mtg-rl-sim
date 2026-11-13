@@ -60,18 +60,23 @@ index 0000000000..8a57315943
 +    }
 +}
 diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-index a0f98e5597..745b2f60e7 100644
+index a0f98e5597..c687d844e6 100644
 --- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 +++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-@@ -12,6 +12,7 @@ import mage.ObjectColor;
+@@ -9,9 +9,12 @@ import com.google.gson.JsonObject;
+ import com.google.gson.JsonParser;
+ import mage.MageInt;
+ import mage.ObjectColor;
++import mage.abilities.Ability;
  import mage.abilities.SpellAbility;
++import mage.abilities.common.AsEntersBattlefieldAbility;
  import mage.cards.Card;
  import mage.constants.PhaseStep;
 +import mage.constants.SubType;
  import mage.constants.Zone;
  import mage.counters.Counter;
  import mage.counters.CounterType;
-@@ -47,6 +48,8 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -47,6 +50,8 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
      private final String scenarioName;
      private final JsonObject scenario;
      private final Map<String, UUID> labels = new LinkedHashMap<>();
@@ -80,7 +85,7 @@ index a0f98e5597..745b2f60e7 100644
      private final Map<String, Map<String, Integer>> counters = new LinkedHashMap<>();
      private JsonArray initialLegalTargets;
  
-@@ -129,6 +132,94 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -129,6 +134,99 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
              String kind = requiredString(action, "action");
              TestPlayer actingPlayer = player(activeIndex);
              switch (kind) {
@@ -102,12 +107,13 @@ index a0f98e5597..745b2f60e7 100644
 +                        throw new IllegalArgumentException("unknown behold label " + behold);
 +                    }
 +                    runCode("queue behold choices", turn, step, actingPlayer, (info, player, game) -> {
-+                        actingPlayer.getHand().getCards(game).stream()
++                        Card landCard = actingPlayer.getHand().getCards(game).stream()
 +                                .filter(candidate -> candidate.getId().equals(landId))
 +                                .findFirst()
 +                                .orElseThrow(() -> new IllegalStateException(
 +                                        "play_land card label " + cardLabel
 +                                                + " is not in the active player's hand"));
++                        boolean landHasBehold = hasBeholdAsEntersAbility(landCard, game);
 +                        List<Permanent> battlefieldJaces = game.getBattlefield().getAllActivePermanents().stream()
 +                                .filter(permanent -> permanent.getControllerId().equals(actingPlayer.getId()))
 +                                .filter(permanent -> permanent.hasSubtype(SubType.JACE, game))
@@ -116,11 +122,15 @@ index a0f98e5597..745b2f60e7 100644
 +                                .filter(candidate -> candidate.hasSubtype(SubType.JACE, game))
 +                                .toList();
 +                        if (behold == null) {
-+                            if (!battlefieldJaces.isEmpty() || !handJaces.isEmpty()) {
++                            if (landHasBehold && (!battlefieldJaces.isEmpty() || !handJaces.isEmpty())) {
 +                                throw new IllegalStateException(
 +                                        "play_land behold prompt was offered without a behold field");
 +                            }
 +                            return;
++                        }
++                        if (!landHasBehold) {
++                            throw new IllegalStateException(
++                                    "play_land.behold was provided for a land without a Behold as-enters ability");
 +                        }
 +                        if (battlefieldJaces.isEmpty() && handJaces.isEmpty()) {
 +                            throw new IllegalStateException(
@@ -175,7 +185,24 @@ index a0f98e5597..745b2f60e7 100644
                  case "cast" -> {
                      String card = requiredString(action, "card");
                      boolean hasX = action.has("x");
-@@ -320,6 +411,8 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -269,6 +367,16 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         return turn;
+     }
+ 
++    private static boolean hasBeholdAsEntersAbility(Card card, Game game) {
++        for (Ability ability : card.getAbilities(game)) {
++            if (ability instanceof AsEntersBattlefieldAbility
++                    && ability.getRule().toLowerCase(Locale.ROOT).contains("behold")) {
++                return true;
++            }
++        }
++        return false;
++    }
++
+     private void addScenarioSetup() {
+         JsonObject setup = object(scenario, "setup");
+         rejectUnknownKeys(setup, Set.of("P0", "P1"), "setup");
+@@ -320,6 +428,8 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
                  throw new IllegalArgumentException("XMage did not register setup label " + label);
              }
              labels.put(label, objectId);
@@ -184,7 +211,7 @@ index a0f98e5597..745b2f60e7 100644
              JsonObject cardCounters = object(item, "counters");
              if (!cardCounters.entrySet().isEmpty()) {
                  Map<String, Integer> parsed = new LinkedHashMap<>();
-@@ -357,6 +450,8 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -357,6 +467,8 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
                  throw new IllegalArgumentException("XMage did not register setup label " + label);
              }
              labels.put(label, objectId);
@@ -193,7 +220,7 @@ index a0f98e5597..745b2f60e7 100644
          } else {
              addCard(zone, player, card);
          }
-@@ -538,7 +633,32 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -538,7 +650,32 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
          if (!scenario.has("reach")) {
              return true;
          }

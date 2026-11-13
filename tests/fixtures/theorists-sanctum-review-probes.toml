@@ -1,0 +1,18 @@
+[[scenarios]]
+name = "ordinary Island with a Jace does not offer Behold"
+active_player = 0
+script = [{ action = "play_land", card = "island" }]
+
+[scenarios.setup.P0]
+hand = [
+  { card = "Island", label = "island" },
+  { card = "Jace Beleren", label = "jace" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Island", tapped = false, count = 1 },
+  { zone = "hand", player = "P0", card = "Jace Beleren", count = 1 },
+]
