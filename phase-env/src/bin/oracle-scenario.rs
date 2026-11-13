@@ -625,6 +625,19 @@ fn ensure_trigger_target_groups_consumed(groups: &VecDeque<Vec<ObjectId>>) -> Re
     ))
 }
 
+fn ensure_targeted_cast_has_no_pending_trigger_targets(
+    action: &Value,
+    trigger_target_groups: &VecDeque<Vec<ObjectId>>,
+) -> Result<(), String> {
+    if action.get("targets").is_some() && !trigger_target_groups.is_empty() {
+        return Err(
+            "trigger_targets queued before a targeted cast; list them after the action whose trigger consumes them"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn apply_activation_target_group(
     runner: &mut GameRunner,
     labels: &HashMap<ObjectId, String>,
@@ -1157,6 +1170,10 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     for (action_index, action) in actions.iter().enumerate() {
         match action["action"].as_str().unwrap_or_default() {
             "cast" => {
+                ensure_targeted_cast_has_no_pending_trigger_targets(
+                    action,
+                    &trigger_target_groups,
+                )?;
                 let card = action["card"].as_str().ok_or("cast needs card")?;
                 let player = runner.state().active_player;
                 let spell = runner.state().players[player.0 as usize]
@@ -1801,6 +1818,36 @@ mod tests {
         assert!(ensure_trigger_target_groups_consumed(&groups)
             .unwrap_err()
             .contains("unconsumed"));
+    }
+
+    #[test]
+    fn targeted_cast_rejects_pending_trigger_target_groups() {
+        let action = json!({"action": "cast", "targets": ["artifact"]});
+        let groups = VecDeque::from([vec![ObjectId(17)]]);
+
+        assert_eq!(
+            ensure_targeted_cast_has_no_pending_trigger_targets(&action, &groups),
+            Err(
+                "trigger_targets queued before a targeted cast; list them after the action whose trigger consumes them"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn targeted_cast_order_guard_allows_untargeted_actions_or_empty_queue() {
+        let groups = VecDeque::from([vec![ObjectId(17)]]);
+        assert!(ensure_targeted_cast_has_no_pending_trigger_targets(
+            &json!({"action": "cast"}),
+            &groups
+        )
+        .is_ok());
+
+        assert!(ensure_targeted_cast_has_no_pending_trigger_targets(
+            &json!({"action": "cast", "targets": ["artifact"]}),
+            &VecDeque::new()
+        )
+        .is_ok());
     }
 
     #[test]
