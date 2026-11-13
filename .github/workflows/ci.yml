@@ -557,6 +557,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
+          git submodule update --init phase
           git fetch origin "$BASE_REF"
           base_commit="$(git rev-parse "origin/$BASE_REF")"
           head_commit="$GITHUB_SHA"

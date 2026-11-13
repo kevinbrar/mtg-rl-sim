@@ -11,14 +11,15 @@ structure without relying on a sibling clause; leave plural wording alone.
 
 ---
  crates/engine/src/game/effects/change_zone.rs      |   7 +-
- .../engine/src/game/engine_resolution_choices.rs   | 175 ++++++++----
- crates/engine/tests/integration/anzrags_rampage.rs | 309 ++++++++++++++++++++-
- .../phase-parser/src/parser/oracle_effect/mod.rs   | 125 ++++++++-
- .../phase-parser/src/parser/oracle_effect/tests.rs | 177 ++++++++++++
- 5 files changed, 733 insertions(+), 60 deletions(-)
+ .../engine/src/game/engine_resolution_choices.rs   | 215 +++++++++---
+ crates/engine/tests/integration/anzrags_rampage.rs | 360 ++++++++++++++++++++-
+ .../tests/integration/kili_the_resourceful.rs      |  10 +-
+ .../phase-parser/src/parser/oracle_effect/mod.rs   | 125 ++++++-
+ .../phase-parser/src/parser/oracle_effect/tests.rs | 177 ++++++++++
+ 6 files changed, 825 insertions(+), 69 deletions(-)
 
 diff --git a/crates/engine/src/game/effects/change_zone.rs b/crates/engine/src/game/effects/change_zone.rs
-index cde564b69..9cb4f2cd5 100644
+index cde564b695bb311a2d958477b4c53dcf43bac6ba..9cb4f2cd5da3fd8a4277a532ec9084211f004d1c 100644
 --- a/crates/engine/src/game/effects/change_zone.rs
 +++ b/crates/engine/src/game/effects/change_zone.rs
 @@ -987,4 +987,7 @@ pub fn resolve(
@@ -32,26 +33,35 @@ index cde564b69..9cb4f2cd5 100644
 +                == Some(crate::types::ability::ParentTargetMissingReason::ChooseFromZone))
      {
 diff --git a/crates/engine/src/game/engine_resolution_choices.rs b/crates/engine/src/game/engine_resolution_choices.rs
-index fdbd47e38..7dad91c03 100644
+index fdbd47e38db2d52da0c3a79176d78aa1494766bd..e1702a7935fd69b400d156f3c6ae9c9e502be901 100644
 --- a/crates/engine/src/game/engine_resolution_choices.rs
 +++ b/crates/engine/src/game/engine_resolution_choices.rs
-@@ -44,7 +44,19 @@ use crate::types::proposed_event::TokenAttackRequest;
- /// It does not for counter-placement continuations (Bolster, Gluntch: their
+@@ -40,11 +40,34 @@ use crate::types::proposed_event::TokenAttackRequest;
+-/// CR 608.2c: does the parked zone-choice continuation `chain` treat
+-/// the objects NOT picked as "the rest" for its next instruction (a
+-/// `ChooseFromZone` partition)?
++/// CR 608.2c-d: whether the parked zone-choice continuation treats unpicked
++/// objects as the "other" or "rest" for its next instruction.
+ ///
+-/// It does not for counter-placement continuations (Bolster, Gluntch: their
 -/// `sub_ability` is an independent trailing clause), nor for a parked
 -/// untargeted `TargetOnly` chooser, whose pick is the whole choice (CR 115.10a).
 -/// A `Stack`-timed `TargetOnly` is an ordinary wrapper and keeps the forward.
 -fn continuation_forwards_unchosen_complement(chain: &ResolvedAbility) -> bool {
 -    use crate::types::ability::{Effect, TargetChoiceTiming};
-+/// `sub_ability` is an independent trailing clause), a parked untargeted
-+/// `TargetOnly` chooser, or an up-to-one `ChangeZone Any` continuation, which
-+/// consumes the zone choice's selected targets. A `Stack`-timed `TargetOnly`
-+/// is an ordinary wrapper and keeps the forward.
++/// A one-card `ChangeZone Any` consumes the selected card itself. Its unchosen
++/// complement belongs to a direct zone-move sub-ability, but not to a
++/// non-movement rider such as haste or a delayed return. An empty optional
++/// selection has no complement to forward. Counter-placement continuations,
++/// resolution-timed `TargetOnly` choosers, and sticker-recipient answers also
++/// do not partition the offered objects.
 +fn continuation_forwards_unchosen_complement(
 +    chain: &ResolvedAbility,
-+    up_to_one_choice: bool,
++    count_one_choice: bool,
++    has_selected_cards: bool,
 +) -> bool {
 +    use crate::types::ability::{Effect, TargetChoiceTiming, TargetFilter};
-+    let selected_object_move = up_to_one_choice
++    let selected_object_move = count_one_choice
 +        && matches!(
 +            &chain.effect,
 +            Effect::ChangeZone {
@@ -59,16 +69,26 @@ index fdbd47e38..7dad91c03 100644
 +                ..
 +            }
 +        );
++    let selected_move_has_complement_receiver = selected_object_move
++        && has_selected_cards
++        && chain.sub_ability.as_deref().is_some_and(|sub| {
++            matches!(
++                &sub.effect,
++                Effect::ChangeZone { .. }
++                    | Effect::ChangeZoneAll { .. }
++                    | Effect::PutAtLibraryPosition { .. }
++            )
++        });
      !matches!(
-@@ -52,4 +64,5 @@ fn continuation_forwards_unchosen_complement(chain: &ResolvedAbility) -> bool {
+@@ -52,4 +75,5 @@ fn continuation_forwards_unchosen_complement(chain: &ResolvedAbility) -> bool {
          Effect::PutCounter { .. } | Effect::ChooseCounterKind { .. }
 -    ) && !(matches!(chain.effect, Effect::TargetOnly { .. })
 -        && chain.target_choice_timing == TargetChoiceTiming::Resolution)
-+    ) && !selected_object_move
++    ) && (!selected_object_move || selected_move_has_complement_receiver)
 +        && !(matches!(chain.effect, Effect::TargetOnly { .. })
 +            && chain.target_choice_timing == TargetChoiceTiming::Resolution)
  }
-@@ -6238,2 +6251,16 @@ pub(super) fn handle_resolution_choice(
+@@ -6238,2 +6262,16 @@ pub(super) fn handle_resolution_choice(
                  .then(|| Box::new(ForwardedResultContext::from_object_ids(state, &unchosen)));
 +            let empty_selected_move_binding = (up_to
 +                && chosen.is_empty()
@@ -85,7 +105,7 @@ index fdbd47e38..7dad91c03 100644
 +                    }))
 +            .then(|| Box::new(ForwardedResultContext::from_object_ids(state, &[])));
              if let Some(frame) = state.active_ability_continuation_frame_mut() {
-@@ -6256,2 +6283,7 @@ pub(super) fn handle_resolution_choice(
+@@ -6256,2 +6294,7 @@ pub(super) fn handle_resolution_choice(
                  }
 +                if let Some(binding) = empty_selected_move_binding {
 +                    cont.chain.parent_target_missing_reason =
@@ -93,13 +113,11 @@ index fdbd47e38..7dad91c03 100644
 +                    cont.chain.context.forwarded_result_context = Some(binding);
 +                }
                  // CR 607.2a + CR 608.2g: A `FreeCastFromZones` continuation
-@@ -6279,18 +6311,17 @@ pub(super) fn handle_resolution_choice(
+@@ -6279,18 +6322,17 @@ pub(super) fn handle_resolution_choice(
                  }
 -                // CR 700.2 + CR 608.2c: The "unchosen" partition is forwarded
 -                // to the sub-ability ONLY for the zone-partition pattern
-+                // CR 608.2c + CR 608.2d: Forward the "unchosen" complement
-+                // only when the continuation represents a zone partition
-                 // (`ChooseFromZone`: chosen cards go one place, the rest go
+-                // (`ChooseFromZone`: chosen cards go one place, the rest go
 -                // another). A counter-placement continuation (Bolster keyword
 -                // action; Gluntch's "they put counters on a creature they
 -                // control") is NOT a partition — its `sub_ability` is an
@@ -113,33 +131,35 @@ index fdbd47e38..7dad91c03 100644
 -                // on the continuation's own effect.
 -                let is_partition = continuation_forwards_unchosen_complement(&cont.chain)
 -                    && sticker_recipient.is_none();
-+                // another). A `ChangeZone` targeting `Any` consumes the
-+                // selected targets, so its trailing abilities also follow the
-+                // selected cards. Counter placement (Bolster; Gluntch's "they
-+                // put counters on a creature they control") and a parked
-+                // untargeted `TargetOnly` chooser ("choose a creature you
-+                // control", CR 115.10a) are not partitions. A
-+                // sticker-recipient answer selects only that recipient, so it
-+                // forwards nothing either. Gate the forward on the continuation
-+                // effect's structure.
-+                let is_partition =
-+                    continuation_forwards_unchosen_complement(&cont.chain, up_to && count == 1)
-+                        && sticker_recipient.is_none();
++                // CR 608.2c-d: Forward the unchosen complement to a one-card
++                // `ChangeZone Any` only when its direct sub-ability is another
++                // zone move ("the other"/"the rest"). Non-movement riders
++                // follow the selected card through the ordinary continuation
++                // binding. An empty optional selection has no complement to
++                // forward. Counter placement (Bolster; Gluntch's "they put
++                // counters on a creature they control") and a parked untargeted
++                // `TargetOnly` chooser ("choose a creature you control", CR
++                // 115.10a) are not partitions. A sticker-recipient answer
++                // selects only that recipient, so it forwards nothing either.
++                let is_partition = continuation_forwards_unchosen_complement(
++                    &cont.chain,
++                    count == 1,
++                    !chosen.is_empty(),
++                ) && sticker_recipient.is_none();
                  if is_partition {
-@@ -16000,8 +16031,7 @@ mod tests {
+@@ -16000,8 +16042,6 @@ mod tests {
  
 -    /// CR 115.10a: only a parked UNTARGETED (Resolution-timed)
 -    /// `TargetOnly` chooser, and the counter-placement continuations, decline the
 -    /// unchosen-complement forward; a Stack-timed `TargetOnly` wrapper after a
 -    /// `ChooseFromZone` and an ordinary partition head keep it.
 +    /// Untargeted `TargetOnly` (CR 115.10a), counter placement, and selected
-+    /// single-object moves decline the complement; an ordinary partition head
-+    /// keeps it.
++    /// single-object moves without a zone-move receiver decline the complement.
      #[test]
 -    fn only_untargeted_choosers_and_counter_placements_skip_the_complement_forward() {
-+    fn zone_choice_followups_skip_complement_when_not_partitioned() {
++    fn zone_choice_forwards_complement_only_to_zone_move_receivers() {
          use crate::types::ability::{Effect, QuantityExpr, TargetChoiceTiming, TargetFilter};
-@@ -16015,8 +16045,23 @@ mod tests {
+@@ -16015,8 +16055,24 @@ mod tests {
          };
 +        let selected_object_move = || Effect::ChangeZone {
 +            origin: Some(crate::types::zones::Zone::Exile),
@@ -164,10 +184,11 @@ index fdbd47e38..7dad91c03 100644
 -            )),
 +            !continuation_forwards_unchosen_complement(
 +                &chain(target_only(), TargetChoiceTiming::Resolution),
-+                false
++                false,
++                true
 +            ),
              "the Resolution-timed chooser's pick is the whole choice"
-@@ -16024,6 +16069,6 @@ mod tests {
+@@ -16024,6 +16080,7 @@ mod tests {
          assert!(
 -            continuation_forwards_unchosen_complement(&chain(
 -                target_only(),
@@ -175,10 +196,11 @@ index fdbd47e38..7dad91c03 100644
 -            )),
 +            continuation_forwards_unchosen_complement(
 +                &chain(target_only(), TargetChoiceTiming::Stack),
-+                false
++                false,
++                true
 +            ),
              "reach: the same effect Stack-timed still forwards the complement"
-@@ -16031,19 +16076,53 @@ mod tests {
+@@ -16031,19 +16088,71 @@ mod tests {
          assert!(
 -            continuation_forwards_unchosen_complement(&chain(
 -                Effect::Draw {
@@ -195,7 +217,8 @@ index fdbd47e38..7dad91c03 100644
 +                    },
 +                    TargetChoiceTiming::Resolution
 +                ),
-+                false
++                false,
++                true
 +            ),
              "an ordinary head keeps the forward"
          );
@@ -207,19 +230,31 @@ index fdbd47e38..7dad91c03 100644
 +        assert!(
 +            !continuation_forwards_unchosen_complement(
 +                &chain(selected_object_move(), TargetChoiceTiming::Resolution),
++                true,
 +                true
 +            ),
-+            "an up-to-one selected-object move consumes only the chosen target"
++            "a selected-object move without a zone-move receiver has no complement consumer"
 +        );
++
++        let mut move_with_zone_move_followup =
++            chain(selected_object_move(), TargetChoiceTiming::Resolution);
++        move_with_zone_move_followup.sub_ability = Some(Box::new(chain(
++            selected_object_move(),
++            TargetChoiceTiming::Resolution,
++        )));
++        assert!(continuation_forwards_unchosen_complement(
++            &move_with_zone_move_followup,
++            true,
++            true
++        ));
 +        assert!(
-+            continuation_forwards_unchosen_complement(
-+                &chain(selected_object_move(), TargetChoiceTiming::Resolution),
-+                false
-+            ),
-+            "a mandatory partition may forward its unchosen complement"
++            !continuation_forwards_unchosen_complement(&move_with_zone_move_followup, true, false),
++            "a declined optional selection forwards no complement"
 +        );
-+        let mut move_with_followup = chain(selected_object_move(), TargetChoiceTiming::Resolution);
-+        move_with_followup.sub_ability = Some(Box::new(chain(
++
++        let mut move_with_non_move_followup =
++            chain(selected_object_move(), TargetChoiceTiming::Resolution);
++        move_with_non_move_followup.sub_ability = Some(Box::new(chain(
 +            Effect::GenericEffect {
 +                static_abilities: vec![],
 +                duration: None,
@@ -230,8 +265,12 @@ index fdbd47e38..7dad91c03 100644
 +            TargetChoiceTiming::Resolution,
          )));
 +        assert!(
-+            !continuation_forwards_unchosen_complement(&move_with_followup, true),
-+            "the selected-object structure does not depend on its follow-up"
++            !continuation_forwards_unchosen_complement(&move_with_non_move_followup, true, true),
++            "a non-zone-move rider follows the selected card, not the complement"
++        );
++        assert!(
++            continuation_forwards_unchosen_complement(&move_with_non_move_followup, false, true),
++            "non-single-card choices retain their existing complement behavior"
 +        );
 +        assert!(!continuation_forwards_unchosen_complement(
 +            &chain(
@@ -242,11 +281,12 @@ index fdbd47e38..7dad91c03 100644
 +                },
 +                TargetChoiceTiming::Resolution
 +            ),
-+            false
++            false,
++            true
 +        ));
      }
 diff --git a/crates/engine/tests/integration/anzrags_rampage.rs b/crates/engine/tests/integration/anzrags_rampage.rs
-index 92081531a..e90464c7b 100644
+index 92081531a346f11cb1b441e4cd4237533520db0f..f52fa1471f6525e563fffff20e3eb75ed283b90e 100644
 --- a/crates/engine/tests/integration/anzrags_rampage.rs
 +++ b/crates/engine/tests/integration/anzrags_rampage.rs
 @@ -1,4 +1,7 @@
@@ -258,13 +298,14 @@ index 92081531a..e90464c7b 100644
  use engine::types::identifiers::ObjectId;
 +use engine::types::keywords::Keyword;
  use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
-@@ -7,3 +10,84 @@ use engine::types::zones::Zone;
+@@ -7,3 +10,85 @@ use engine::types::zones::Zone;
  
 +use crate::support::shared_card_db;
 +
  const ORACLE: &str = "Destroy all artifacts you don't control, then exile the top X cards of your library, where X is the number of artifacts that were put into graveyards from the battlefield this turn. You may put a creature card exiled this way onto the battlefield. It gains haste. Return it to your hand at the beginning of the next end step.";
 +const BARE_OPTIONAL_ORACLE: &str = "Destroy all artifacts you don't control, then exile the top X cards of your library, where X is the number of artifacts that were put into graveyards from the battlefield this turn. You may put a creature card exiled this way onto the battlefield.";
 +const MANDATORY_ORACLE: &str = "Destroy all artifacts you don't control, then exile the top X cards of your library, where X is the number of artifacts that were put into graveyards from the battlefield this turn. Put a creature card exiled this way onto the battlefield.";
++const MANDATORY_WITH_FOLLOW_UP_ORACLE: &str = "Destroy all artifacts you don't control, then exile the top X cards of your library, where X is the number of artifacts that were put into graveyards from the battlefield this turn. Put a creature card exiled this way onto the battlefield. It gains haste. Return it to your hand at the beginning of the next end step.";
 +
 +fn resolve_card_choice(
 +    runner: &mut GameRunner,
@@ -343,7 +384,7 @@ index 92081531a..e90464c7b 100644
 +    (scenario.build(), spell, bears, elves)
 +}
  
-@@ -23,3 +107,6 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
+@@ -23,3 +108,6 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
          .id();
 -    scenario.with_library_top(P0, &["Library Top A", "Library Top B", "Library Top C"]);
 +    let db = shared_card_db().expect("integration card fixture must load");
@@ -351,7 +392,7 @@ index 92081531a..e90464c7b 100644
 +    let second = scenario.add_real_card(P0, "Llanowar Elves", Zone::Library, db);
 +    let third = scenario.add_real_card(P0, "Forest", Zone::Library, db);
      scenario.with_mana_pool(
-@@ -48,8 +135,9 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
+@@ -48,8 +136,9 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
      assert_eq!(library.len(), 3);
 -    let top = *library.get(0).expect("library top should exist");
 -    let second = *library.get(1).expect("second library card should exist");
@@ -366,17 +407,17 @@ index 92081531a..e90464c7b 100644
 +    resolve_card_choice(&mut runner, spell, &[top], &[top, second]);
 +    let state = runner.state();
  
-@@ -58,3 +146,3 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
+@@ -58,3 +147,3 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
      assert_eq!(state.objects[&friendly_artifact].zone, Zone::Battlefield);
 -    assert_eq!(state.objects[&top].zone, Zone::Exile);
 +    assert_eq!(state.objects[&top].zone, Zone::Battlefield);
      assert_eq!(state.objects[&second].zone, Zone::Exile);
-@@ -64,3 +152,3 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
+@@ -64,3 +153,3 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
      assert!(matches!(
 -        outcome.final_waiting_for(),
 +        state.waiting_for,
          WaitingFor::Priority { player: P0 }
-@@ -68 +156,204 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
+@@ -68 +157,254 @@ fn anzrags_rampage_exiles_one_card_per_destroyed_artifact() {
  }
 +
 +#[test]
@@ -581,8 +622,75 @@ index 92081531a..e90464c7b 100644
 +    assert_eq!(runner.state().objects[&bears].zone, Zone::Battlefield);
 +    assert_eq!(runner.state().objects[&elves].zone, Zone::Exile);
 +}
++
++#[test]
++fn mandatory_exiled_card_placement_binds_followups_to_selected_creature() {
++    let (mut runner, spell, bears, elves) =
++        runner_with_two_creatures_exiled(MANDATORY_WITH_FOLLOW_UP_ORACLE);
++    let outcome = runner.cast(spell).resolve();
++    let WaitingFor::ChooseFromZoneChoice {
++        cards,
++        count,
++        up_to,
++        ..
++    } = outcome.final_waiting_for()
++    else {
++        panic!(
++            "expected the mandatory tracked-exile selection prompt, got {:?}",
++            outcome.final_waiting_for()
++        );
++    };
++    assert_eq!(*count, 1);
++    assert!(!*up_to, "the mandatory selection cannot be declined");
++    assert_eq!(cards.len(), 2);
++    assert!(cards.contains(&bears));
++    assert!(cards.contains(&elves));
++
++    runner
++        .act(GameAction::SelectCards { cards: vec![bears] })
++        .expect("select one creature");
++    runner.advance_until_stack_empty();
++    assert_eq!(runner.state().objects[&bears].zone, Zone::Battlefield);
++    assert_eq!(runner.state().objects[&elves].zone, Zone::Exile);
++    assert!(
++        runner.state().objects[&bears].has_keyword(&Keyword::Haste),
++        "the selected creature gains haste"
++    );
++    assert!(
++        !runner.state().objects[&elves].has_keyword(&Keyword::Haste),
++        "the unselected creature receives no haste"
++    );
++
++    runner.advance_to_combat();
++    runner
++        .declare_attackers(&[])
++        .expect("declaring no attackers should succeed");
++    runner.advance_to_end_step();
++    runner.advance_until_stack_empty();
++
++    assert_eq!(runner.state().objects[&bears].zone, Zone::Hand);
++    assert_eq!(runner.state().objects[&elves].zone, Zone::Exile);
++    assert!(!runner.state().objects[&elves].has_keyword(&Keyword::Haste));
++}
+diff --git a/crates/engine/tests/integration/kili_the_resourceful.rs b/crates/engine/tests/integration/kili_the_resourceful.rs
+index 06eefe2a10fe1ed396ef9c9c84b5483df223856d..6c96f7d70c6f5d3d51d102401c641fb01bb9b246 100644
+--- a/crates/engine/tests/integration/kili_the_resourceful.rs
++++ b/crates/engine/tests/integration/kili_the_resourceful.rs
+@@ -39,6 +39,8 @@ fn activate_equip(
+         })
+-        .expect(&format!(
+-            "Equip activation should be legal for {equipment:?} with mana {}",
+-            runner.state().players[0].mana_pool.total()
+-        ))
++        .unwrap_or_else(|_| {
++            panic!(
++                "Equip activation should be legal for {equipment:?} with mana {}",
++                runner.state().players[0].mana_pool.total()
++            )
++        })
+ }
 diff --git a/crates/phase-parser/src/parser/oracle_effect/mod.rs b/crates/phase-parser/src/parser/oracle_effect/mod.rs
-index e63e5dbf1..ab4ca0c7a 100644
+index e63e5dbf1310e7d771094484613c02e62afe454b..ab4ca0c7a273f020054af2e5bc01c2b6aaea6147 100644
 --- a/crates/phase-parser/src/parser/oracle_effect/mod.rs
 +++ b/crates/phase-parser/src/parser/oracle_effect/mod.rs
 @@ -21905,2 +21905,3 @@ fn lower_imperative_clause(
@@ -723,7 +831,7 @@ index e63e5dbf1..ab4ca0c7a 100644
 +            }
              _ => is_optional,
 diff --git a/crates/phase-parser/src/parser/oracle_effect/tests.rs b/crates/phase-parser/src/parser/oracle_effect/tests.rs
-index dcdb6f848..a2b2683ba 100644
+index dcdb6f848ba9a6dab6ae31fc93455e98ef3a16a6..a2b2683ba81c46245cfffd28c05e637363760178 100644
 --- a/crates/phase-parser/src/parser/oracle_effect/tests.rs
 +++ b/crates/phase-parser/src/parser/oracle_effect/tests.rs
 @@ -32,2 +32,179 @@ use crate::types::statics::CostModifyMode;
