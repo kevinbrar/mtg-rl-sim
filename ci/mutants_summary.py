@@ -188,11 +188,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output_dir", type=Path, help="cargo-mutants output directory")
     parser.add_argument("--threshold", type=int, required=True)
+    parser.add_argument(
+        "--no-mutants-ok",
+        action="store_true",
+        help="allow absent output files for a confirmed empty mutation set",
+    )
     args = parser.parse_args(argv)
 
     if args.threshold < 0:
         print("::error::threshold must be non-negative", file=sys.stderr)
         return 1
+
+    outcomes_path = args.output_dir / "outcomes.json"
+    missed_path = args.output_dir / "missed.txt"
+    if args.no_mutants_ok and not outcomes_path.exists() and not missed_path.exists():
+        print(MutantSummary().format(), flush=True)
+        return 0
 
     try:
         summary = summarize_outcomes(_read_outcomes(args.output_dir))

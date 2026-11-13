@@ -637,10 +637,16 @@ jobs:
             echo "::error::ci/mutants-threshold.txt must contain one non-negative integer"
             exit 1
           fi
+          summary_args=()
+          if [[ "$mutants_status" == 0 ]] \
+            && grep -Fq 'INFO No mutants to filter' "$RUNNER_TEMP/mutants.log"; then
+            summary_args+=(--no-mutants-ok)
+          fi
           set +e
           python "$GITHUB_WORKSPACE/ci/mutants_summary.py" \
             "$RUNNER_TEMP/mutants.out/mutants.out" \
             --threshold "$threshold" \
+            "${summary_args[@]}" \
             2>&1 | tee "$RUNNER_TEMP/mutants-summary.log"
           summary_status=${PIPESTATUS[0]}
           set -e
