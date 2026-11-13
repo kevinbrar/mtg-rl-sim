@@ -1,0 +1,124 @@
+[[scenarios]]
+name = "C1 creature entry gains one life without solving"
+active_player = 0
+script = [
+  { action = "cast", card = "Memnite" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [{ label = "case", card = "Case of the Uneaten Feast" }]
+hand = [{ card = "Memnite" }]
+library_top = ["Island", "Island"]
+
+[scenarios.setup.P1]
+life = 20
+library_top = ["Island", "Island"]
+
+[scenarios.reach]
+zone = "battlefield"
+player = "P0"
+card = "Case of the Uneaten Feast"
+solved = false
+
+[[scenarios]]
+name = "C2 five life gained solves at end step"
+active_player = 0
+script = [
+  { action = "cast", card = "Memnite" },
+  { action = "pass_until_resolved" },
+  { action = "cast", card = "Ritual of Rejuvenation" },
+  { action = "pass_until_resolved" },
+  { action = "end_turn" },
+]
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "case", card = "Case of the Uneaten Feast" },
+  { label = "plains-1", card = "Plains" },
+  { label = "plains-2", card = "Plains" },
+  { label = "plains-3", card = "Plains" },
+]
+hand = [{ card = "Memnite" }, { card = "Ritual of Rejuvenation" }]
+library_top = ["Island", "Island"]
+
+[scenarios.setup.P1]
+life = 20
+library_top = ["Island", "Island"]
+
+[scenarios.reach]
+zone = "battlefield"
+player = "P0"
+card = "Case of the Uneaten Feast"
+solved = true
+
+[[scenarios]]
+name = "C3 four life gained does not solve at end step"
+active_player = 0
+script = [
+  { action = "cast", card = "Ritual of Rejuvenation" },
+  { action = "pass_until_resolved" },
+  { action = "end_turn" },
+]
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "case", card = "Case of the Uneaten Feast" },
+  { label = "plains-1", card = "Plains" },
+  { label = "plains-2", card = "Plains" },
+  { label = "plains-3", card = "Plains" },
+]
+hand = [{ card = "Ritual of Rejuvenation" }]
+library_top = ["Island", "Island"]
+
+[scenarios.setup.P1]
+life = 20
+library_top = ["Island", "Island"]
+
+[scenarios.reach]
+zone = "battlefield"
+player = "P0"
+card = "Case of the Uneaten Feast"
+solved = false
+
+[[scenarios]]
+name = "C4 sacrifice solved Case to cast a granted graveyard creature"
+active_player = 0
+script = [
+  { action = "cast", card = "Memnite" },
+  { action = "pass_until_resolved" },
+  { action = "cast", card = "Ritual of Rejuvenation" },
+  { action = "pass_until_resolved" },
+  { action = "end_turn" },
+  { action = "end_turn" },
+  { action = "activate", source = "case", ability = "Sacrifice this Case" },
+  { action = "pass_until_resolved" },
+  { action = "cast", card = "graveyard-creature", from = "graveyard" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "case", card = "Case of the Uneaten Feast" },
+  { label = "plains", card = "Plains" },
+  { label = "island-1", card = "Island" },
+  { label = "island-2", card = "Island" },
+]
+hand = [{ card = "Memnite" }, { card = "Ritual of Rejuvenation" }]
+graveyard = [{ card = "Healer's Hawk", label = "graveyard-creature" }]
+library_top = ["Island", "Island"]
+
+[scenarios.setup.P1]
+life = 20
+library_top = ["Island", "Island"]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Healer's Hawk", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Case of the Uneaten Feast", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Plains", tapped = true, count = 1 },
+]

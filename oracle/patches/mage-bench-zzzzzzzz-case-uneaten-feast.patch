@@ -1,0 +1,216 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+index 8f1ee15de0..59679be32e 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -501,16 +501,43 @@ public class TestPlayer implements Player {
+             String searchObject = nameOrAlias.substring(0, nameOrAlias.indexOf(" "));
+             String searchAbility = nameOrAlias.substring(nameOrAlias.indexOf(" ") + 1);
+             foundObject = hasObjectTargetNameOrAlias(game.getObject(ability.getSourceId()), searchObject);
+-            foundAbility = ability.toString().startsWith(searchAbility);
++            foundAbility = normalizeAbilityText(ability.toString())
++                    .startsWith(normalizeAbilityText(searchAbility));
+         } else {
+             // ability text
+             foundObject = true;
+-            foundAbility = ability.toString().startsWith(nameOrAlias);
++            foundAbility = normalizeAbilityText(ability.toString())
++                    .startsWith(normalizeAbilityText(nameOrAlias));
+         }
+ 
+         return foundObject && foundAbility;
+     }
+ 
++    static String normalizeAbilityText(String text) {
++        String trimmed = text.stripLeading();
++        int flavorEnd = trimmed.startsWith("<i>") ? trimmed.indexOf("</i>") : -1;
++        boolean hasFlavorPrefix = flavorEnd >= 0
++                && trimmed.substring(flavorEnd + 4).stripLeading().startsWith("&mdash;");
++        String normalized = text.replaceAll("(?s)<[^>]*>", "")
++                .replace("&mdash;", "—")
++                .trim();
++        int separator = normalized.indexOf('—');
++        if (hasFlavorPrefix || (separator >= 0 && !normalized.substring(0, separator).contains(":"))) {
++            if (separator >= 0) {
++                normalized = normalized.substring(separator + 1).trim();
++            }
++        }
++        int headEnd = normalized.indexOf(':');
++        if (headEnd < 0) {
++            headEnd = normalized.length();
++        }
++        int selfReference = normalized.indexOf("this ");
++        if (selfReference >= 0 && selfReference < headEnd) {
++            normalized = normalized.substring(0, selfReference) + "~" + normalized.substring(headEnd);
++        }
++        return normalized;
++    }
++
+     public void assertUniqueActivatedAbility(Game game, String nameOrAlias) {
+         List<ActivatedAbility> matches = computerPlayer.getPlayable(game, true, Zone.BATTLEFIELD, false).stream()
+                 .filter(Ability::isNonManaActivatedAbility)
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayerAbilityTextTest.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayerAbilityTextTest.java
+new file mode 100644
+index 0000000000..b2eea1e4ab
+--- /dev/null
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayerAbilityTextTest.java
+@@ -0,0 +1,33 @@
++package org.mage.test.player;
++
++import org.junit.Assert;
++import org.junit.Test;
++
++public final class TestPlayerAbilityTextTest {
++
++    @Test
++    public void normalizeAbilityTextRemovesHtmlAndLeadingFlavorWord() {
++        Assert.assertEquals(
++                "Sacrifice ~: Draw a card.",
++                TestPlayer.normalizeAbilityText(
++                        "<i>Solved</i> &mdash; Sacrifice this Case: Draw a card."
++                )
++        );
++    }
++
++    @Test
++    public void normalizeAbilityTextRemovesPlainFlavorWordAndSelfReferenceName() {
++        Assert.assertEquals(
++                "Sacrifice ~: Draw a card.",
++                TestPlayer.normalizeAbilityText("Solved — Sacrifice this Case: Draw a card.")
++        );
++    }
++
++    @Test
++    public void normalizeAbilityTextKeepsUnflavoredAbilityText() {
++        Assert.assertEquals(
++                "{T}: Add {G}.",
++                TestPlayer.normalizeAbilityText("{T}: Add {G}.")
++        );
++    }
++}
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+index 8f39aa6fd1..bb4052b3b1 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -47,6 +47,11 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+ 
+     private static final Gson GSON = new GsonBuilder().serializeNulls().create();
+     private static final String RESULT_PREFIX = "CARD_SCENARIO_RESULT:";
++    private static final Set<String> REACH_FIELDS = Set.of(
++            "all", "player", "zone", "card", "count", "tapped_labels", "types", "subtypes",
++            "colors", "power", "toughness", "power_is_null", "toughness_is_null", "creature",
++            "tapped", "attached_to", "counters", "solved"
++    );
+     private final String scenarioName;
+     private final JsonObject scenario;
+     private final Map<String, UUID> labels = new LinkedHashMap<>();
+@@ -132,6 +137,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         for (JsonElement item : array(scenario, "script")) {
+             JsonObject action = item.getAsJsonObject();
+             String kind = requiredString(action, "action");
++            if (action.has("from") && !kind.equals("cast")) {
++                throw new IllegalArgumentException("script.from is only valid for cast actions");
++            }
+             TestPlayer actingPlayer = player(activeIndex);
+             switch (kind) {
+                 case "play_land" -> {
+@@ -230,16 +238,40 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                 }
+                 case "cast" -> {
+                     String card = requiredString(action, "card");
++                    String source = action.has("from") ? requiredString(action, "from") : "hand";
++                    if (!source.equals("hand") && !source.equals("graveyard")) {
++                        throw new IllegalArgumentException("cast.from must be hand or graveyard");
++                    }
++                    String castCommand = source.equals("graveyard") ? labelCards.get(card) : card;
+                     boolean hasX = action.has("x");
+                     int x = hasX ? exactInteger(action.get("x"), "cast.x") : 0;
+                     if (x < 0) {
+                         throw new IllegalArgumentException("cast.x must be a non-negative integer");
+                     }
+                     runCode("validate X announcement", turn, step, actingPlayer, (info, player, game) -> {
+-                        Card spell = actingPlayer.getHand().getCards(game).stream()
+-                                .filter(candidate -> candidate.getName().equals(card))
+-                                .findFirst()
+-                                .orElseThrow(() -> new IllegalStateException(card + " is not in the active player's hand"));
++                        Card spell;
++                        if (source.equals("graveyard")) {
++                            UUID objectId = labels.get(card);
++                            if (objectId == null || labelZones.get(card) != Zone.GRAVEYARD) {
++                                throw new IllegalStateException(card + " is not a graveyard setup label");
++                            }
++                            spell = actingPlayer.getGraveyard().getCards(game).stream()
++                                    .filter(candidate -> candidate.getId().equals(objectId))
++                                    .findFirst()
++                                    .orElseThrow(() -> new IllegalStateException(
++                                            card + " is not in the active player's graveyard"));
++                            if (!actingPlayer.getPlayableObjects(game, Zone.GRAVEYARD)
++                                    .containsObject(objectId)) {
++                                throw new IllegalStateException(
++                                        card + " is not offered as a graveyard cast");
++                            }
++                        } else {
++                            spell = actingPlayer.getHand().getCards(game).stream()
++                                    .filter(candidate -> candidate.getName().equals(card))
++                                    .findFirst()
++                                    .orElseThrow(() -> new IllegalStateException(
++                                            card + " is not in the active player's hand"));
++                        }
+                         boolean hasXCost = spell.getManaCost().getText().contains("{X}");
+                         if (hasXCost != hasX) {
+                             throw new IllegalStateException(hasXCost
+@@ -266,7 +298,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                             actingPlayer.addTarget("@" + label);
+                         }
+                     }
+-                    castSpell(turn, step, actingPlayer, card);
++                    castSpell(turn, step, actingPlayer, castCommand);
+                     lastStep = step;
+                 }
+                 case "trigger_targets" -> {
+@@ -561,6 +593,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                     .map(subtype -> normalizeCharacteristic(subtype.getDescription()))
+                     .sorted()
+                     .toList()));
++            if (permanent.hasSubtype(SubType.CASE, currentGame)) {
++                item.addProperty("solved", permanent.isSolved());
++            }
+             item.add("colors", strings(colorCodes(permanent.getColor(currentGame))));
+             item.addProperty("damage", permanent.getDamage());
+             JsonObject counterValues = new JsonObject();
+@@ -655,6 +690,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+     }
+ 
+     private boolean checkReach(JsonObject reach) {
++        rejectUnknownKeys(reach, REACH_FIELDS, "reach");
+         if (reach.has("all")) {
+             if (reach.size() != 1) {
+                 throw new IllegalArgumentException("reach.all cannot be combined with other reach fields");
+@@ -684,6 +720,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         }
+         TestPlayer player = player(playerName.equals("P0") ? 0 : 1);
+         String zone = string(reach, "zone", "graveyard");
++        if (reach.has("solved") && !zone.equals("battlefield")) {
++            throw new IllegalArgumentException("reach.solved is only valid for battlefield Cases");
++        }
+         String card = requiredString(reach, "card");
+         List<String> names = switch (zone) {
+             case "hand" -> names(player.getHand().getCards(currentGame));
+@@ -748,6 +787,18 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+     }
+ 
+     private boolean matchesReachCharacteristics(JsonObject reach, Permanent permanent) {
++        if (reach.has("solved")) {
++            if (!reach.get("solved").isJsonPrimitive()
++                    || !reach.getAsJsonPrimitive("solved").isBoolean()) {
++                throw new IllegalArgumentException("reach.solved must be a boolean");
++            }
++            if (!permanent.hasSubtype(SubType.CASE, currentGame)) {
++                throw new IllegalArgumentException("reach.solved is only valid for Case permanents");
++            }
++            if (permanent.isSolved() != reach.get("solved").getAsBoolean()) {
++                return false;
++            }
++        }
+         if (!matchesCharacteristicList(reach, "types", permanent.getCardType(currentGame).stream()
+                 .map(type -> normalizeCharacteristic(type.toString()))
+                 .toList())
