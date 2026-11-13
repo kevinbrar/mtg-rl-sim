@@ -557,6 +557,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
+          git submodule update --init phase
           git fetch origin "$BASE_REF"
           base_commit="$(git rev-parse "origin/$BASE_REF")"
           head_commit="$GITHUB_SHA"
@@ -598,15 +599,26 @@ jobs:
         run: |
           set -o pipefail
           test_filter=()
-          changed_modules="$(git diff --name-only --no-renames "$BASE_PATCHED" "$HEAD_PATCHED" -- crates/engine/tests/integration)"
-          if [[ "$(printf '%s\n' "$changed_modules" | sed '/^$/d' | wc -l)" -eq 1 ]]; then
-            module="$(basename "$changed_modules" .rs)"
-            if [[ "$module" =~ ^[a-zA-Z0-9_]+$ ]]; then
-              test_filter=("$module")
+          changed_files="$(git diff --name-only --diff-filter=AM --no-renames "$BASE_PATCHED" "$HEAD_PATCHED" -- crates/engine/tests/integration)"
+          changed_modules=()
+          while IFS= read -r path; do
+            [[ "$path" == *.rs ]] || continue
+            module="${path##*/}"
+            module="${module%.rs}"
+            if [[ "$module" =~ ^[a-zA-Z0-9_]+$ && "$module" != main ]]; then
+              changed_modules+=("$module")
             fi
+          done <<< "$changed_files"
+          if ((${#changed_modules[@]} > 0)); then
+            mapfile -t test_filter < <(printf '%s\n' "${changed_modules[@]}" | sort -u)
+          fi
+          cargo_test_args=()
+          if ((${#test_filter[@]} > 0)); then
+            cargo_test_args+=(--cargo-test-arg=--)
           fi
           set +e
           cargo mutants \
+            --colors=never \
             --in-diff "$RUNNER_TEMP/engine-changes.diff" \
             -p phase-engine \
             --cargo-arg=--test \
@@ -615,11 +627,23 @@ jobs:
             --timeout 60 \
             --build-timeout 300 \
             --output "$RUNNER_TEMP/mutants.out" \
+            "${cargo_test_args[@]}" \
             -- "${test_filter[@]}" \
             2>&1 | tee "$RUNNER_TEMP/mutants.log"
           mutants_status=${PIPESTATUS[0]}
           set -e
-          missed_count="$(grep -c '^MISSED ' "$RUNNER_TEMP/mutants.log" || true)"
+          missed_file="$RUNNER_TEMP/mutants.out/mutants.out/missed.txt"
+          if [[ "$mutants_status" == 0 || "$mutants_status" == 2 || "$mutants_status" == 3 ]]; then
+            if [[ ! -f "$missed_file" ]]; then
+              echo "::error::cargo mutants exited with status $mutants_status but did not produce $missed_file"
+              exit 1
+            fi
+          fi
+          if [[ -f "$missed_file" ]]; then
+            missed_count="$(awk 'NF { count++ } END { print count+0 }' "$missed_file")"
+          else
+            missed_count=0
+          fi
           threshold="$(tr -d '[:space:]' < "$MUTANTS_THRESHOLD_FILE")"
           if [[ ! "$threshold" =~ ^[0-9]+$ ]]; then
             echo "::error::ci/mutants-threshold.txt must contain one non-negative integer"
@@ -628,7 +652,9 @@ jobs:
           echo "Missed mutants: $missed_count; allowed threshold: $threshold"
           if [[ "$missed_count" -gt "$threshold" ]]; then
             echo "::error::Missed mutant count exceeds ci/mutants-threshold.txt"
-            grep '^MISSED ' "$RUNNER_TEMP/mutants.log" || true
+            while IFS= read -r mutant; do
+              [[ -n "$mutant" ]] && printf 'MISSED %s\n' "$mutant"
+            done < "$missed_file"
             exit 1
           fi
           if [[ "$mutants_status" != 0 && "$mutants_status" != 2 && "$mutants_status" != 3 ]]; then
