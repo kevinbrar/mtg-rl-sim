@@ -1,0 +1,323 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+index aed0279c4b..8f1ee15de0 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -106,6 +106,8 @@ public class TestPlayer implements Player {
+     private final List<String> choices = new ArrayList<>(); // choices stack for choice
+     private final List<String> targets = new ArrayList<>(); // targets stack for choose (it's uses on empty direct target by cast command)
+     private final List<List<String>> cardChoiceGroups = new ArrayList<>();
++    private UUID expectedBeholdSource;
++    private Boolean expectedBeholdChoice;
+     private final Map<String, UUID> aliases = new HashMap<>(); // aliases for game objects/players (use it for cards with same name to save and use)
+     private final List<String> modes = new ArrayList<>();
+ 
+@@ -156,6 +158,8 @@ public class TestPlayer implements Player {
+         this.choices.addAll(testPlayer.choices);
+         this.targets.addAll(testPlayer.targets);
+         testPlayer.cardChoiceGroups.forEach(group -> this.cardChoiceGroups.add(new ArrayList<>(group)));
++        this.expectedBeholdSource = testPlayer.expectedBeholdSource;
++        this.expectedBeholdChoice = testPlayer.expectedBeholdChoice;
+         this.aliases.putAll(testPlayer.aliases);
+         this.modes.addAll(testPlayer.modes);
+         this.computerPlayer = testPlayer.computerPlayer.copy();
+@@ -204,6 +208,38 @@ public class TestPlayer implements Player {
+         cardChoiceGroups.add(new ArrayList<>(cards));
+     }
+ 
++    List<String> takeNextCardChoiceGroup() {
++        if (cardChoiceGroups.isEmpty()) {
++            throw new IllegalStateException("card-choice prompt arrived with an empty choose_cards queue");
++        }
++        return cardChoiceGroups.remove(0);
++    }
++
++    public void addCardChoiceGroupFirst(List<String> cards) {
++        cardChoiceGroups.add(0, new ArrayList<>(cards));
++    }
++
++    public void setBeholdChoice(UUID sourceId, boolean choice) {
++        if (expectedBeholdChoice != null) {
++            throw new IllegalStateException("a Behold choice is already pending");
++        }
++        expectedBeholdSource = sourceId;
++        expectedBeholdChoice = choice;
++    }
++
++    public void assertNoPendingBeholdChoice() {
++        if (expectedBeholdChoice != null) {
++            throw new IllegalStateException("play_land Behold choice was not consumed");
++        }
++    }
++
++    static boolean matchesExpectedBeholdPrompt(UUID expectedSourceId, UUID actualSourceId, String message) {
++        return expectedSourceId != null
++                && expectedSourceId.equals(actualSourceId)
++                && message != null
++                && message.toLowerCase(java.util.Locale.ROOT).contains("behold");
++    }
++
+     public void assertNoCardChoiceGroups() {
+         if (!cardChoiceGroups.isEmpty()) {
+             throw new IllegalStateException("card choice group(s) were unconsumed: " + cardChoiceGroups);
+@@ -2802,6 +2838,16 @@ public class TestPlayer implements Player {
+ 
+     @Override
+     public boolean chooseUse(Outcome outcome, String message, String secondMessage, String trueText, String falseText, Ability source, Game game) {
++        if (expectedBeholdChoice != null) {
++            if (source == null || !matchesExpectedBeholdPrompt(
++                    expectedBeholdSource, source.getSourceId(), message)) {
++                throw new IllegalStateException("unexpected replacement prompt");
++            }
++            boolean result = expectedBeholdChoice;
++            expectedBeholdSource = null;
++            expectedBeholdChoice = null;
++            return result;
++        }
+         if (message != null && message.equals("Scry 1?")) {
+             return false;
+         }
+@@ -4336,10 +4382,7 @@ public class TestPlayer implements Player {
+ 
+     private boolean makeScenarioCardChoice(
+             Outcome outcome, Target target, Ability source, Game game, Cards fromCards) {
+-        if (cardChoiceGroups.isEmpty()) {
+-            throw new IllegalStateException("card-choice prompt arrived with an empty choose_cards queue");
+-        }
+-        List<String> group = cardChoiceGroups.remove(0);
++        List<String> group = takeNextCardChoiceGroup();
+         int min = target.getMinNumberOfTargets() - target.getSize();
+         int max = target.getMaxNumberOfTargets() - target.getSize();
+         if (!group.isEmpty() && group.size() < min) {
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayerCardChoiceQueueTest.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayerCardChoiceQueueTest.java
+new file mode 100644
+index 0000000000..9f12f2d444
+--- /dev/null
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayerCardChoiceQueueTest.java
+@@ -0,0 +1,31 @@
++package org.mage.test.player;
++
++import mage.constants.RangeOfInfluence;
++import org.junit.Test;
++
++import java.util.List;
++
++import static org.junit.Assert.assertEquals;
++
++public final class TestPlayerCardChoiceQueueTest {
++
++    @Test
++    public void beholdAnswerPrecedesLaterQueuedCardChoices() {
++        TestPlayer player = new TestPlayer(new TestComputerPlayer("Player", RangeOfInfluence.ONE));
++        player.addCardChoiceGroup(List.of("later-choice"));
++        player.addCardChoiceGroupFirst(List.of("behold-choice"));
++
++        assertEquals(List.of("behold-choice"), player.takeNextCardChoiceGroup());
++        assertEquals(List.of("later-choice"), player.takeNextCardChoiceGroup());
++    }
++
++    @Test
++    public void declineMustMatchTheBeholdPromptSourceAndMessage() {
++        java.util.UUID land = java.util.UUID.randomUUID();
++        java.util.UUID other = java.util.UUID.randomUUID();
++
++        org.junit.Assert.assertTrue(TestPlayer.matchesExpectedBeholdPrompt(land, land, "Behold a Jace?"));
++        org.junit.Assert.assertFalse(TestPlayer.matchesExpectedBeholdPrompt(land, other, "Behold a Jace?"));
++        org.junit.Assert.assertFalse(TestPlayer.matchesExpectedBeholdPrompt(land, land, "Pay 2 life?"));
++    }
++}
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+index a0f98e5597..8f39aa6fd1 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -9,9 +9,12 @@ import com.google.gson.JsonObject;
+ import com.google.gson.JsonParser;
+ import mage.MageInt;
+ import mage.ObjectColor;
++import mage.abilities.Ability;
+ import mage.abilities.SpellAbility;
++import mage.abilities.common.AsEntersBattlefieldAbility;
+ import mage.cards.Card;
+ import mage.constants.PhaseStep;
++import mage.constants.SubType;
+ import mage.constants.Zone;
+ import mage.counters.Counter;
+ import mage.counters.CounterType;
+@@ -47,6 +50,8 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+     private final String scenarioName;
+     private final JsonObject scenario;
+     private final Map<String, UUID> labels = new LinkedHashMap<>();
++    private final Map<String, String> labelCards = new LinkedHashMap<>();
++    private final Map<String, Zone> labelZones = new LinkedHashMap<>();
+     private final Map<String, Map<String, Integer>> counters = new LinkedHashMap<>();
+     private JsonArray initialLegalTargets;
+ 
+@@ -129,6 +134,100 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             String kind = requiredString(action, "action");
+             TestPlayer actingPlayer = player(activeIndex);
+             switch (kind) {
++                case "play_land" -> {
++                    String cardLabel = requiredString(action, "card");
++                    UUID landId = labels.get(cardLabel);
++                    if (landId == null) {
++                        throw new IllegalArgumentException("unknown hand label " + cardLabel);
++                    }
++                    String card = labelCards.get(cardLabel);
++                    if (card == null) {
++                        throw new IllegalArgumentException("unknown hand label " + cardLabel);
++                    }
++                    String behold = action.has("behold") ? requiredString(action, "behold") : null;
++                    if (behold != null && behold.isBlank()) {
++                        throw new IllegalArgumentException("play_land.behold must be a label or decline");
++                    }
++                    if (behold != null && !behold.equals("decline") && !labels.containsKey(behold)) {
++                        throw new IllegalArgumentException("unknown behold label " + behold);
++                    }
++                    runCode("queue behold choices", turn, step, actingPlayer, (info, player, game) -> {
++                        Card landCard = actingPlayer.getHand().getCards(game).stream()
++                                .filter(candidate -> candidate.getId().equals(landId))
++                                .findFirst()
++                                .orElseThrow(() -> new IllegalStateException(
++                                        "play_land card label " + cardLabel
++                                                + " is not in the active player's hand"));
++                        boolean landHasBehold = hasBeholdAsEntersAbility(landCard, game);
++                        List<Permanent> battlefieldJaces = game.getBattlefield().getAllActivePermanents().stream()
++                                .filter(permanent -> permanent.getControllerId().equals(actingPlayer.getId()))
++                                .filter(permanent -> permanent.hasSubtype(SubType.JACE, game))
++                                .toList();
++                        List<Card> handJaces = actingPlayer.getHand().getCards(game).stream()
++                                .filter(candidate -> candidate.hasSubtype(SubType.JACE, game))
++                                .toList();
++                        if (behold == null) {
++                            if (landHasBehold && (!battlefieldJaces.isEmpty() || !handJaces.isEmpty())) {
++                                throw new IllegalStateException(
++                                        "play_land behold prompt was offered without a behold field");
++                            }
++                            return;
++                        }
++                        if (!landHasBehold) {
++                            throw new IllegalStateException(
++                                    "play_land.behold was provided for a land without a Behold as-enters ability");
++                        }
++                        if (battlefieldJaces.isEmpty() && handJaces.isEmpty()) {
++                            throw new IllegalStateException(
++                                    "play_land.behold was provided but no behold prompt was offered");
++                        }
++                        if (behold.equals("decline")) {
++                            actingPlayer.setBeholdChoice(landId, false);
++                            return;
++                        }
++
++                        UUID selectedId = labels.get(behold);
++                        boolean selectedBattlefield = battlefieldJaces.stream()
++                                .anyMatch(permanent -> permanent.getId().equals(selectedId));
++                        boolean selectedHand = handJaces.stream()
++                                .anyMatch(candidate -> candidate.getId().equals(selectedId));
++                        if (!selectedBattlefield && !selectedHand) {
++                            throw new IllegalStateException(
++                                    "behold label " + behold + " is not among the offered candidates");
++                        }
++                        actingPlayer.setBeholdChoice(landId, true);
++                        if (!battlefieldJaces.isEmpty() && !handJaces.isEmpty()) {
++                            setChoice(actingPlayer, selectedBattlefield);
++                        }
++                        if (selectedBattlefield) {
++                            setChoice(actingPlayer, "@" + behold);
++                        } else {
++                            actingPlayer.addCardChoiceGroupFirst(List.of(behold));
++                        }
++                    });
++                    playLand(turn, step, actingPlayer, card);
++                    runCode("assert play_land choice was consumed", turn, step, actingPlayer,
++                            (info, player, game) -> {
++                                if (!actingPlayer.getChoices().isEmpty()) {
++                                    throw new IllegalStateException(
++                                            "play_land behold choice was provided but not consumed");
++                                }
++                                actingPlayer.assertNoPendingBeholdChoice();
++                                if (game.getPermanent(landId) == null) {
++                                    throw new IllegalStateException(
++                                            "play_land did not put the labeled land onto the battlefield");
++                                }
++                                if (behold != null && !behold.equals("decline")
++                                        && labelZones.get(behold) == Zone.HAND
++                                        && actingPlayer.getHand().getCards(game).stream()
++                                        .noneMatch(candidate -> candidate.getId().equals(labels.get(behold)))
++                                ) {
++                                    throw new IllegalStateException(
++                                            "beholding a hand card moved it out of the hand");
++                                }
++                            });
++                    lastStep = step;
++                }
+                 case "cast" -> {
+                     String card = requiredString(action, "card");
+                     boolean hasX = action.has("x");
+@@ -269,6 +368,16 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         return turn;
+     }
+ 
++    private static boolean hasBeholdAsEntersAbility(Card card, Game game) {
++        for (Ability ability : card.getAbilities(game)) {
++            if (ability instanceof AsEntersBattlefieldAbility
++                    && ability.getRule().toLowerCase(Locale.ROOT).contains("behold")) {
++                return true;
++            }
++        }
++        return false;
++    }
++
+     private void addScenarioSetup() {
+         JsonObject setup = object(scenario, "setup");
+         rejectUnknownKeys(setup, Set.of("P0", "P1"), "setup");
+@@ -320,6 +429,8 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                 throw new IllegalArgumentException("XMage did not register setup label " + label);
+             }
+             labels.put(label, objectId);
++            labelCards.put(label, card);
++            labelZones.put(label, Zone.BATTLEFIELD);
+             JsonObject cardCounters = object(item, "counters");
+             if (!cardCounters.entrySet().isEmpty()) {
+                 Map<String, Integer> parsed = new LinkedHashMap<>();
+@@ -357,6 +468,8 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                 throw new IllegalArgumentException("XMage did not register setup label " + label);
+             }
+             labels.put(label, objectId);
++            labelCards.put(label, card);
++            labelZones.put(label, zone);
+         } else {
+             addCard(zone, player, card);
+         }
+@@ -538,7 +651,32 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         if (!scenario.has("reach")) {
+             return true;
+         }
+-        JsonObject reach = scenario.getAsJsonObject("reach");
++        return checkReach(scenario.getAsJsonObject("reach"));
++    }
++
++    private boolean checkReach(JsonObject reach) {
++        if (reach.has("all")) {
++            if (reach.size() != 1) {
++                throw new IllegalArgumentException("reach.all cannot be combined with other reach fields");
++            }
++            JsonElement value = reach.get("all");
++            if (!value.isJsonArray()) {
++                throw new IllegalArgumentException("reach.all must be an array of reach assertions");
++            }
++            JsonArray checks = value.getAsJsonArray();
++            if (checks.isEmpty()) {
++                throw new IllegalArgumentException("reach.all must contain at least one assertion");
++            }
++            for (JsonElement check : checks) {
++                if (!check.isJsonObject()) {
++                    throw new IllegalArgumentException("reach.all entries must be reach objects");
++                }
++                if (!checkReach(check.getAsJsonObject())) {
++                    return false;
++                }
++            }
++            return true;
++        }
+         long expectedCount = reach.has("count") ? reachCount(reach) : -1;
+         String playerName = string(reach, "player", "P0");
+         if (!playerName.equals("P0") && !playerName.equals("P1")) {

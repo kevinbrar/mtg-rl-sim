@@ -598,6 +598,10 @@ jobs:
           CARGO_TARGET_DIR: target
         run: |
           set -o pipefail
+          if [[ ! -s "$RUNNER_TEMP/engine-changes.diff" ]]; then
+            echo "INFO No engine changes to mutate; skipping mutation analysis."
+            exit 0
+          fi
           test_filter=()
           changed_files="$(git diff --name-only --diff-filter=AM --no-renames "$BASE_PATCHED" "$HEAD_PATCHED" -- crates/engine/tests/integration)"
           changed_modules=()

@@ -2,12 +2,16 @@ use engine::database::CardDatabase;
 use engine::game::ability_utils::{
     build_resolved_from_def, build_target_slots, declared_targets_in_chain,
 };
+use engine::game::filter::{matches_target_filter, FilterContext};
 use engine::game::game_object::GameObject;
+use engine::game::mana_abilities::is_mana_ability;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::game::scenario_db::GameScenarioDbExt;
+use engine::types::ability::ReplacementMode;
 use engine::types::{
-    actions::GameAction, parse_counter_type, AbilityKind, GameState, ManaColor, ObjectId, Phase,
-    PlayerId, ResolvedAbility, TargetRef, WaitingFor, Zone,
+    actions::GameAction, parse_counter_type, AbilityCost, AbilityDefinition, AbilityKind, Effect,
+    GameState, ManaColor, ObjectId, Phase, PlayerId, ReplacementDefinition, ResolvedAbility,
+    TargetFilter, TargetRef, WaitingFor, Zone,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -299,7 +303,7 @@ fn normalize_ability_text(text: &str) -> String {
 }
 
 fn select_activation_ability(
-    candidates: impl IntoIterator<Item = (usize, AbilityKind, Option<String>)>,
+    candidates: impl IntoIterator<Item = (usize, AbilityKind, bool, Option<String>)>,
     prefix: &str,
 ) -> Result<usize, String> {
     let prefix = normalize_ability_text(prefix);
@@ -307,8 +311,8 @@ fn select_activation_ability(
         return Err("activate needs a non-empty ability cost prefix".to_string());
     }
     let mut matches = Vec::new();
-    for (index, kind, description) in candidates {
-        if kind != AbilityKind::Activated {
+    for (index, kind, is_mana_ability, description) in candidates {
+        if kind != AbilityKind::Activated || is_mana_ability {
             continue;
         }
         let description = description
@@ -763,11 +767,14 @@ fn activate(
         .get(&source_id)
         .ok_or_else(|| format!("source label {source_label} is not on the battlefield"))?;
     let ability_index = select_activation_ability(
-        object
-            .abilities
-            .iter()
-            .enumerate()
-            .map(|(index, ability)| (index, ability.kind, ability.description.clone())),
+        object.abilities.iter().enumerate().map(|(index, ability)| {
+            (
+                index,
+                ability.kind,
+                is_mana_ability(ability),
+                ability.description.clone(),
+            )
+        }),
         prefix,
     )?;
     let alternative_cost = alternative_cost_decision(action)?;
@@ -1049,6 +1056,274 @@ fn advance_to_next_turn(
     Err("turn did not advance within 128 actions".to_string())
 }
 
+fn behold_filter_in_cost(cost: &AbilityCost) -> Option<&TargetFilter> {
+    let mut filter = None;
+    cost.for_each_cost_node(&mut |node| {
+        if let AbilityCost::Behold { filter: found, .. } = node {
+            filter = Some(found);
+        }
+    });
+    filter
+}
+
+fn behold_filter_in_ability(ability: &AbilityDefinition) -> Option<&TargetFilter> {
+    if let Effect::Behold { filter } = ability.effect.as_ref() {
+        return Some(filter);
+    }
+    if let Some(filter) = ability.cost.as_ref().and_then(behold_filter_in_cost) {
+        return Some(filter);
+    }
+    ability
+        .sub_ability
+        .as_deref()
+        .and_then(behold_filter_in_ability)
+        .or_else(|| {
+            ability
+                .else_ability
+                .as_deref()
+                .and_then(behold_filter_in_ability)
+        })
+}
+
+fn behold_filter_in_replacement(definition: &ReplacementDefinition) -> Option<&TargetFilter> {
+    let cost_filter = match &definition.mode {
+        ReplacementMode::MayCost { cost, .. } => behold_filter_in_cost(cost),
+        _ => None,
+    };
+    cost_filter.or_else(|| {
+        definition
+            .execute
+            .as_deref()
+            .and_then(behold_filter_in_ability)
+    })
+}
+
+fn behold_filter_for_land(state: &GameState, source: ObjectId) -> Option<TargetFilter> {
+    let object = state.objects.get(&source)?;
+    object
+        .replacement_definitions
+        .iter_all()
+        .chain(object.base_replacement_definitions.iter())
+        .find_map(behold_filter_in_replacement)
+        .cloned()
+}
+
+fn is_behold_replacement_prompt(
+    waiting_for: &WaitingFor,
+    land_id: ObjectId,
+    has_behold: bool,
+) -> bool {
+    if !has_behold {
+        return false;
+    }
+    match waiting_for {
+        WaitingFor::ReplacementChoice {
+            candidate_count,
+            candidates,
+            kind,
+            ..
+        } => {
+            *candidate_count == 2
+                && *kind == engine::types::game_state::ReplacementChoiceKind::OptionalBranch
+                && candidates.len() == 2
+                && candidates
+                    .iter()
+                    .all(|candidate| candidate.source_id == land_id)
+        }
+        _ => false,
+    }
+}
+
+fn behold_candidates(
+    state: &GameState,
+    player: PlayerId,
+    source: ObjectId,
+    filter: &TargetFilter,
+) -> Vec<ObjectId> {
+    let context = FilterContext::from_source_with_controller(source, player);
+    let mut candidates = state
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|id| {
+            *id != source
+                && state
+                    .objects
+                    .get(id)
+                    .is_some_and(|object| object.controller == player)
+                && matches_target_filter(state, *id, filter, &context)
+        })
+        .collect::<Vec<_>>();
+    if let Some(player_state) = state.players.get(player.0 as usize) {
+        candidates.extend(
+            player_state
+                .hand
+                .iter()
+                .copied()
+                .filter(|id| *id != source && matches_target_filter(state, *id, filter, &context)),
+        );
+    }
+    candidates
+}
+
+fn ensure_behold_prompt_matches_field(
+    has_behold_field: bool,
+    prompt_offered: bool,
+) -> Result<(), String> {
+    match (has_behold_field, prompt_offered) {
+        (true, false) => {
+            Err("play_land.behold was provided but no behold prompt was offered".to_string())
+        }
+        (false, true) => {
+            Err("play_land behold prompt was offered without a behold field".to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn ensure_behold_selection_is_offered(
+    label: &str,
+    selected: ObjectId,
+    offered: &[ObjectId],
+) -> Result<(), String> {
+    if offered.contains(&selected) {
+        Ok(())
+    } else {
+        Err(format!(
+            "behold label {label} is not among the offered candidates"
+        ))
+    }
+}
+
+fn play_land(
+    runner: &mut GameRunner,
+    labels: &HashMap<ObjectId, String>,
+    action: &Value,
+) -> Result<(), String> {
+    let card_label = action["card"]
+        .as_str()
+        .filter(|label| !label.is_empty())
+        .ok_or("play_land needs a hand card label")?;
+    let land_id = resolve_label(labels, card_label)
+        .map_err(|_| format!("unknown hand label {card_label}"))?;
+    let player = runner.state().active_player;
+    if !runner.state().players[player.0 as usize]
+        .hand
+        .contains(&land_id)
+    {
+        return Err(format!(
+            "play_land card label {card_label} is not in the active player's hand"
+        ));
+    }
+    let card_id = runner
+        .state()
+        .objects
+        .get(&land_id)
+        .ok_or_else(|| format!("play_land card label {card_label} has no object"))?
+        .card_id;
+    let behold_filter = behold_filter_for_land(runner.state(), land_id);
+    let behold = action
+        .get("behold")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|label| !label.is_empty())
+                .ok_or("play_land.behold must be a label or decline")
+        })
+        .transpose()?;
+
+    runner
+        .act(GameAction::PlayLand {
+            object_id: land_id,
+            card_id,
+        })
+        .map_err(|error| error.to_string())?;
+
+    let chooser = match &runner.state().waiting_for {
+        WaitingFor::ReplacementChoice { player, .. }
+            if is_behold_replacement_prompt(
+                &runner.state().waiting_for,
+                land_id,
+                behold_filter.is_some(),
+            ) =>
+        {
+            Some(*player)
+        }
+        WaitingFor::ReplacementChoice { .. } => {
+            return Err("unexpected replacement prompt".to_string());
+        }
+        _ => None,
+    };
+    ensure_behold_prompt_matches_field(behold.is_some(), chooser.is_some())?;
+    let Some(chooser) = chooser else {
+        return Ok(());
+    };
+    if chooser != player {
+        return Err("play_land behold prompt was offered to a different player".to_string());
+    }
+    let Some(behold) = behold else {
+        return Err("play_land behold prompt was offered without a behold field".to_string());
+    };
+
+    let decline = behold == "decline";
+    runner
+        .act(GameAction::ChooseReplacement {
+            index: if decline { 1 } else { 0 },
+        })
+        .map_err(|error| error.to_string())?;
+
+    if decline {
+        if matches!(runner.state().waiting_for, WaitingFor::BeholdChoice { .. }) {
+            return Err("declining behold unexpectedly offered a candidate choice".to_string());
+        }
+        return Ok(());
+    }
+
+    let selected_id =
+        resolve_label(labels, behold).map_err(|_| format!("unknown behold label {behold}"))?;
+    match runner.state().waiting_for.clone() {
+        WaitingFor::BeholdChoice {
+            player: chooser,
+            choices,
+        } => {
+            if chooser != player {
+                return Err("behold candidate choice was offered to a different player".to_string());
+            }
+            ensure_behold_selection_is_offered(behold, selected_id, &choices)?;
+            runner
+                .act(GameAction::SelectCards {
+                    cards: vec![selected_id],
+                })
+                .map_err(|error| error.to_string())?;
+        }
+        WaitingFor::Priority { player: priority } => {
+            let filter = behold_filter.ok_or_else(|| {
+                "behold auto-collapse could not be validated because the land has no Behold filter"
+                    .to_string()
+            })?;
+            let candidates = behold_candidates(runner.state(), player, land_id, &filter);
+            if candidates.len() != 1
+                || ensure_behold_selection_is_offered(behold, selected_id, &candidates).is_err()
+            {
+                return Err(format!(
+                    "behold auto-collapse did not select the sole candidate labeled {behold}"
+                ));
+            }
+            if priority != player {
+                return Err(
+                    "behold auto-collapse returned priority to a different player".to_string(),
+                );
+            }
+        }
+        other => {
+            return Err(format!(
+                "behold did not reach a candidate choice or single-candidate auto-collapse: {other:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     validate_setup(spec)?;
     let name = spec["name"].as_str().ok_or("scenario name is required")?;
@@ -1169,6 +1444,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     let mut card_choice_groups = VecDeque::new();
     for (action_index, action) in actions.iter().enumerate() {
         match action["action"].as_str().unwrap_or_default() {
+            "play_land" => play_land(&mut runner, &labels, action)?,
             "cast" => {
                 ensure_targeted_cast_has_no_pending_trigger_targets(
                     action,
@@ -1262,6 +1538,38 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     }))
 }
 
+const REACH_FIELDS: &[&str] = &[
+    "all",
+    "player",
+    "zone",
+    "card",
+    "count",
+    "tapped_labels",
+    "types",
+    "subtypes",
+    "colors",
+    "power",
+    "toughness",
+    "power_is_null",
+    "toughness_is_null",
+    "creature",
+    "tapped",
+    "attached_to",
+    "counters",
+];
+
+fn validate_reach_fields(reach: &Value) -> Result<(), String> {
+    let Some(fields) = reach.as_object() else {
+        return Err("reach must be an object".to_string());
+    };
+    for key in fields.keys() {
+        if !REACH_FIELDS.contains(&key.as_str()) {
+            return Err(format!("unsupported reach field {key}"));
+        }
+    }
+    Ok(())
+}
+
 fn check_reach(
     state: &GameState,
     labels: &HashMap<ObjectId, String>,
@@ -1270,6 +1578,24 @@ fn check_reach(
     let Some(reach) = reach else {
         return Ok(true);
     };
+    validate_reach_fields(reach)?;
+    if let Some(checks) = reach.get("all") {
+        if reach.as_object().is_none_or(|fields| fields.len() != 1) {
+            return Err("reach.all cannot be combined with other reach fields".to_string());
+        }
+        let Some(checks) = checks.as_array() else {
+            return Err("reach.all must be an array of reach assertions".to_string());
+        };
+        if checks.is_empty() {
+            return Err("reach.all must contain at least one assertion".to_string());
+        }
+        for check in checks {
+            if !check_reach(state, labels, Some(check))? {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
     let player = reach["player"].as_str().unwrap_or("P0");
     let zone = reach["zone"].as_str().unwrap_or("graveyard");
     let card = reach["card"].as_str().ok_or("reach needs card")?;
@@ -1527,6 +1853,73 @@ mod tests {
     use super::*;
 
     #[test]
+    fn behold_prompt_presence_must_match_the_script_field() {
+        assert!(ensure_behold_prompt_matches_field(false, false).is_ok());
+        assert!(ensure_behold_prompt_matches_field(true, true).is_ok());
+        assert!(ensure_behold_prompt_matches_field(true, false).is_err());
+        assert!(ensure_behold_prompt_matches_field(false, true).is_err());
+    }
+
+    #[test]
+    fn behold_label_must_name_an_offered_candidate() {
+        let selected = ObjectId(1);
+        assert!(ensure_behold_selection_is_offered("jace", selected, &[selected]).is_ok());
+        assert!(ensure_behold_selection_is_offered("jace", selected, &[ObjectId(2)]).is_err());
+    }
+
+    #[test]
+    fn behold_filter_is_found_in_may_cost_replacement() {
+        let definition: ReplacementDefinition = serde_json::from_value(json!({
+            "event": "Moved",
+            "mode": {
+                "type": "MayCost",
+                "cost": {
+                    "type": "Behold",
+                    "count": 1,
+                    "filter": {
+                        "type": "Typed",
+                        "type_filters": [{"Subtype": "Jace"}],
+                        "controller": null,
+                        "properties": []
+                    },
+                    "action": "ChooseOrReveal"
+                }
+            }
+        }))
+        .unwrap();
+
+        assert!(behold_filter_in_replacement(&definition).is_some());
+    }
+
+    #[test]
+    fn behold_prompt_requires_the_played_lands_optional_replacement() {
+        let land_id = ObjectId(1);
+        let prompt = WaitingFor::ReplacementChoice {
+            player: PlayerId(0),
+            candidate_count: 2,
+            candidates: vec![
+                engine::types::game_state::ReplacementCandidateSummary {
+                    source_id: land_id,
+                    source_name: "Theorist's Sanctum".to_string(),
+                    description: "Pay cost".to_string(),
+                },
+                engine::types::game_state::ReplacementCandidateSummary {
+                    source_id: land_id,
+                    source_name: "Theorist's Sanctum".to_string(),
+                    description: "Decline".to_string(),
+                },
+            ],
+            kind: engine::types::game_state::ReplacementChoiceKind::OptionalBranch,
+            last_applied_decides: false,
+            remember_identity: None,
+        };
+
+        assert!(is_behold_replacement_prompt(&prompt, land_id, true));
+        assert!(!is_behold_replacement_prompt(&prompt, ObjectId(2), true));
+        assert!(!is_behold_replacement_prompt(&prompt, land_id, false));
+    }
+
+    #[test]
     fn projection_includes_reach_and_sorted_zones() {
         let runner = GameScenario::new().build();
         let value = project(runner.state(), &HashMap::new(), None, true);
@@ -1748,10 +2141,16 @@ mod tests {
     #[test]
     fn activation_selector_requires_one_described_prefix_match() {
         let candidates = vec![
-            (0, AbilityKind::Activated, Some("{T}: Add {G}".to_string())),
+            (
+                0,
+                AbilityKind::Activated,
+                true,
+                Some("{T}: Add {G}".to_string()),
+            ),
             (
                 1,
                 AbilityKind::Activated,
+                false,
                 Some("{2}{G}{W}: {this} becomes a Llama".to_string()),
             ),
         ];
@@ -1762,14 +2161,38 @@ mod tests {
         assert!(select_activation_ability(candidates.clone(), "{3}:").is_err());
 
         let multiple = vec![
-            (0, AbilityKind::Activated, Some("{T}: First".to_string())),
-            (1, AbilityKind::Activated, Some("{T}: Second".to_string())),
+            (
+                0,
+                AbilityKind::Activated,
+                false,
+                Some("{T}: First".to_string()),
+            ),
+            (
+                1,
+                AbilityKind::Activated,
+                false,
+                Some("{T}: Second".to_string()),
+            ),
         ];
         assert!(select_activation_ability(multiple, "{T}:")
             .unwrap_err()
             .contains("multiple activated abilities"));
 
-        let missing = vec![(0, AbilityKind::Activated, None)];
+        let mana_without_description = vec![
+            (0, AbilityKind::Activated, true, None),
+            (
+                1,
+                AbilityKind::Activated,
+                false,
+                Some("{2}{U}, {T}: Empower Jace 2.".to_string()),
+            ),
+        ];
+        assert_eq!(
+            select_activation_ability(mana_without_description, "{2}{U}, {T}:"),
+            Ok(1)
+        );
+
+        let missing = vec![(0, AbilityKind::Activated, false, None)];
         assert!(select_activation_ability(missing, "{T}:")
             .unwrap_err()
             .contains("missing a description"));
@@ -2373,6 +2796,21 @@ mod tests {
             &HashMap::new()
         )
         .unwrap());
+    }
+
+    #[test]
+    fn reach_rejects_unknown_fields_including_loyalty() {
+        let runner = GameScenario::new().build();
+        let reach = json!({
+            "zone": "battlefield",
+            "card": "Jace",
+            "loyalty": 4
+        });
+
+        assert_eq!(
+            check_reach(runner.state(), &HashMap::new(), Some(&reach)),
+            Err("unsupported reach field loyalty".to_string())
+        );
     }
 
     #[test]

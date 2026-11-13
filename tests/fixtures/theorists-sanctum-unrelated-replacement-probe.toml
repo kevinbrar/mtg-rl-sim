@@ -1,0 +1,18 @@
+[[scenarios]]
+name = "Watery Grave replacement is not Behold"
+active_player = 0
+script = [{ action = "play_land", card = "watery_grave", behold = "decline" }]
+
+[scenarios.setup.P0]
+hand = [
+  { card = "Watery Grave", label = "watery_grave" },
+  { card = "Jace Beleren", label = "jace" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Watery Grave", tapped = true, count = 1 },
+  { zone = "hand", player = "P0", card = "Jace Beleren", count = 1 },
+]
