@@ -372,4 +372,5 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
   Phase scenario harness. Auto-selected targets are left for the outer
   `oracle-scenario` runner to verify against the stack after the cast.
 - Adds a production-pipeline regression for Urgent Necropsy target selection,
-  evidence exiling, and destruction; harness validation is pending.
+  evidence exiling, and destruction. Differential validation: Urgent Necropsy
+  U1–U4 match XMage (`oracle/scenarios/urgent-necropsy.toml`).
