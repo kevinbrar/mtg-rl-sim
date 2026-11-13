@@ -385,20 +385,18 @@ fn select_activation_cost_branch(
     let base_cost = base_cost.ok_or_else(|| {
         "activated ability has no original cost branch for alternative_cost".to_string()
     })?;
-    costs
+    let base_index = costs
         .iter()
-        .position(|cost| match decision {
-            AlternativeCostDecision::Accept => cost != base_cost,
-            AlternativeCostDecision::Decline => cost == base_cost,
-        })
-        .ok_or_else(|| match decision {
-            AlternativeCostDecision::Accept => {
-                "no payable alternative activation cost branch was offered".to_string()
-            }
-            AlternativeCostDecision::Decline => {
-                "the original activation cost branch is not payable".to_string()
-            }
-        })
+        .position(|cost| cost == base_cost)
+        .ok_or_else(|| "the original activation cost branch was not offered".to_string())?;
+    match decision {
+        AlternativeCostDecision::Decline => Ok(base_index),
+        AlternativeCostDecision::Accept => costs
+            .iter()
+            .enumerate()
+            .find_map(|(index, _)| (index != base_index).then_some(index))
+            .ok_or_else(|| "no payable alternative activation cost branch was offered".to_string()),
+    }
 }
 
 fn ensure_activation_cost_prompt_matches_field(
@@ -1711,6 +1709,27 @@ mod tests {
             AlternativeCostDecision::Accept
         )
         .is_err());
+
+        let zero = AbilityCost::Mana {
+            cost: ManaCost::generic(0),
+        };
+        let equal_costs = vec![zero.clone(), zero.clone()];
+        assert_eq!(
+            select_activation_cost_branch(
+                &equal_costs,
+                Some(&zero),
+                AlternativeCostDecision::Accept
+            ),
+            Ok(1)
+        );
+        assert_eq!(
+            select_activation_cost_branch(
+                &equal_costs,
+                Some(&zero),
+                AlternativeCostDecision::Decline
+            ),
+            Ok(0)
+        );
     }
 
     #[test]
