@@ -21,20 +21,31 @@ def _normalize_card_name(value: str) -> str:
     )
 
 
+def _normalize_projection_names(value: object) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {"name", "attached_to", "label"} and isinstance(item, str):
+                value[key] = _normalize_card_name(item)
+            else:
+                _normalize_projection_names(item)
+    elif isinstance(value, list):
+        for item in value:
+            _normalize_projection_names(item)
+
+
 def normalize_projection(projection: object) -> object:
     if not isinstance(projection, dict):
         return projection
     normalized = copy.deepcopy(projection)
+    _normalize_projection_names(normalized)
     for zone in ("battlefield", "exile", "hand"):
         values = normalized.get(zone)
         if isinstance(values, list):
+            values = [
+                _normalize_card_name(value) if isinstance(value, str) else value
+                for value in values
+            ]
             normalized[zone] = sorted(values, key=_json_sort_key)
-
-    permanents = normalized.get("battlefield")
-    if isinstance(permanents, list):
-        for permanent in permanents:
-            if isinstance(permanent, dict) and isinstance(permanent.get("name"), str):
-                permanent["name"] = _normalize_card_name(permanent["name"])
 
     players = normalized.get("players")
     if isinstance(players, dict):
@@ -44,14 +55,14 @@ def normalize_projection(projection: object) -> object:
             for zone in ("battlefield", "exile", "hand", "library", "graveyard"):
                 values = player.get(zone)
                 if isinstance(values, list):
-                    names = [
+                    values = [
                         _normalize_card_name(value) if isinstance(value, str) else value
                         for value in values
                     ]
                     player[zone] = (
-                        sorted(names, key=_json_sort_key)
+                        sorted(values, key=_json_sort_key)
                         if zone in ("battlefield", "exile", "hand")
-                        else names
+                        else values
                     )
 
     return normalized

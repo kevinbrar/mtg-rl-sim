@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.compare_card_scenarios import compare, read_results
+from scripts.compare_card_scenarios import compare, normalize_projection, read_results
 from scripts.run_card_scenarios import (
     check_changed_known_diff_entries,
     check_changed_scenario_suites,
@@ -442,6 +442,34 @@ def test_projection_comparison_normalizes_card_name_diacritics() -> None:
     }
 
     assert compare(left, right) == []
+
+
+def test_projection_normalizes_names_before_unordered_zone_sorting() -> None:
+    first = _projection_result(
+        "S1",
+        {
+            "battlefield": [
+                {"name": "Kíli", "attached_to": "Kíli", "label": "Kíli"},
+                {"name": "Kettle", "attached_to": "Kíli", "label": "Kíli"},
+            ],
+            "exile": ["Kíli", "Kettle"],
+        },
+    )
+    second = _projection_result(
+        "S1",
+        {
+            "battlefield": [
+                {"name": "Kettle", "attached_to": "Kili", "label": "Kili"},
+                {"name": "Kili", "attached_to": "Kili", "label": "Kili"},
+            ],
+            "exile": ["Kettle", "Kili"],
+        },
+    )
+
+    assert normalize_projection(first["projection"]) == normalize_projection(
+        second["projection"]
+    )
+    assert projection_sha256(first) == projection_sha256(second)
 
 
 @pytest.mark.parametrize("zone", ("graveyard", "library"))
