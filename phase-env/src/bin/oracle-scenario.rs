@@ -1108,6 +1108,32 @@ fn behold_filter_for_land(state: &GameState, source: ObjectId) -> Option<TargetF
         .cloned()
 }
 
+fn is_behold_replacement_prompt(
+    waiting_for: &WaitingFor,
+    land_id: ObjectId,
+    has_behold: bool,
+) -> bool {
+    if !has_behold {
+        return false;
+    }
+    match waiting_for {
+        WaitingFor::ReplacementChoice {
+            candidate_count,
+            candidates,
+            kind,
+            ..
+        } => {
+            *candidate_count == 2
+                && *kind == engine::types::game_state::ReplacementChoiceKind::OptionalBranch
+                && candidates.len() == 2
+                && candidates
+                    .iter()
+                    .all(|candidate| candidate.source_id == land_id)
+        }
+        _ => false,
+    }
+}
+
 fn behold_candidates(
     state: &GameState,
     player: PlayerId,
@@ -1213,8 +1239,19 @@ fn play_land(
         })
         .map_err(|error| error.to_string())?;
 
-    let chooser = match runner.state().waiting_for.clone() {
-        WaitingFor::ReplacementChoice { player, .. } => Some(player),
+    let chooser = match &runner.state().waiting_for {
+        WaitingFor::ReplacementChoice { player, .. }
+            if is_behold_replacement_prompt(
+                &runner.state().waiting_for,
+                land_id,
+                behold_filter.is_some(),
+            ) =>
+        {
+            Some(*player)
+        }
+        WaitingFor::ReplacementChoice { .. } => {
+            return Err("unexpected replacement prompt".to_string());
+        }
         _ => None,
     };
     ensure_behold_prompt_matches_field(behold.is_some(), chooser.is_some())?;
@@ -1852,6 +1889,34 @@ mod tests {
         .unwrap();
 
         assert!(behold_filter_in_replacement(&definition).is_some());
+    }
+
+    #[test]
+    fn behold_prompt_requires_the_played_lands_optional_replacement() {
+        let land_id = ObjectId(1);
+        let prompt = WaitingFor::ReplacementChoice {
+            player: PlayerId(0),
+            candidate_count: 2,
+            candidates: vec![
+                engine::types::game_state::ReplacementCandidateSummary {
+                    source_id: land_id,
+                    source_name: "Theorist's Sanctum".to_string(),
+                    description: "Pay cost".to_string(),
+                },
+                engine::types::game_state::ReplacementCandidateSummary {
+                    source_id: land_id,
+                    source_name: "Theorist's Sanctum".to_string(),
+                    description: "Decline".to_string(),
+                },
+            ],
+            kind: engine::types::game_state::ReplacementChoiceKind::OptionalBranch,
+            last_applied_decides: false,
+            remember_identity: None,
+        };
+
+        assert!(is_behold_replacement_prompt(&prompt, land_id, true));
+        assert!(!is_behold_replacement_prompt(&prompt, ObjectId(2), true));
+        assert!(!is_behold_replacement_prompt(&prompt, land_id, false));
     }
 
     #[test]
