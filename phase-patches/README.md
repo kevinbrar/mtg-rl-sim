@@ -365,7 +365,7 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
   `edb31b5f9b951a595e80cd12a68153b11122987093305644113f5465944dd3b5`). Patch
   0031 passes the forward-apply check.
 
-## Patch 0032 — explicit scenario target slots and evidence choices
+## Patch 0033 — explicit scenario target slots and evidence choices
 
 - Adds slot-ordered target declarations, explicit optional-slot skips, and a
   FIFO card-choice path for announcement-time Collect Evidence costs to the
@@ -374,3 +374,12 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
 - Adds a production-pipeline regression for Urgent Necropsy target selection,
   evidence exiling, and destruction. Differential validation: Urgent Necropsy
   U1–U4 match XMage (`oracle/scenarios/urgent-necropsy.toml`).
+- Places public target-slot and Collect Evidence regressions in
+  `crates/engine/tests/integration/scenario_target_slots.rs` and registers the
+  module in `integration/main.rs` so CI's changed-module Mutants filter runs them.
+- Final local validation: the integration filter passes 10 tests; cargo-mutants
+  reports 17 total, 11 caught, 6 unviable, 0 missed or timed out. Urgent
+  Necropsy matches 4/4 and the full 41-scenario gate matches 41/41. Evidence:
+  `runs/card-scenarios/urgent-necropsy-20261113/patch0033-mutants-per-worktree/mutants.out/mutants.out/outcomes.json`,
+  `runs/card-scenarios/urgent-necropsy-20261113/necropsy-xmage-0033-final/known-diffs-report.json`,
+  `runs/card-scenarios/urgent-necropsy-20261113/full-known-diffs-0033-final/known-diffs-report.json`.

@@ -595,7 +595,7 @@ jobs:
         if: steps.patch-changes.outputs.changed == 'true'
         working-directory: ${{ runner.temp }}/phase-head
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/phase-mutants-target
+          CARGO_TARGET_DIR: target
         run: |
           set -o pipefail
           test_filter=()
