@@ -1,5 +1,66 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+index aed0279c4b..2654f60723 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -204,6 +204,17 @@ public class TestPlayer implements Player {
+         cardChoiceGroups.add(new ArrayList<>(cards));
+     }
+ 
++    List<String> takeNextCardChoiceGroup() {
++        if (cardChoiceGroups.isEmpty()) {
++            throw new IllegalStateException("card-choice prompt arrived with an empty choose_cards queue");
++        }
++        return cardChoiceGroups.remove(0);
++    }
++
++    public void addCardChoiceGroupFirst(List<String> cards) {
++        cardChoiceGroups.add(0, new ArrayList<>(cards));
++    }
++
+     public void assertNoCardChoiceGroups() {
+         if (!cardChoiceGroups.isEmpty()) {
+             throw new IllegalStateException("card choice group(s) were unconsumed: " + cardChoiceGroups);
+@@ -4336,10 +4347,7 @@ public class TestPlayer implements Player {
+ 
+     private boolean makeScenarioCardChoice(
+             Outcome outcome, Target target, Ability source, Game game, Cards fromCards) {
+-        if (cardChoiceGroups.isEmpty()) {
+-            throw new IllegalStateException("card-choice prompt arrived with an empty choose_cards queue");
+-        }
+-        List<String> group = cardChoiceGroups.remove(0);
++        List<String> group = takeNextCardChoiceGroup();
+         int min = target.getMinNumberOfTargets() - target.getSize();
+         int max = target.getMaxNumberOfTargets() - target.getSize();
+         if (!group.isEmpty() && group.size() < min) {
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayerCardChoiceQueueTest.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayerCardChoiceQueueTest.java
+new file mode 100644
+index 0000000000..8a57315943
+--- /dev/null
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayerCardChoiceQueueTest.java
+@@ -0,0 +1,21 @@
++package org.mage.test.player;
++
++import mage.constants.RangeOfInfluence;
++import org.junit.Test;
++
++import java.util.List;
++
++import static org.junit.Assert.assertEquals;
++
++public final class TestPlayerCardChoiceQueueTest {
++
++    @Test
++    public void beholdAnswerPrecedesLaterQueuedCardChoices() {
++        TestPlayer player = new TestPlayer(new TestComputerPlayer("Player", RangeOfInfluence.ONE));
++        player.addCardChoiceGroup(List.of("later-choice"));
++        player.addCardChoiceGroupFirst(List.of("behold-choice"));
++
++        assertEquals(List.of("behold-choice"), player.takeNextCardChoiceGroup());
++        assertEquals(List.of("later-choice"), player.takeNextCardChoiceGroup());
++    }
++}
 diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-index a0f98e55..77d5e8f6 100644
+index a0f98e5597..745b2f60e7 100644
 --- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 +++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 @@ -12,6 +12,7 @@ import mage.ObjectColor;
@@ -86,7 +147,7 @@ index a0f98e55..77d5e8f6 100644
 +                        if (selectedBattlefield) {
 +                            setChoice(actingPlayer, "@" + behold);
 +                        } else {
-+                            actingPlayer.addCardChoiceGroup(List.of(behold));
++                            actingPlayer.addCardChoiceGroupFirst(List.of(behold));
 +                        }
 +                    });
 +                    playLand(turn, step, actingPlayer, card);
