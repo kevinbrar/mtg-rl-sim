@@ -96,7 +96,7 @@ script = [
   { action = "end_turn" },
   { action = "activate", source = "case", ability = "Sacrifice this Case" },
   { action = "pass_until_resolved" },
-  { action = "cast", card = "graveyard-creature", from = "graveyard" },
+  { action = "cast", card = "second", from = "graveyard" },
   { action = "pass_until_resolved" },
 ]
 
@@ -109,7 +109,10 @@ battlefield = [
   { label = "island-2", card = "Island" },
 ]
 hand = [{ card = "Memnite" }, { card = "Ritual of Rejuvenation" }]
-graveyard = [{ card = "Healer's Hawk", label = "graveyard-creature" }]
+graveyard = [
+  { card = "Healer's Hawk", label = "first" },
+  { card = "Healer's Hawk", label = "second" },
+]
 library_top = ["Island", "Island"]
 
 [scenarios.setup.P1]

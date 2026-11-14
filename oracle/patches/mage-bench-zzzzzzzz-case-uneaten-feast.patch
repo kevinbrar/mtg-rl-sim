@@ -1,5 +1,5 @@
 diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
-index 8f1ee15de0..59679be32e 100644
+index 8f1ee15de0..d841df346d 100644
 --- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
 +++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
 @@ -501,16 +501,43 @@ public class TestPlayer implements Player {
@@ -48,6 +48,52 @@ index 8f1ee15de0..59679be32e 100644
      public void assertUniqueActivatedAbility(Game game, String nameOrAlias) {
          List<ActivatedAbility> matches = computerPlayer.getPlayable(game, true, Zone.BATTLEFIELD, false).stream()
                  .filter(Ability::isNonManaActivatedAbility)
+@@ -3276,6 +3303,45 @@ public class TestPlayer implements Player {
+         return computerPlayer.cast(ability, game, noMana, approvingObject);
+     }
+ 
++    public void castPlayableSpellFromGraveyard(UUID sourceId, Game game) {
++        if (sourceId == null) {
++            throw new IllegalArgumentException("graveyard spell source id is required");
++        }
++        Set<Card> graveyardCards = computerPlayer.getGraveyard().getCards(game);
++        Card sourceCard = graveyardCards.stream()
++                .filter(card -> sourceId.equals(card.getId()))
++                .findFirst()
++                .orElseThrow(() -> new IllegalStateException("graveyard spell object is not in the graveyard: " + sourceId));
++        List<UUID> otherSameNameCards = graveyardCards.stream()
++                .filter(card -> card.getName().equals(sourceCard.getName()))
++                .map(Card::getId)
++                .filter(id -> !sourceId.equals(id))
++                .collect(Collectors.toList());
++        List<SpellAbility> matches = computerPlayer.getPlayable(game, true, Zone.GRAVEYARD, false).stream()
++                .filter(SpellAbility.class::isInstance)
++                .map(SpellAbility.class::cast)
++                .filter(ability -> sourceId.equals(ability.getSourceId()))
++                .collect(Collectors.toList());
++        if (matches.isEmpty()) {
++            throw new IllegalStateException("no playable graveyard spell ability for object " + sourceId);
++        }
++        if (!computerPlayer.activateAbility(matches.get(0).copy(), game)) {
++            throw new IllegalStateException("could not cast graveyard spell object " + sourceId);
++        }
++        if (game.getStack().stream().noneMatch(stackObject -> sourceId.equals(stackObject.getSourceId()))) {
++            throw new IllegalStateException("graveyard spell object " + sourceId + " was not put on the stack");
++        }
++        Set<UUID> graveyardIds = computerPlayer.getGraveyard().getCards(game).stream()
++                .map(Card::getId)
++                .collect(Collectors.toSet());
++        for (UUID otherCard : otherSameNameCards) {
++            if (!graveyardIds.contains(otherCard)) {
++                throw new IllegalStateException(
++                        "graveyard cast moved another same-name object out of the graveyard: " + otherCard);
++            }
++        }
++    }
++
+     @Override
+     public boolean playCard(Card card, Game game, boolean noMana, ApprovingObject approvingObject) {
+         return computerPlayer.playCard(card, game, noMana, approvingObject);
 diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayerAbilityTextTest.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayerAbilityTextTest.java
 new file mode 100644
 index 0000000000..b2eea1e4ab
@@ -88,7 +134,7 @@ index 0000000000..b2eea1e4ab
 +    }
 +}
 diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-index 8f39aa6fd1..bb4052b3b1 100644
+index 8f39aa6fd1..578c8cdd28 100644
 --- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 +++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 @@ -47,6 +47,11 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
@@ -113,7 +159,7 @@ index 8f39aa6fd1..bb4052b3b1 100644
              TestPlayer actingPlayer = player(activeIndex);
              switch (kind) {
                  case "play_land" -> {
-@@ -230,16 +238,40 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -230,16 +238,39 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
                  }
                  case "cast" -> {
                      String card = requiredString(action, "card");
@@ -121,7 +167,6 @@ index 8f39aa6fd1..bb4052b3b1 100644
 +                    if (!source.equals("hand") && !source.equals("graveyard")) {
 +                        throw new IllegalArgumentException("cast.from must be hand or graveyard");
 +                    }
-+                    String castCommand = source.equals("graveyard") ? labelCards.get(card) : card;
                      boolean hasX = action.has("x");
                      int x = hasX ? exactInteger(action.get("x"), "cast.x") : 0;
                      if (x < 0) {
@@ -158,16 +203,22 @@ index 8f39aa6fd1..bb4052b3b1 100644
                          boolean hasXCost = spell.getManaCost().getText().contains("{X}");
                          if (hasXCost != hasX) {
                              throw new IllegalStateException(hasXCost
-@@ -266,7 +298,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -266,7 +297,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
                              actingPlayer.addTarget("@" + label);
                          }
                      }
 -                    castSpell(turn, step, actingPlayer, card);
-+                    castSpell(turn, step, actingPlayer, castCommand);
++                    if (source.equals("graveyard")) {
++                        UUID sourceId = labels.get(card);
++                        runCode("cast labeled graveyard spell", turn, step, actingPlayer,
++                                (info, player, game) -> actingPlayer.castPlayableSpellFromGraveyard(sourceId, game));
++                    } else {
++                        castSpell(turn, step, actingPlayer, card);
++                    }
                      lastStep = step;
                  }
                  case "trigger_targets" -> {
-@@ -561,6 +593,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -561,6 +598,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
                      .map(subtype -> normalizeCharacteristic(subtype.getDescription()))
                      .sorted()
                      .toList()));
@@ -177,7 +228,7 @@ index 8f39aa6fd1..bb4052b3b1 100644
              item.add("colors", strings(colorCodes(permanent.getColor(currentGame))));
              item.addProperty("damage", permanent.getDamage());
              JsonObject counterValues = new JsonObject();
-@@ -655,6 +690,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -655,6 +695,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
      }
  
      private boolean checkReach(JsonObject reach) {
@@ -185,7 +236,7 @@ index 8f39aa6fd1..bb4052b3b1 100644
          if (reach.has("all")) {
              if (reach.size() != 1) {
                  throw new IllegalArgumentException("reach.all cannot be combined with other reach fields");
-@@ -684,6 +720,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -684,6 +725,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
          }
          TestPlayer player = player(playerName.equals("P0") ? 0 : 1);
          String zone = string(reach, "zone", "graveyard");
@@ -195,7 +246,7 @@ index 8f39aa6fd1..bb4052b3b1 100644
          String card = requiredString(reach, "card");
          List<String> names = switch (zone) {
              case "hand" -> names(player.getHand().getCards(currentGame));
-@@ -748,6 +787,18 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -748,6 +792,18 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
      }
  
      private boolean matchesReachCharacteristics(JsonObject reach, Permanent permanent) {
