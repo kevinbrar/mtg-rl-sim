@@ -53,6 +53,14 @@ fn cards(state: &GameState, player: usize, zone: &str) -> Vec<String> {
     }
 }
 
+fn is_case(object: &GameObject) -> bool {
+    object
+        .card_types
+        .subtypes
+        .iter()
+        .any(|subtype| normalize_characteristic(subtype) == "Case")
+}
+
 fn project(
     state: &GameState,
     labels: &HashMap<ObjectId, String>,
@@ -112,6 +120,15 @@ fn project(
             });
             if let Some(attached_to) = attached_to {
                 projected["attached_to"] = json!(attached_to);
+            }
+            if is_case(object) {
+                projected["solved"] = json!(
+                    object
+                        .case_state
+                        .as_ref()
+                        .expect("Case permanent must carry Case state")
+                        .is_solved
+                );
             }
             Some(projected)
         })
@@ -284,7 +301,11 @@ fn apply_card_choice_group(
 }
 
 fn normalize_ability_text(text: &str) -> String {
-    let text = text.split("<i>").next().unwrap_or(text);
+    let trimmed = text.trim_start();
+    let flavor_prefix = trimmed
+        .strip_prefix("<i>")
+        .and_then(|text| text.find("</i>").map(|end| &text[end + 4..]))
+        .is_some_and(|text| text.trim_start().starts_with("&mdash;"));
     let mut stripped = String::new();
     let mut in_tag = false;
     for character in text.chars() {
@@ -295,11 +316,26 @@ fn normalize_ability_text(text: &str) -> String {
             _ => {}
         }
     }
-    stripped
+    let mut stripped = stripped
+        .replace("&mdash;", "—")
         .to_lowercase()
         .replace("{this}", "~")
         .trim()
-        .to_string()
+        .to_string();
+    if flavor_prefix
+        || stripped
+            .split_once('—')
+            .is_some_and(|(prefix, _)| !prefix.contains(':'))
+    {
+        if let Some((_, text)) = stripped.split_once('—') {
+            stripped = text.trim().to_string();
+        }
+    }
+    let head_end = stripped.find(':').unwrap_or(stripped.len());
+    if let Some(self_reference) = stripped[..head_end].find("this ") {
+        stripped.replace_range(self_reference..head_end, "~");
+    }
+    stripped
 }
 
 fn select_activation_ability(
@@ -456,6 +492,28 @@ fn cast_x(action: &Value, has_x_cost: bool) -> Result<Option<u32>, String> {
             Ok(Some(x))
         }
     }
+}
+
+fn cast_from(action: &Value) -> Result<&str, String> {
+    match action.get("from") {
+        None => Ok("hand"),
+        Some(value) => match value.as_str() {
+            Some("hand") => Ok("hand"),
+            Some("graveyard") => Ok("graveyard"),
+            Some(_) | None => Err("cast.from must be hand or graveyard".to_string()),
+        },
+    }
+}
+
+fn validate_script_cast_from(action: &Value) -> Result<(), String> {
+    if action.get("from").is_some() && action.get("action").and_then(Value::as_str) != Some("cast")
+    {
+        return Err("script.from is only valid for cast actions".to_string());
+    }
+    if action.get("action").and_then(Value::as_str) == Some("cast") {
+        cast_from(action)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1443,6 +1501,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     let mut activation_target_groups = VecDeque::new();
     let mut card_choice_groups = VecDeque::new();
     for (action_index, action) in actions.iter().enumerate() {
+        validate_script_cast_from(action)?;
         match action["action"].as_str().unwrap_or_default() {
             "play_land" => play_land(&mut runner, &labels, action)?,
             "cast" => {
@@ -1452,18 +1511,43 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 )?;
                 let card = action["card"].as_str().ok_or("cast needs card")?;
                 let player = runner.state().active_player;
-                let spell = runner.state().players[player.0 as usize]
-                    .hand
-                    .iter()
-                    .copied()
-                    .find(|id| {
-                        runner
-                            .state()
-                            .objects
-                            .get(id)
-                            .is_some_and(|object| object.name == card)
-                    })
-                    .ok_or_else(|| format!("{card} is not in the active player's hand"))?;
+                let spell = if cast_from(action)? == "hand" {
+                    runner.state().players[player.0 as usize]
+                        .hand
+                        .iter()
+                        .copied()
+                        .find(|id| {
+                            runner
+                                .state()
+                                .objects
+                                .get(id)
+                                .is_some_and(|object| object.name == card)
+                        })
+                        .ok_or_else(|| format!("{card} is not in the active player's hand"))?
+                } else {
+                    let spell = labels
+                        .iter()
+                        .find_map(|(id, label)| (label == card).then_some(*id))
+                        .ok_or_else(|| format!("unknown graveyard label {card}"))?;
+                    if !runner.state().players[player.0 as usize]
+                        .graveyard
+                        .contains(&spell)
+                    {
+                        return Err(format!("{card} is not in the active player's graveyard"));
+                    }
+                    if !engine::ai_support::legal_actions(runner.state())
+                        .iter()
+                        .any(|candidate| {
+                            matches!(
+                                candidate,
+                                GameAction::CastSpell { object_id, .. } if *object_id == spell
+                            )
+                        })
+                    {
+                        return Err(format!("{card} is not offered as a graveyard cast"));
+                    }
+                    spell
+                };
                 let has_x_cost = match &runner.state().objects[&spell].mana_cost {
                     engine::types::mana::ManaCost::Cost { shards, .. } => {
                         shards.contains(&engine::types::mana::ManaCostShard::X)
@@ -1556,6 +1640,7 @@ const REACH_FIELDS: &[&str] = &[
     "tapped",
     "attached_to",
     "counters",
+    "solved",
 ];
 
 fn validate_reach_fields(reach: &Value) -> Result<(), String> {
@@ -1599,6 +1684,9 @@ fn check_reach(
     let player = reach["player"].as_str().unwrap_or("P0");
     let zone = reach["zone"].as_str().unwrap_or("graveyard");
     let card = reach["card"].as_str().ok_or("reach needs card")?;
+    if reach.get("solved").is_some() && zone != "battlefield" {
+        return Err("reach.solved is only valid for battlefield Cases".to_string());
+    }
     let expected_count = reach
         .get("count")
         .map(|value| {
@@ -1754,6 +1842,22 @@ fn matches_reach_characteristics(
             if u64::from(actual) != expected {
                 return Ok(false);
             }
+        }
+    }
+    if let Some(expected) = reach.get("solved") {
+        let Some(expected) = expected.as_bool() else {
+            return Err("reach.solved must be a boolean".to_string());
+        };
+        if !is_case(object) {
+            return Err("reach.solved is only valid for Case permanents".to_string());
+        }
+        let actual = object
+            .case_state
+            .as_ref()
+            .ok_or("Case permanent has no Case state")?
+            .is_solved;
+        if actual != expected {
+            return Ok(false);
         }
     }
     for key in ["power", "toughness"] {
@@ -2153,12 +2257,22 @@ mod tests {
                 false,
                 Some("{2}{G}{W}: {this} becomes a Llama".to_string()),
             ),
+            (
+                2,
+                AbilityKind::Activated,
+                false,
+                Some("<i>Solved</i> &mdash; Sacrifice this Case: Draw a card.".to_string()),
+            ),
         ];
         assert_eq!(
             select_activation_ability(candidates.clone(), "{2}{G}{W}:"),
             Ok(1)
         );
         assert!(select_activation_ability(candidates.clone(), "{3}:").is_err());
+        assert_eq!(
+            select_activation_ability(candidates.clone(), "Sacrifice this Case"),
+            Ok(2)
+        );
 
         let multiple = vec![
             (
@@ -2810,6 +2924,31 @@ mod tests {
         assert_eq!(
             check_reach(runner.state(), &HashMap::new(), Some(&reach)),
             Err("unsupported reach field loyalty".to_string())
+        );
+    }
+
+    #[test]
+    fn reach_solved_is_case_only_and_requires_boolean() {
+        let mut scenario = GameScenario::new();
+        let creature = scenario.add_creature(PlayerId(0), "Reach Bear", 2, 2).id();
+        let runner = scenario.build();
+        let object = &runner.state().objects[&creature];
+
+        assert_eq!(
+            matches_reach_characteristics(object, &json!({"solved": false}), &HashMap::new()),
+            Err("reach.solved is only valid for Case permanents".to_string())
+        );
+        assert_eq!(
+            matches_reach_characteristics(object, &json!({"solved": "false"}), &HashMap::new()),
+            Err("reach.solved must be a boolean".to_string())
+        );
+        assert_eq!(
+            check_reach(
+                runner.state(),
+                &HashMap::new(),
+                Some(&json!({"zone": "graveyard", "card": "Case", "solved": false}))
+            ),
+            Err("reach.solved is only valid for battlefield Cases".to_string())
         );
     }
 

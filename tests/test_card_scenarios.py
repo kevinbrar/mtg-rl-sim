@@ -211,6 +211,100 @@ loyalty = 4
         load_specs([spec])
 
 
+def test_load_specs_accepts_case_solved_reach_and_graveyard_cast(
+    tmp_path: Path,
+) -> None:
+    spec = tmp_path / "case-solved-graveyard-cast.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "case solved and graveyard cast"
+script = [{ action = "cast", card = "graveyard-creature", from = "graveyard" }]
+
+[scenarios.setup.P0]
+graveyard = [{ card = "Silvercoat Lion", label = "graveyard-creature" }]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+zone = "battlefield"
+card = "Case"
+solved = false
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+
+    assert loaded["scenarios"][0]["script"][0]["from"] == "graveyard"
+
+
+def test_load_specs_rejects_solved_reach_outside_battlefield(
+    tmp_path: Path,
+) -> None:
+    spec = tmp_path / "case-solved-wrong-zone.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "case solved in wrong zone"
+
+[scenarios.setup.P0]
+
+[scenarios.reach]
+card = "Case"
+solved = false
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"reach\.solved is only valid"):
+        load_specs([spec])
+
+
+def test_load_specs_rejects_invalid_graveyard_cast_source(tmp_path: Path) -> None:
+    spec = tmp_path / "invalid-graveyard-cast-source.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "invalid graveyard cast source"
+script = [{ action = "cast", card = "Silvercoat Lion", from = "library" }]
+
+[scenarios.setup.P0]
+
+[scenarios.setup.P1]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError, match=r"script\[0\]\.from must be hand or graveyard"
+    ):
+        load_specs([spec])
+
+
+def test_load_specs_requires_graveyard_cast_label_to_be_in_graveyard(
+    tmp_path: Path,
+) -> None:
+    spec = tmp_path / "unlabeled-graveyard-cast.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "unlabeled graveyard cast"
+script = [{ action = "cast", card = "Silvercoat Lion", from = "graveyard" }]
+
+[scenarios.setup.P0]
+
+[scenarios.setup.P1]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError, match=r"script\[0\]\.card must be a graveyard setup label"
+    ):
+        load_specs([spec])
+
+
 def test_load_specs_accepts_labeled_library_cards(tmp_path: Path) -> None:
     spec = tmp_path / "labeled-library.toml"
     spec.write_text(

@@ -45,6 +45,7 @@ REACH_FIELDS = {
     "tapped",
     "attached_to",
     "counters",
+    "solved",
 }
 KNOWN_DIFF_FIELDS = {
     "card",
@@ -66,6 +67,13 @@ def _validate_reach_fields(name: str, reach: object, path: str = "reach") -> Non
     unknown = reach.keys() - REACH_FIELDS
     if unknown:
         raise ValueError(f"{name}: {path}.{min(unknown)} is unsupported")
+    if "solved" in reach:
+        if not isinstance(reach["solved"], bool):
+            raise TypeError(f"{name}: {path}.solved must be a boolean")
+        if reach.get("zone", "graveyard") != "battlefield":
+            raise ValueError(
+                f"{name}: {path}.solved is only valid for battlefield Cases"
+            )
     if "all" in reach:
         if len(reach) != 1:
             raise ValueError(
@@ -484,6 +492,7 @@ def _validate_setup(scenario: dict) -> None:
     if not isinstance(setup, dict):
         raise TypeError(f"{name}: setup must be a table")
     labels: set[str] = set()
+    graveyard_labels: set[str] = set()
     for player, player_setup in setup.items():
         if player not in {"P0", "P1"}:
             raise ValueError(f"{name}: setup.{player} is unsupported")
@@ -521,6 +530,8 @@ def _validate_setup(scenario: dict) -> None:
                         if label in labels:
                             raise ValueError(f"{name}: duplicate setup label {label}")
                         labels.add(label)
+                        if field == "graveyard":
+                            graveyard_labels.add(label)
                 elif not isinstance(card, str):
                     raise TypeError(
                         f"{name}: setup.{player}.{field}[{index}] must name a card"
@@ -568,6 +579,22 @@ def _validate_setup(scenario: dict) -> None:
             raise ValueError(
                 f"{name}: script[{index}].behold is only valid for play_land actions"
             )
+        if "from" in action:
+            context = f"{name}: script[{index}].from"
+            if action.get("action") != "cast":
+                raise ValueError(f"{context} is only valid for cast actions")
+            source = action["from"]
+            if not isinstance(source, str) or source not in {"hand", "graveyard"}:
+                raise ValueError(f"{context} must be hand or graveyard")
+            if source == "graveyard":
+                card_label = action.get("card")
+                if (
+                    not isinstance(card_label, str)
+                    or card_label not in graveyard_labels
+                ):
+                    raise ValueError(
+                        f"{name}: script[{index}].card must be a graveyard setup label"
+                    )
         if action.get("action") == "play_land":
             context = f"{name}: script[{index}]"
             if not isinstance(action.get("card"), str) or not action["card"]:
