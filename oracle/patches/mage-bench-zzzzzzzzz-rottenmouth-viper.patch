@@ -1,0 +1,378 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+index 27ef83a6..ad7b606d 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -109,6 +109,12 @@ public class TestPlayer implements Player {
+     private UUID expectedBeholdSource;
+     private Boolean expectedBeholdChoice;
+     private final Map<String, UUID> aliases = new HashMap<>(); // aliases for game objects/players (use it for cards with same name to save and use)
++    private final Deque<RottenmouthUnlessChoice> rottenmouthUnlessChoices = new ArrayDeque<>();
++    private List<String> pendingCastSacrificeLabels;
++    private List<String> pendingCastSacrificeTargets;
++    private String pendingRottenmouthUnlessSacrificeLabel;
++    private String pendingRottenmouthUnlessDiscardLabel;
++    private String pendingRottenmouthDeclineIteration;
+     private final List<String> modes = new ArrayList<>();
+ 
+     // debug only: ignore all next commands so choose dialog will raise error with full info
+@@ -161,6 +167,14 @@ public class TestPlayer implements Player {
+         this.expectedBeholdSource = testPlayer.expectedBeholdSource;
+         this.expectedBeholdChoice = testPlayer.expectedBeholdChoice;
+         this.aliases.putAll(testPlayer.aliases);
++        this.rottenmouthUnlessChoices.addAll(testPlayer.rottenmouthUnlessChoices);
++        this.pendingCastSacrificeLabels = testPlayer.pendingCastSacrificeLabels == null
++                ? null : new ArrayList<>(testPlayer.pendingCastSacrificeLabels);
++        this.pendingCastSacrificeTargets = testPlayer.pendingCastSacrificeTargets == null
++                ? null : new ArrayList<>(testPlayer.pendingCastSacrificeTargets);
++        this.pendingRottenmouthUnlessSacrificeLabel = testPlayer.pendingRottenmouthUnlessSacrificeLabel;
++        this.pendingRottenmouthUnlessDiscardLabel = testPlayer.pendingRottenmouthUnlessDiscardLabel;
++        this.pendingRottenmouthDeclineIteration = testPlayer.pendingRottenmouthDeclineIteration;
+         this.modes.addAll(testPlayer.modes);
+         this.computerPlayer = testPlayer.computerPlayer.copy();
+         if (testPlayer.groupsForTargetHandling != null) {
+@@ -204,6 +218,45 @@ public class TestPlayer implements Player {
+         this.strictCardChoiceQueue = strictCardChoiceQueue;
+     }
+ 
++    public enum RottenmouthUnlessKind {
++        SACRIFICE, DISCARD, DECLINE
++    }
++
++    public record RottenmouthUnlessChoice(RottenmouthUnlessKind kind, String label) {
++    }
++
++    public void setCastSacrificeLabels(List<String> labels) {
++        if (pendingCastSacrificeLabels != null || pendingCastSacrificeTargets != null) {
++            throw new IllegalStateException("a cast sacrifice choice is already pending");
++        }
++        pendingCastSacrificeLabels = new ArrayList<>(labels);
++    }
++
++    public void addRottenmouthUnlessChoices(List<RottenmouthUnlessChoice> choices) {
++        if (choices.isEmpty()) {
++            throw new IllegalArgumentException("unless_choices needs at least one entry");
++        }
++        rottenmouthUnlessChoices.addAll(choices);
++    }
++
++    public void assertNoPendingCastSacrifice() {
++        if (pendingCastSacrificeLabels != null || pendingCastSacrificeTargets != null) {
++            throw new IllegalStateException("cast.sacrifice was not consumed by the cast");
++        }
++    }
++
++    public void assertNoPendingRottenmouthUnlessChoices() {
++        if (!rottenmouthUnlessChoices.isEmpty()) {
++            throw new IllegalStateException(
++                    "unless_choices entries were unconsumed: " + rottenmouthUnlessChoices);
++        }
++        if (pendingRottenmouthUnlessSacrificeLabel != null
++                || pendingRottenmouthUnlessDiscardLabel != null
++                || pendingRottenmouthDeclineIteration != null) {
++            throw new IllegalStateException("unless_choices selection was not consumed");
++        }
++    }
++
+     public void addCardChoiceGroup(List<String> cards) {
+         cardChoiceGroups.add(new ArrayList<>(cards));
+     }
+@@ -2415,6 +2468,11 @@ public class TestPlayer implements Player {
+ 
+     @Override
+     public boolean choose(Outcome outcome, Target target, Ability source, Game game, Map<String, Serializable> options) {
++        if (target instanceof TargetDiscard
++                && pendingRottenmouthUnlessDiscardLabel != null
++                && isRottenmouthViperSource(source, game)) {
++            return chooseRottenmouthDiscardCard(outcome, target, source, game);
++        }
+         return makeChoose(outcome, target, source, game, null);
+     }
+ 
+@@ -2875,6 +2933,10 @@ public class TestPlayer implements Player {
+             expectedBeholdChoice = null;
+             return result;
+         }
++        Boolean rottenmouthChoice = chooseRottenmouthUnlessChoice(message, source, game);
++        if (rottenmouthChoice != null) {
++            return rottenmouthChoice;
++        }
+         if (message != null && message.equals("Scry 1?")) {
+             return false;
+         }
+@@ -2901,8 +2963,84 @@ public class TestPlayer implements Player {
+         return computerPlayer.chooseUse(outcome, message, secondMessage, trueText, falseText, source, game);
+     }
+ 
++    private boolean isRottenmouthViperSource(Ability source, Game game) {
++        MageObject sourceObject = source == null ? null : source.getSourceObject(game);
++        return sourceObject != null && sourceObject.getName().equals("Rottenmouth Viper");
++    }
++
++    private Boolean chooseRottenmouthUnlessChoice(String message, Ability source, Game game) {
++        if (!isRottenmouthViperSource(source, game) || message == null) {
++            return null;
++        }
++        boolean sacrificePrompt = message.startsWith("Sacrifices a nonland permanent? (Iteration ");
++        boolean discardPrompt = message.startsWith("Discard a card? (Iteration ");
++        if (!sacrificePrompt && !discardPrompt) {
++            return null;
++        }
++        Matcher matcher = Pattern.compile("\\(Iteration (\\d+) of (\\d+)\\)").matcher(message);
++        if (!matcher.find()) {
++            throw new IllegalStateException("Rottenmouth Viper unless prompt has no iteration");
++        }
++        String iteration = matcher.group(1) + " of " + matcher.group(2);
++        if (pendingRottenmouthDeclineIteration != null) {
++            if (!pendingRottenmouthDeclineIteration.equals(iteration) || sacrificePrompt) {
++                throw new IllegalStateException("Rottenmouth Viper skipped a scripted discard prompt");
++            }
++            pendingRottenmouthDeclineIteration = null;
++            return false;
++        }
++        if (sacrificePrompt && !rottenmouthUnlessChoices.isEmpty()
++                && rottenmouthUnlessChoices.peekFirst().kind() == RottenmouthUnlessKind.DISCARD) {
++            return false;
++        }
++        if (rottenmouthUnlessChoices.isEmpty()) {
++            throw new IllegalStateException("Rottenmouth Viper unless prompt has no unless_choices entry");
++        }
++        RottenmouthUnlessChoice choice = rottenmouthUnlessChoices.removeFirst();
++        if (choice.kind() == RottenmouthUnlessKind.DECLINE) {
++            if (sacrificePrompt && !computerPlayer.getHand().isEmpty()) {
++                pendingRottenmouthDeclineIteration = iteration;
++            }
++            return false;
++        }
++        if (sacrificePrompt && choice.kind() == RottenmouthUnlessKind.SACRIFICE) {
++            if (pendingRottenmouthUnlessSacrificeLabel != null) {
++                throw new IllegalStateException("Rottenmouth Viper sacrifice selection is already pending");
++            }
++            pendingRottenmouthUnlessSacrificeLabel = choice.label();
++            addChoice("@" + choice.label());
++            return true;
++        }
++        if (discardPrompt && choice.kind() == RottenmouthUnlessKind.DISCARD) {
++            if (pendingRottenmouthUnlessDiscardLabel != null) {
++                throw new IllegalStateException("Rottenmouth Viper discard selection is already pending");
++            }
++            pendingRottenmouthUnlessDiscardLabel = choice.label();
++            addCardChoiceGroup(List.of(choice.label()));
++            return true;
++        }
++        throw new IllegalStateException(
++                "Rottenmouth Viper unless choice " + choice.kind() + " does not match the offered prompt");
++    }
++
+     @Override
+     public int announceX(int min, int max, String message, Game game, Ability source, boolean isManaPay) {
++        if ("Announce the value for {X} (nonland permanent you control to sacrifice)".equals(message)) {
++            if (pendingCastSacrificeLabels == null) {
++                throw new IllegalStateException("optional sacrifice cast prompt has no cast.sacrifice field");
++            }
++            List<String> selected = pendingCastSacrificeLabels;
++            if (selected.size() < min || selected.size() > max) {
++                throw new IllegalStateException(
++                        "cast.sacrifice has " + selected.size() + " labels but the prompt allows " + min + ".." + max);
++            }
++            pendingCastSacrificeLabels = null;
++            if (!selected.isEmpty()) {
++                pendingCastSacrificeTargets = new ArrayList<>(selected);
++                choices.add(selected.stream().map(label -> "@" + label).collect(Collectors.joining("^")));
++            }
++            return selected.size();
++        }
+         assertAliasSupportInChoices(false);
+ 
+         // fast calc on nothing to choose
+@@ -4343,6 +4481,11 @@ public class TestPlayer implements Player {
+         if (strictCardChoiceQueue && target instanceof TargetCard) {
+             return makeScenarioCardChoice(outcome, target, source, game, fromCards);
+         }
++        boolean scriptedCastSacrifice = pendingCastSacrificeTargets != null
++                && target instanceof TargetSacrifice;
++        boolean rottenmouthUnlessSacrifice = pendingRottenmouthUnlessSacrificeLabel != null
++                && isRottenmouthViperSource(source, game)
++                && target instanceof TargetPermanent;
+         assertAliasSupportInChoices(true);
+ 
+         // choose itself for starting player all the time
+@@ -4428,6 +4571,17 @@ public class TestPlayer implements Player {
+             try {
+                 if (isAddedSomething) {
+                     if (target.isChoiceCompleted(abilityControllerId, source, game, fromCards)) {
++                        if (scriptedCastSacrifice) {
++                            assertRottenmouthSelectedTargets(
++                                    target, pendingCastSacrificeTargets, "cast.sacrifice");
++                            pendingCastSacrificeTargets = null;
++                        }
++                        if (rottenmouthUnlessSacrifice) {
++                            assertRottenmouthSelectedTargets(
++                                    target, List.of(pendingRottenmouthUnlessSacrificeLabel),
++                                    "unless_choices.sacrifice");
++                            pendingRottenmouthUnlessSacrificeLabel = null;
++                        }
+                         return true;
+                     }
+                     // must refresh possible targets after each "add" cause there are dynamic targets like TargetCardAndOrCard from Sludge Titan
+@@ -4448,6 +4602,18 @@ public class TestPlayer implements Player {
+         }
+     }
+ 
++    private void assertRottenmouthSelectedTargets(Target target, List<String> labels, String field) {
++        Set<UUID> expected = labels.stream()
++                .map(this::getAliasByName)
++                .filter(Objects::nonNull)
++                .collect(Collectors.toSet());
++        Set<UUID> selected = new HashSet<>(target.getTargets());
++        if (expected.size() != labels.size() || !expected.equals(selected)) {
++            throw new IllegalStateException(field + " selected objects " + selected
++                    + " instead of labeled objects " + expected);
++        }
++    }
++
+     private boolean makeScenarioCardChoice(
+             Outcome outcome, Target target, Ability source, Game game, Cards fromCards) {
+         List<String> group = takeNextCardChoiceGroup();
+@@ -4484,6 +4650,17 @@ public class TestPlayer implements Player {
+         return target.isChosen(game);
+     }
+ 
++    private boolean chooseRottenmouthDiscardCard(
++            Outcome outcome, Target target, Ability source, Game game) {
++        boolean selected = makeScenarioCardChoice(outcome, target, source, game, null);
++        if (selected) {
++            assertRottenmouthSelectedTargets(target, List.of(pendingRottenmouthUnlessDiscardLabel),
++                    "unless_choices.discard");
++            pendingRottenmouthUnlessDiscardLabel = null;
++        }
++        return selected;
++    }
++
+     @Override
+     public boolean choose(Outcome outcome, Cards cards, TargetCard target, Ability source, Game game) {
+         return makeChoose(outcome, target, source, game, cards);
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+index 578c8cdd..d7248825 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -125,6 +125,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                         + player(index).getTargets());
+             }
+             player(index).assertNoCardChoiceGroups();
++            player(index).assertNoPendingRottenmouthUnlessChoices();
+         }
+         System.out.println(RESULT_PREFIX + GSON.toJson(result()));
+     }
+@@ -140,6 +141,12 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             if (action.has("from") && !kind.equals("cast")) {
+                 throw new IllegalArgumentException("script.from is only valid for cast actions");
+             }
++            if (action.has("sacrifice") && !kind.equals("cast")) {
++                throw new IllegalArgumentException("script.sacrifice is only valid for cast actions");
++            }
++            if (action.has("choices") && !kind.equals("unless_choices")) {
++                throw new IllegalArgumentException("script.choices is only valid for unless_choices actions");
++            }
+             TestPlayer actingPlayer = player(activeIndex);
+             switch (kind) {
+                 case "play_land" -> {
+@@ -247,6 +254,29 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                     if (x < 0) {
+                         throw new IllegalArgumentException("cast.x must be a non-negative integer");
+                     }
++                    List<String> sacrifices = null;
++                    if (action.has("sacrifice")) {
++                        if (!action.get("sacrifice").isJsonArray()) {
++                            throw new IllegalArgumentException("cast.sacrifice must be an array of labels");
++                        }
++                        if (hasX) {
++                            throw new IllegalArgumentException("cast.sacrifice cannot be combined with cast.x");
++                        }
++                        sacrifices = strings(action.getAsJsonArray("sacrifice"));
++                        if (Set.copyOf(sacrifices).size() != sacrifices.size()) {
++                            throw new IllegalArgumentException("cast.sacrifice cannot repeat labels");
++                        }
++                        for (String label : sacrifices) {
++                            if (!labels.containsKey(label)) {
++                                throw new IllegalArgumentException("unknown sacrifice label " + label);
++                            }
++                            if (labelZones.get(label) != Zone.BATTLEFIELD) {
++                                throw new IllegalArgumentException(
++                                        "cast.sacrifice label " + label + " must be on the battlefield");
++                            }
++                        }
++                    }
++                    List<String> castSacrifices = sacrifices;
+                     runCode("validate X announcement", turn, step, actingPlayer, (info, player, game) -> {
+                         Card spell;
+                         if (source.equals("graveyard")) {
+@@ -278,6 +308,11 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                                     : "x is only valid for a spell with an X cost");
+                         }
+                     });
++                    if (castSacrifices != null) {
++                        runCode("queue cast sacrifice choice", turn, step, actingPlayer,
++                                (info, player, game) ->
++                                        actingPlayer.setCastSacrificeLabels(castSacrifices));
++                    }
+                     if (hasX) {
+                         setChoice(actingPlayer, "X=" + x);
+                     }
+@@ -304,8 +339,57 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                     } else {
+                         castSpell(turn, step, actingPlayer, card);
+                     }
++                    if (castSacrifices != null) {
++                        runCode("assert cast sacrifice choice was consumed", turn, step, actingPlayer,
++                                (info, player, game) -> actingPlayer.assertNoPendingCastSacrifice());
++                    }
+                     lastStep = step;
+                 }
++                case "unless_choices" -> {
++                    rejectUnknownKeys(action, Set.of("action", "player", "choices"), "script.unless_choices");
++                    String payer = requiredString(action, "player");
++                    if (!payer.equals("P0") && !payer.equals("P1")) {
++                        throw new IllegalArgumentException("unless_choices.player must be P0 or P1");
++                    }
++                    if (!action.has("choices") || !action.get("choices").isJsonArray()
++                            || action.getAsJsonArray("choices").isEmpty()) {
++                        throw new IllegalArgumentException(
++                                "unless_choices.choices must be a non-empty array");
++                    }
++                    List<TestPlayer.RottenmouthUnlessChoice> choices = new ArrayList<>();
++                    JsonArray entries = action.getAsJsonArray("choices");
++                    for (int index = 0; index < entries.size(); index++) {
++                        JsonElement entry = entries.get(index);
++                        if (entry.isJsonPrimitive() && entry.getAsString().equals("decline")) {
++                            choices.add(new TestPlayer.RottenmouthUnlessChoice(
++                                    TestPlayer.RottenmouthUnlessKind.DECLINE, null));
++                            continue;
++                        }
++                        if (!entry.isJsonObject() || entry.getAsJsonObject().size() != 1) {
++                            throw new IllegalArgumentException(
++                                    "unless_choices.choices[" + index
++                                            + "] must contain exactly one sacrifice or discard choice");
++                        }
++                        JsonObject branch = entry.getAsJsonObject();
++                        String choiceKind = branch.keySet().iterator().next();
++                        if (!choiceKind.equals("sacrifice") && !choiceKind.equals("discard")) {
++                            throw new IllegalArgumentException(
++                                    "unless_choices choice must use sacrifice or discard");
++                        }
++                        String label = requiredString(branch, choiceKind);
++                        if (!labels.containsKey(label)) {
++                            throw new IllegalArgumentException("unknown unless choice label " + label);
++                        }
++                        choices.add(new TestPlayer.RottenmouthUnlessChoice(
++                                choiceKind.equals("sacrifice")
++                                        ? TestPlayer.RottenmouthUnlessKind.SACRIFICE
++                                        : TestPlayer.RottenmouthUnlessKind.DISCARD,
++                                label));
++                    }
++                    TestPlayer payerPlayer = player(payer.equals("P0") ? 0 : 1);
++                    runCode("queue unless choices", turn, step, payerPlayer,
++                            (info, player, game) -> payerPlayer.addRottenmouthUnlessChoices(choices));
++                }
+                 case "trigger_targets" -> {
+                     List<String> targets = strings(array(action, "targets"));
+                     if (targets.isEmpty()) {

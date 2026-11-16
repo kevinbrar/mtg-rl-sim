@@ -7,11 +7,12 @@ use engine::game::game_object::GameObject;
 use engine::game::mana_abilities::is_mana_ability;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::game::scenario_db::GameScenarioDbExt;
-use engine::types::ability::ReplacementMode;
+use engine::types::ability::{AdditionalCost, ReplacementMode};
 use engine::types::{
-    actions::GameAction, parse_counter_type, AbilityCost, AbilityDefinition, AbilityKind, Effect,
-    GameState, ManaColor, ObjectId, Phase, PlayerId, ReplacementDefinition, ResolvedAbility,
-    TargetFilter, TargetRef, WaitingFor, Zone,
+    actions::{GameAction, UnlessCostBranch},
+    parse_counter_type, AbilityCost, AbilityDefinition, AbilityKind, Effect, GameState, ManaColor,
+    ObjectId, Phase, PlayerId, ReplacementDefinition, ResolvedAbility, TargetFilter, TargetRef,
+    WaitingFor, Zone,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -517,6 +518,355 @@ fn validate_script_cast_from(action: &Value) -> Result<(), String> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UnlessScriptChoice {
+    Sacrifice(ObjectId),
+    Discard(ObjectId),
+    Decline,
+}
+
+fn resolve_script_label(
+    labels: &HashMap<ObjectId, String>,
+    label: &str,
+) -> Result<ObjectId, String> {
+    labels
+        .iter()
+        .find_map(|(id, candidate)| (candidate == label).then_some(*id))
+        .ok_or_else(|| format!("unknown setup label {label}"))
+}
+
+fn cast_sacrifice_labels(
+    action: &Value,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<Option<Vec<ObjectId>>, String> {
+    let Some(value) = action.get("sacrifice") else {
+        return Ok(None);
+    };
+    if action.get("action").and_then(Value::as_str) != Some("cast") {
+        return Err("script.sacrifice is only valid for cast actions".to_string());
+    }
+    if action.get("x").is_some() {
+        return Err("cast.sacrifice cannot be combined with cast.x".to_string());
+    }
+    let entries = value
+        .as_array()
+        .ok_or("cast.sacrifice must be an array of setup labels")?;
+    let mut selected = Vec::with_capacity(entries.len());
+    let mut seen = HashSet::new();
+    for entry in entries {
+        let label = entry
+            .as_str()
+            .ok_or("cast.sacrifice entries must be setup labels")?;
+        let id = resolve_script_label(labels, label)?;
+        if !seen.insert(id) {
+            return Err(format!("cast.sacrifice repeats label {label}"));
+        }
+        selected.push(id);
+    }
+    Ok(Some(selected))
+}
+
+fn ability_cost_contains_sacrifice(cost: &AbilityCost) -> bool {
+    let mut contains_sacrifice = false;
+    cost.for_each_cost_node(&mut |node| {
+        contains_sacrifice |= matches!(node, AbilityCost::Sacrifice(_));
+    });
+    contains_sacrifice
+}
+
+fn additional_cost_contains_sacrifice(cost: &AdditionalCost) -> bool {
+    match cost {
+        AdditionalCost::Optional { cost, .. } | AdditionalCost::Required(cost) => {
+            ability_cost_contains_sacrifice(cost)
+        }
+        AdditionalCost::Kicker { costs, .. } => costs.iter().any(ability_cost_contains_sacrifice),
+        AdditionalCost::Choice(first, second) => {
+            ability_cost_contains_sacrifice(first) || ability_cost_contains_sacrifice(second)
+        }
+    }
+}
+
+fn probe_cast_sacrifice_prompt(
+    runner: &GameRunner,
+    spell: ObjectId,
+) -> Result<Option<bool>, String> {
+    let action = engine::ai_support::legal_actions(runner.state())
+        .into_iter()
+        .find(|candidate| {
+            matches!(
+                candidate,
+                GameAction::CastSpell { object_id, .. } if *object_id == spell
+            )
+        });
+    let Some(action) = action else {
+        return Ok(None);
+    };
+
+    let mut probe = GameRunner::from_state(runner.state().clone());
+    probe
+        .act(action)
+        .map_err(|error| format!("cast sacrifice prompt probe failed: {error}"))?;
+    let offered = match &probe.state().waiting_for {
+        WaitingFor::OptionalCostChoice { cost, .. } => additional_cost_contains_sacrifice(cost),
+        _ => false,
+    };
+    Ok(Some(offered))
+}
+
+fn ensure_cast_sacrifice_prompt_decision(
+    sacrifices: Option<&[ObjectId]>,
+    prompt_offered: Option<bool>,
+) -> Result<(), String> {
+    match (sacrifices.is_some(), prompt_offered) {
+        (false, Some(true)) => {
+            Err("cast offered an optional sacrifice cost without cast.sacrifice".to_string())
+        }
+        (true, Some(false)) => Err(
+            "cast.sacrifice was provided but no optional sacrifice cost prompt was offered"
+                .to_string(),
+        ),
+        _ => Ok(()),
+    }
+}
+
+fn parse_unless_script_choices(
+    action: &Value,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<(PlayerId, Vec<UnlessScriptChoice>), String> {
+    if action.get("action").and_then(Value::as_str) != Some("unless_choices") {
+        return Err("unless_choices action is required".to_string());
+    }
+    let fields = action.as_object().ok_or("unless_choices must be a table")?;
+    if fields
+        .keys()
+        .any(|key| !["action", "player", "choices"].contains(&key.as_str()))
+    {
+        return Err("unless_choices supports only player and choices".to_string());
+    }
+    let player = match action.get("player").and_then(Value::as_str) {
+        Some("P0") => PlayerId(0),
+        Some("P1") => PlayerId(1),
+        _ => return Err("unless_choices.player must be P0 or P1".to_string()),
+    };
+    let entries = action
+        .get("choices")
+        .and_then(Value::as_array)
+        .ok_or("unless_choices.choices must be a non-empty array")?;
+    if entries.is_empty() {
+        return Err("unless_choices.choices must be a non-empty array".to_string());
+    }
+    let mut choices = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        if entry.as_str() == Some("decline") {
+            choices.push(UnlessScriptChoice::Decline);
+            continue;
+        }
+        let choice = entry
+            .as_object()
+            .ok_or("unless_choices entries must be sacrifice/discard tables or decline")?;
+        if choice.len() != 1 {
+            return Err(format!(
+                "unless_choices.choices[{index}] must contain exactly one choice"
+            ));
+        }
+        let (kind, label_value) = choice.iter().next().expect("one entry checked");
+        let label = label_value
+            .as_str()
+            .ok_or("unless_choices labels must be strings")?;
+        let id = resolve_script_label(labels, label)?;
+        match kind.as_str() {
+            "sacrifice" => choices.push(UnlessScriptChoice::Sacrifice(id)),
+            "discard" => choices.push(UnlessScriptChoice::Discard(id)),
+            _ => {
+                return Err(format!(
+                    "unless_choices.choices[{index}] must use sacrifice or discard"
+                ))
+            }
+        }
+    }
+    Ok((player, choices))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UnlessScriptResponse {
+    AutoDecline,
+    Decline,
+    Pay {
+        choice: UnlessScriptChoice,
+        index: usize,
+    },
+}
+
+fn take_unless_script_choice_if_payable(
+    choices: &mut VecDeque<UnlessScriptChoice>,
+    player: PlayerId,
+    payable_indices: &[usize],
+    cost_index: impl FnOnce(UnlessScriptChoice) -> Result<usize, String>,
+) -> Result<UnlessScriptResponse, String> {
+    if payable_indices.is_empty() {
+        return Ok(UnlessScriptResponse::AutoDecline);
+    }
+    let choice = choices
+        .front()
+        .copied()
+        .ok_or_else(|| format!("unless prompt for {player:?} has no scripted choice"))?;
+    if choice == UnlessScriptChoice::Decline {
+        choices.pop_front();
+        return Ok(UnlessScriptResponse::Decline);
+    }
+    let index = cost_index(choice)?;
+    if !payable_indices.contains(&index) {
+        return Err(format!(
+            "scripted unless branch {choice:?} names unpayable cost index {index} for {player:?}"
+        ));
+    }
+    choices.pop_front();
+    Ok(UnlessScriptResponse::Pay { choice, index })
+}
+
+fn unless_cost_index(costs: &[AbilityCost], choice: UnlessScriptChoice) -> Result<usize, String> {
+    let index = costs.iter().position(|cost| match choice {
+        UnlessScriptChoice::Sacrifice(_) => matches!(cost, AbilityCost::Sacrifice(_)),
+        UnlessScriptChoice::Discard(_) => matches!(cost, AbilityCost::Discard { .. }),
+        UnlessScriptChoice::Decline => false,
+    });
+    index.ok_or_else(|| format!("scripted unless branch {choice:?} was not offered"))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum UnlessBranchPayability {
+    Payable {
+        prompt: &'static str,
+        candidates: usize,
+    },
+    Unpayable {
+        reason: String,
+    },
+}
+
+fn unless_cost_objects_moved(
+    before: &GameState,
+    after: &GameState,
+    player: PlayerId,
+    cost: &AbilityCost,
+) -> Result<usize, String> {
+    let origin = match cost {
+        AbilityCost::Sacrifice(_) => Zone::Battlefield,
+        AbilityCost::Discard { .. } => Zone::Hand,
+        other => {
+            return Err(format!(
+                "unless payability probe cannot track cost object movement for {other:?}"
+            ))
+        }
+    };
+    let mut moved = 0;
+    for (id, object) in &before.objects {
+        let controlled_by_payer = match origin {
+            Zone::Battlefield => object.controller == player,
+            Zone::Hand => object.owner == player,
+            _ => unreachable!(),
+        };
+        if object.zone == origin
+            && controlled_by_payer
+            && after
+                .objects
+                .get(id)
+                .is_none_or(|after_object| after_object.zone != origin)
+        {
+            moved += 1;
+        }
+    }
+    Ok(moved)
+}
+
+fn probe_unless_branch_payability(
+    state: &GameState,
+    player: PlayerId,
+    index: usize,
+    cost: &AbilityCost,
+) -> Result<UnlessBranchPayability, String> {
+    let before = state.clone();
+    let mut probe = GameRunner::from_state(before.clone());
+    if let Err(error) = probe.act(GameAction::ChooseUnlessCostBranch {
+        choice: UnlessCostBranch::Pay { index },
+    }) {
+        return Ok(UnlessBranchPayability::Unpayable {
+            reason: format!("Pay action rejected: {error}"),
+        });
+    }
+    match (&probe.state().waiting_for, cost) {
+        (
+            WaitingFor::WardSacrificeChoice { permanents, .. },
+            AbilityCost::Sacrifice(_),
+        ) if permanents.is_empty() => Ok(UnlessBranchPayability::Unpayable {
+            reason: "WardSacrificeChoice had no candidates".to_string(),
+        }),
+        (
+            WaitingFor::WardSacrificeChoice { permanents, .. },
+            AbilityCost::Sacrifice(_),
+        ) => Ok(UnlessBranchPayability::Payable {
+            prompt: "WardSacrificeChoice",
+            candidates: permanents.len(),
+        }),
+        (WaitingFor::WardDiscardChoice { cards, .. }, AbilityCost::Discard { .. })
+            if cards.is_empty() =>
+        {
+            Ok(UnlessBranchPayability::Unpayable {
+                reason: "WardDiscardChoice had no candidates".to_string(),
+            })
+        }
+        (WaitingFor::WardDiscardChoice { cards, .. }, AbilityCost::Discard { .. }) => {
+            Ok(UnlessBranchPayability::Payable {
+                prompt: "WardDiscardChoice",
+                candidates: cards.len(),
+            })
+        }
+        (
+            WaitingFor::Priority { .. } | WaitingFor::GameOver { .. },
+            AbilityCost::Sacrifice(_) | AbilityCost::Discard { .. },
+        ) if probe.state().stack.is_empty() => {
+            let moved = unless_cost_objects_moved(&before, probe.state(), player, cost)?;
+            if moved == 0 {
+                Ok(UnlessBranchPayability::Unpayable {
+                    reason: "step completed without moving a cost object".to_string(),
+                })
+            } else {
+                Ok(UnlessBranchPayability::Payable {
+                    prompt: "completed with cost object movement",
+                    candidates: moved,
+                })
+            }
+        }
+        (waiting, _) => Err(format!(
+            "unless payability probe for {player:?} cost index {index} reached unexpected state {waiting:?} with stack length {}",
+            probe.state().stack.len()
+        )),
+    }
+}
+
+fn ensure_unless_choice_is_offered(
+    label: &str,
+    selected: ObjectId,
+    offered: &[ObjectId],
+) -> Result<(), String> {
+    if offered.contains(&selected) {
+        return Ok(());
+    }
+    Err(format!("unless choice label {label} is not offered"))
+}
+
+fn ensure_unless_choice_groups_consumed(
+    choices: &[VecDeque<UnlessScriptChoice>; 2],
+) -> Result<(), String> {
+    let remaining = choices.iter().map(VecDeque::len).sum::<usize>();
+    if remaining == 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "{remaining} unless_choices entry(s) were unconsumed when the script ended"
+    ))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AlternativeCostDecision {
     Accept,
     Decline,
@@ -772,19 +1122,109 @@ fn ensure_activation_target_groups_consumed(
 }
 
 fn pass_until_resolved(
+    scenario_name: &str,
     runner: &mut GameRunner,
     labels: &HashMap<ObjectId, String>,
     groups: &mut VecDeque<Vec<ObjectId>>,
     activation_target_groups: &mut VecDeque<Vec<ObjectId>>,
     card_choice_groups: &mut VecDeque<Vec<ObjectId>>,
+    unless_choice_groups: &mut [VecDeque<UnlessScriptChoice>; 2],
 ) -> Result<(), String> {
+    let mut pending_unless_choice = None;
     for _ in 0..128 {
-        match runner.state().waiting_for {
+        match runner.state().waiting_for.clone() {
             WaitingFor::TriggerTargetSelection { .. } => {
                 apply_trigger_target_group(runner, labels, groups)?;
             }
             WaitingFor::TargetSelection { .. } => {
                 apply_activation_target_group(runner, labels, activation_target_groups)?;
+            }
+            WaitingFor::UnlessPaymentChooseCost { player, costs, .. } => {
+                let mut payable_indices = Vec::new();
+                for (index, cost) in costs.iter().enumerate() {
+                    let payability =
+                        probe_unless_branch_payability(runner.state(), player, index, cost)?;
+                    if std::env::var_os("PHASE_UNLESS_PROBE_TRACE").is_some() {
+                        eprintln!(
+                            "unless_probe scenario={scenario_name} player={player:?} index={index} cost={cost:?} result={payability:?}"
+                        );
+                    }
+                    if matches!(payability, UnlessBranchPayability::Payable { .. }) {
+                        payable_indices.push(index);
+                    }
+                }
+                let queue = unless_choice_groups
+                    .get_mut(player.0 as usize)
+                    .ok_or_else(|| format!("unless choice payer {player:?} is unsupported"))?;
+                let response = take_unless_script_choice_if_payable(
+                    queue,
+                    player,
+                    &payable_indices,
+                    |choice| unless_cost_index(&costs, choice),
+                )?;
+                match response {
+                    UnlessScriptResponse::AutoDecline | UnlessScriptResponse::Decline => {
+                        runner
+                            .act(GameAction::ChooseUnlessCostBranch {
+                                choice: UnlessCostBranch::Decline,
+                            })
+                            .map_err(|error| error.to_string())?;
+                    }
+                    UnlessScriptResponse::Pay { choice, index } => {
+                        runner
+                            .act(GameAction::ChooseUnlessCostBranch {
+                                choice: UnlessCostBranch::Pay { index },
+                            })
+                            .map_err(|error| error.to_string())?;
+                        pending_unless_choice = Some((player, choice));
+                    }
+                }
+            }
+            WaitingFor::WardSacrificeChoice {
+                player, permanents, ..
+            } => {
+                let (expected_player, choice) = pending_unless_choice
+                    .take()
+                    .ok_or("sacrifice choice prompt has no unless_choices entry")?;
+                if player != expected_player {
+                    return Err(
+                        "unless sacrifice choice was offered to a different player".to_string()
+                    );
+                }
+                let UnlessScriptChoice::Sacrifice(id) = choice else {
+                    return Err(
+                        "unless sacrifice prompt does not match the scripted choice".to_string()
+                    );
+                };
+                let label = labels
+                    .get(&id)
+                    .ok_or("unless sacrifice label is not a setup object")?;
+                ensure_unless_choice_is_offered(label, id, &permanents)?;
+                runner
+                    .act(GameAction::SelectCards { cards: vec![id] })
+                    .map_err(|error| error.to_string())?;
+            }
+            WaitingFor::WardDiscardChoice { player, cards, .. } => {
+                let (expected_player, choice) = pending_unless_choice
+                    .take()
+                    .ok_or("discard choice prompt has no unless_choices entry")?;
+                if player != expected_player {
+                    return Err(
+                        "unless discard choice was offered to a different player".to_string()
+                    );
+                }
+                let UnlessScriptChoice::Discard(id) = choice else {
+                    return Err(
+                        "unless discard prompt does not match the scripted choice".to_string()
+                    );
+                };
+                let label = labels
+                    .get(&id)
+                    .ok_or("unless discard label is not a setup object")?;
+                ensure_unless_choice_is_offered(label, id, &cards)?;
+                runner
+                    .act(GameAction::SelectCards { cards: vec![id] })
+                    .map_err(|error| error.to_string())?;
             }
             WaitingFor::EffectZoneChoice { .. }
             | WaitingFor::ChooseFromZoneChoice { .. }
@@ -802,8 +1242,14 @@ fn pass_until_resolved(
                     | WaitingFor::ChooseFromZoneChoice { .. }
                     | WaitingFor::DiscardChoice { .. }
                     | WaitingFor::OptionalEffectChoice { .. }
+                    | WaitingFor::UnlessPaymentChooseCost { .. }
+                    | WaitingFor::WardSacrificeChoice { .. }
+                    | WaitingFor::WardDiscardChoice { .. }
             )
         {
+            if pending_unless_choice.is_some() {
+                return Err("unless cost branch was not followed by its choice prompt".to_string());
+            }
             return Ok(());
         }
     }
@@ -1500,9 +1946,26 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     let mut trigger_target_groups = VecDeque::new();
     let mut activation_target_groups = VecDeque::new();
     let mut card_choice_groups = VecDeque::new();
+    let mut unless_choice_groups = [VecDeque::new(), VecDeque::new()];
     for (action_index, action) in actions.iter().enumerate() {
         validate_script_cast_from(action)?;
+        let sacrifice_objects = cast_sacrifice_labels(action, &labels)?;
+        if action.get("choices").is_some()
+            && action.get("action").and_then(Value::as_str) != Some("unless_choices")
+        {
+            return Err("script.choices is only valid for unless_choices actions".to_string());
+        }
+        if action.get("action").and_then(Value::as_str) == Some("unless_choices") {
+            parse_unless_script_choices(action, &labels)?;
+        }
         match action["action"].as_str().unwrap_or_default() {
+            "unless_choices" => {
+                let (player, choices) = parse_unless_script_choices(action, &labels)?;
+                let queue = unless_choice_groups
+                    .get_mut(player.0 as usize)
+                    .ok_or("unless_choices.player must be P0 or P1")?;
+                queue.extend(choices);
+            }
             "play_land" => play_land(&mut runner, &labels, action)?,
             "cast" => {
                 ensure_targeted_cast_has_no_pending_trigger_targets(
@@ -1548,6 +2011,11 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     }
                     spell
                 };
+                let sacrifice_prompt = probe_cast_sacrifice_prompt(&runner, spell)?;
+                ensure_cast_sacrifice_prompt_decision(
+                    sacrifice_objects.as_deref(),
+                    sacrifice_prompt,
+                )?;
                 let has_x_cost = match &runner.state().objects[&spell].mana_cost {
                     engine::types::mana::ManaCost::Cost { shards, .. } => {
                         shards.contains(&engine::types::mana::ManaCostShard::X)
@@ -1568,6 +2036,17 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 };
                 let cast = runner.cast(spell);
                 let cast = if let Some(x) = x { cast.x(x) } else { cast };
+                let cast = if let Some(sacrifices) = sacrifice_objects.as_ref() {
+                    if sacrifices.is_empty() {
+                        cast.decline_optional()
+                    } else {
+                        let x = u32::try_from(sacrifices.len())
+                            .map_err(|_| "cast.sacrifice has too many labels")?;
+                        cast.accept_optional().x(x).sacrifice_with(sacrifices)
+                    }
+                } else {
+                    cast
+                };
                 let cast = if action.get("targets").is_some() {
                     cast.target_slot_selections(&target_slots)
                 } else {
@@ -1576,6 +2055,21 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 let committed = cast
                     .commit_with_card_choices(&mut card_choice_groups)
                     .map_err(|error| error.to_string())?;
+                if let Some(sacrifices) = sacrifice_objects.as_ref() {
+                    for id in sacrifices {
+                        if committed
+                            .state()
+                            .objects
+                            .get(id)
+                            .is_some_and(|object| object.zone == Zone::Battlefield)
+                        {
+                            let label = labels.get(id).map(String::as_str).unwrap_or("<unknown>");
+                            return Err(format!(
+                                "cast.sacrifice label {label} was not consumed by the cast"
+                            ));
+                        }
+                    }
+                }
                 if let Some(decision_slot_count) = target_decision_slot_count {
                     validate_engine_chosen_cast_targets(
                         committed.state(),
@@ -1598,11 +2092,13 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
             }
             "pass_until_resolved" => {
                 pass_until_resolved(
+                    name,
                     &mut runner,
                     &labels,
                     &mut trigger_target_groups,
                     &mut activation_target_groups,
                     &mut card_choice_groups,
+                    &mut unless_choice_groups,
                 )?;
             }
             "end_turn" | "next_turn" => {
@@ -1614,6 +2110,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     ensure_trigger_target_groups_consumed(&trigger_target_groups)?;
     ensure_activation_target_groups_consumed(&activation_target_groups)?;
     ensure_card_choice_groups_consumed(&card_choice_groups)?;
+    ensure_unless_choice_groups_consumed(&unless_choice_groups)?;
     let reached = check_reach(runner.state(), &labels, spec.get("reach"))?;
     Ok(json!({
         "scenario": name,
@@ -2323,6 +2820,244 @@ mod tests {
         assert!(cast_x(&json!({"x": -1}), true)
             .unwrap_err()
             .contains("non-negative"));
+    }
+
+    #[test]
+    fn cast_sacrifice_labels_validate_scripted_choices() {
+        let object = ObjectId(17);
+        let labels = HashMap::from([(object, "fodder".to_string())]);
+
+        assert_eq!(
+            cast_sacrifice_labels(&json!({"action": "cast", "sacrifice": ["fodder"]}), &labels),
+            Ok(Some(vec![object]))
+        );
+        assert_eq!(
+            cast_sacrifice_labels(&json!({"action": "cast", "sacrifice": []}), &labels),
+            Ok(Some(vec![]))
+        );
+        assert!(cast_sacrifice_labels(
+            &json!({"action": "cast", "sacrifice": ["missing"]}),
+            &labels
+        )
+        .unwrap_err()
+        .contains("unknown setup label"));
+        assert!(cast_sacrifice_labels(
+            &json!({"action": "cast", "sacrifice": ["fodder", "fodder"]}),
+            &labels
+        )
+        .unwrap_err()
+        .contains("repeats label"));
+        assert!(
+            cast_sacrifice_labels(&json!({"action": "activate", "sacrifice": []}), &labels)
+                .unwrap_err()
+                .contains("only valid for cast")
+        );
+    }
+
+    #[test]
+    fn cast_sacrifice_prompt_rejects_a_missing_script_entry() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                for _ in 0..6 {
+                    scenario.add_basic_land(PlayerId(0), ManaColor::Black);
+                }
+                let spell = scenario
+                    .add_creature_to_hand_from_oracle(
+                        PlayerId(0),
+                        "Rottenmouth Viper",
+                        5,
+                        5,
+                        "As an additional cost to cast this spell, you may sacrifice any number of nonland permanents. This spell costs {1} less to cast for each permanent sacrificed this way. Whenever this creature enters or attacks, put a blight counter on it. Then for each blight counter on it, each opponent loses 4 life unless that player sacrifices a nonland permanent of their choice or discards a card.",
+                    )
+                    .with_mana_cost(engine::types::mana::ManaCost::Cost {
+                        shards: vec![engine::types::mana::ManaCostShard::Black],
+                        generic: 5,
+                    })
+                    .id();
+                let runner = scenario.build();
+
+                let prompt = probe_cast_sacrifice_prompt(&runner, spell).unwrap();
+                assert_eq!(prompt, Some(true));
+                assert!(ensure_cast_sacrifice_prompt_decision(None, prompt)
+                    .unwrap_err()
+                    .contains("without cast.sacrifice"));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn cast_sacrifice_script_requires_the_prompt_even_when_empty() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let spell = scenario
+                    .add_spell_to_hand_from_oracle(PlayerId(0), "Simple Spell", true, "")
+                    .with_mana_cost(engine::types::mana::ManaCost::generic(0))
+                    .id();
+                let runner = scenario.build();
+                let prompt = probe_cast_sacrifice_prompt(&runner, spell).unwrap();
+
+                assert_eq!(prompt, Some(false));
+                assert!(ensure_cast_sacrifice_prompt_decision(Some(&[]), prompt)
+                    .unwrap_err()
+                    .contains("no optional sacrifice cost prompt"));
+                assert!(ensure_cast_sacrifice_prompt_decision(None, prompt).is_ok());
+                assert!(ensure_cast_sacrifice_prompt_decision(Some(&[]), Some(true)).is_ok());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn unless_choices_fail_closed_for_missing_extra_and_illegal_choices() {
+        let selected = ObjectId(17);
+        let labels = HashMap::from([(selected, "fodder".to_string())]);
+        let mut queues = [VecDeque::new(), VecDeque::new()];
+
+        assert!(take_unless_script_choice_if_payable(
+            &mut queues[1],
+            PlayerId(1),
+            &[0],
+            test_unless_choice_index,
+        )
+        .unwrap_err()
+        .contains("no scripted choice"));
+
+        let action = json!({
+            "action": "unless_choices",
+            "player": "P1",
+            "choices": [{"sacrifice": "fodder"}, "decline"]
+        });
+        let (player, choices) = parse_unless_script_choices(&action, &labels).unwrap();
+        assert_eq!(player, PlayerId(1));
+        queues[1].extend(choices);
+        assert_eq!(
+            take_unless_script_choice_if_payable(
+                &mut queues[1],
+                player,
+                &[0],
+                test_unless_choice_index,
+            ),
+            Ok(UnlessScriptResponse::Pay {
+                choice: UnlessScriptChoice::Sacrifice(selected),
+                index: 0,
+            })
+        );
+        assert!(ensure_unless_choice_groups_consumed(&queues)
+            .unwrap_err()
+            .contains("unconsumed"));
+        assert_eq!(
+            take_unless_script_choice_if_payable(
+                &mut queues[1],
+                player,
+                &[0, 1],
+                test_unless_choice_index,
+            ),
+            Ok(UnlessScriptResponse::Decline)
+        );
+        assert!(ensure_unless_choice_groups_consumed(&queues).is_ok());
+
+        assert!(
+            ensure_unless_choice_is_offered("fodder", selected, &[ObjectId(18)])
+                .unwrap_err()
+                .contains("not offered")
+        );
+        assert!(
+            unless_cost_index(&[], UnlessScriptChoice::Sacrifice(selected))
+                .unwrap_err()
+                .contains("was not offered")
+        );
+        assert!(parse_unless_script_choices(
+            &json!({
+                "action": "unless_choices",
+                "player": "P1",
+                "choices": [{"discard": "missing"}]
+            }),
+            &labels
+        )
+        .unwrap_err()
+        .contains("unknown setup label"));
+        assert!(parse_unless_script_choices(
+            &json!({
+                "action": "unless_choices",
+                "player": "P1",
+                "choices": [{"sacrifice": "fodder", "discard": "fodder"}]
+            }),
+            &labels
+        )
+        .unwrap_err()
+        .contains("exactly one choice"));
+    }
+
+    fn test_unless_choice_index(choice: UnlessScriptChoice) -> Result<usize, String> {
+        match choice {
+            UnlessScriptChoice::Sacrifice(_) => Ok(0),
+            UnlessScriptChoice::Discard(_) => Ok(1),
+            UnlessScriptChoice::Decline => Err("decline has no cost index".to_string()),
+        }
+    }
+
+    #[test]
+    fn unless_unpayable_prompt_auto_declines_without_consuming_a_choice() {
+        let mut queue = VecDeque::new();
+
+        assert_eq!(
+            take_unless_script_choice_if_payable(
+                &mut queue,
+                PlayerId(1),
+                &[],
+                test_unless_choice_index,
+            ),
+            Ok(UnlessScriptResponse::AutoDecline)
+        );
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn unless_script_entry_without_payable_branches_remains_unconsumed() {
+        let mut queues = [
+            VecDeque::new(),
+            VecDeque::from([UnlessScriptChoice::Discard(ObjectId(17))]),
+        ];
+
+        assert_eq!(
+            take_unless_script_choice_if_payable(
+                &mut queues[1],
+                PlayerId(1),
+                &[],
+                test_unless_choice_index,
+            ),
+            Ok(UnlessScriptResponse::AutoDecline)
+        );
+        assert!(ensure_unless_choice_groups_consumed(&queues)
+            .unwrap_err()
+            .contains("unconsumed"));
+    }
+
+    #[test]
+    fn unless_script_entry_for_an_unpayable_branch_fails_without_consuming_it() {
+        let mut queue = VecDeque::from([UnlessScriptChoice::Discard(ObjectId(17))]);
+
+        assert!(take_unless_script_choice_if_payable(
+            &mut queue,
+            PlayerId(1),
+            &[0],
+            test_unless_choice_index,
+        )
+        .unwrap_err()
+        .contains("unpayable cost index 1"));
+        assert_eq!(
+            queue,
+            VecDeque::from([UnlessScriptChoice::Discard(ObjectId(17))])
+        );
     }
 
     #[test]
