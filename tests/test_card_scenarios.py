@@ -173,7 +173,60 @@ def test_count_group_normalization_requires_identical_setup_characteristics() ->
         permanent.get("label")
         for permanent in normalized[0]["projection"]["battlefield"]
     }
-    assert labels == {"tapped", "countered", "attached", None}
+    group_tokens = {
+        label
+        for label in labels
+        if isinstance(label, str) and label.startswith("~group:")
+    }
+    assert labels == {"tapped", "countered", "attached", *group_tokens}
+    assert len(group_tokens) == 1
+
+
+def test_count_group_normalization_preserves_distinct_setup_groups() -> None:
+    scenario = {
+        "name": "cross-group tapped swap",
+        "setup": {
+            "P0": {
+                "battlefield": [
+                    {"label": "tapped-1", "card": "Swamp", "tapped": True},
+                    {"label": "tapped-2", "card": "Swamp", "tapped": True},
+                    {"label": "untapped-1", "card": "Swamp", "tapped": False},
+                    {"label": "untapped-2", "card": "Swamp", "tapped": False},
+                ]
+            }
+        },
+        "script": [],
+        "reach": {
+            "all": [
+                {"player": "P0", "card": "Swamp", "count": 2, "tapped": True},
+                {"player": "P0", "card": "Swamp", "count": 2, "tapped": False},
+            ]
+        },
+    }
+    phase = {
+        "scenario": "cross-group tapped swap",
+        "projection": {
+            "battlefield": [
+                {"label": "tapped-1", "name": "Swamp", "tapped": True},
+                {"label": "tapped-2", "name": "Swamp", "tapped": True},
+                {"label": "untapped-1", "name": "Swamp", "tapped": False},
+                {"label": "untapped-2", "name": "Swamp", "tapped": False},
+            ]
+        },
+        "reach": True,
+    }
+    mage = copy.deepcopy(phase)
+    for permanent in mage["projection"]["battlefield"]:
+        permanent["tapped"] = not permanent["tapped"]
+
+    normalized_phase = normalize_label_insensitive_count_groups([scenario], [phase])[0]
+    normalized_mage = normalize_label_insensitive_count_groups([scenario], [mage])[0]
+
+    assert compare(
+        {"cross-group tapped swap": normalized_phase},
+        {"cross-group tapped swap": normalized_mage},
+    ) == ["cross-group tapped swap"]
+    assert projection_sha256(normalized_phase) != projection_sha256(normalized_mage)
 
 
 def test_essence_burn_spec_contains_five_engine_computed_scenarios() -> None:

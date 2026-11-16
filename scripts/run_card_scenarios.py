@@ -356,9 +356,32 @@ def normalize_label_insensitive_count_groups(
         battlefield = projection.get("battlefield")
         if not fungible or not isinstance(battlefield, list):
             continue
+        group_tokens: dict[tuple[str, str, str], str] = {}
+        token_groups: dict[str, tuple[str, str, str]] = {}
         for permanent in battlefield:
-            if permanent.get("label") in fungible:
-                permanent.pop("label")
+            label = permanent.get("label")
+            if label not in fungible:
+                continue
+            group = labels[label]
+            token = group_tokens.get(group)
+            if token is None:
+                encoded_group = json.dumps(group, separators=(",", ":"))
+                token = (
+                    "~group:"
+                    + hashlib.sha256(encoded_group.encode("utf-8")).hexdigest()
+                )
+                if token in labels:
+                    raise ValueError(
+                        f"{result['scenario']}: count-group token collides with setup label {token!r}"
+                    )
+                previous_group = token_groups.get(token)
+                if previous_group is not None and previous_group != group:
+                    raise ValueError(
+                        f"{result['scenario']}: count-group token collision for {token!r}"
+                    )
+                group_tokens[group] = token
+                token_groups[token] = group
+            permanent["label"] = token
         battlefield.sort(key=lambda permanent: json.dumps(permanent, sort_keys=True))
     return normalized
 
