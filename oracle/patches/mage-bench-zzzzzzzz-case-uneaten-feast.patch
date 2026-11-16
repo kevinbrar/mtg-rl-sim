@@ -1,5 +1,5 @@
 diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
-index 8f1ee15de0..d841df346d 100644
+index 8f1ee15de0..27ef83a6ca 100644
 --- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
 +++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
 @@ -501,16 +501,43 @@ public class TestPlayer implements Player {
@@ -48,7 +48,7 @@ index 8f1ee15de0..d841df346d 100644
      public void assertUniqueActivatedAbility(Game game, String nameOrAlias) {
          List<ActivatedAbility> matches = computerPlayer.getPlayable(game, true, Zone.BATTLEFIELD, false).stream()
                  .filter(Ability::isNonManaActivatedAbility)
-@@ -3276,6 +3303,45 @@ public class TestPlayer implements Player {
+@@ -3276,6 +3303,47 @@ public class TestPlayer implements Player {
          return computerPlayer.cast(ability, game, noMana, approvingObject);
      }
  
@@ -71,8 +71,10 @@ index 8f1ee15de0..d841df346d 100644
 +                .map(SpellAbility.class::cast)
 +                .filter(ability -> sourceId.equals(ability.getSourceId()))
 +                .collect(Collectors.toList());
-+        if (matches.isEmpty()) {
-+            throw new IllegalStateException("no playable graveyard spell ability for object " + sourceId);
++        if (matches.size() != 1) {
++            throw new IllegalStateException(
++                    "expected exactly one playable graveyard spell ability for object "
++                            + sourceId + ", found " + matches.size());
 +        }
 +        if (!computerPlayer.activateAbility(matches.get(0).copy(), game)) {
 +            throw new IllegalStateException("could not cast graveyard spell object " + sourceId);

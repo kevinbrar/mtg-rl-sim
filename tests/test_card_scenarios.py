@@ -16,10 +16,217 @@ from scripts.run_card_scenarios import (
     load_known_diffs,
     load_specs,
     main,
+    normalize_label_insensitive_count_groups,
     parse_mage_report,
     projection_sha256,
     scenario_paths_for_cards,
 )
+
+
+def test_count_based_permanent_comparison_ignores_unreferenced_labels() -> None:
+    scenario = {
+        "name": "R2",
+        "setup": {
+            "P0": {
+                "battlefield": [
+                    {"card": "Swamp", "label": f"swamp-{index}"}
+                    for index in range(1, 7)
+                ]
+            }
+        },
+        "script": [],
+        "reach": {
+            "all": [
+                {"player": "P0", "card": "Swamp", "count": 4, "tapped": True},
+                {"player": "P0", "card": "Swamp", "count": 2, "tapped": False},
+            ]
+        },
+    }
+    phase = {
+        "scenario": "R2",
+        "projection": {
+            "battlefield": [
+                {"label": f"swamp-{index}", "name": "Swamp", "tapped": index <= 4}
+                for index in range(1, 7)
+            ]
+        },
+    }
+    mage = {
+        "scenario": "R2",
+        "projection": {
+            "battlefield": [
+                {
+                    "label": f"swamp-{index}",
+                    "name": "Swamp",
+                    "tapped": index in {1, 2, 4, 6},
+                }
+                for index in range(1, 7)
+            ]
+        },
+    }
+
+    normalized_phase = normalize_label_insensitive_count_groups([scenario], [phase])
+    normalized_mage = normalize_label_insensitive_count_groups([scenario], [mage])
+    assert normalized_phase == normalized_mage
+    assert projection_sha256(normalized_phase[0]) == projection_sha256(
+        normalized_mage[0]
+    )
+
+    scenario["script"] = [
+        {"action": "cast", "card": "Rottenmouth Viper", "sacrifice": ["swamp-3"]}
+    ]
+    referenced = normalize_label_insensitive_count_groups([scenario], [mage])
+    assert any(
+        permanent.get("label") == "swamp-3"
+        for permanent in referenced[0]["projection"]["battlefield"]
+    )
+
+    scenario["script"] = []
+    scenario["reach"]["all"][0]["tapped_labels"] = ["swamp-4"]
+    referenced = normalize_label_insensitive_count_groups([scenario], [mage])
+    assert any(
+        permanent.get("label") == "swamp-4"
+        for permanent in referenced[0]["projection"]["battlefield"]
+    )
+
+
+def test_count_based_permanent_comparison_keeps_tapped_count_mismatches() -> None:
+    scenario = {
+        "name": "R2",
+        "setup": {
+            "P0": {
+                "battlefield": [
+                    {"card": "Swamp", "label": f"swamp-{index}"}
+                    for index in range(1, 7)
+                ]
+            }
+        },
+        "script": [],
+        "reach": {
+            "all": [
+                {"player": "P0", "card": "Swamp", "count": 4, "tapped": True},
+                {"player": "P0", "card": "Swamp", "count": 2, "tapped": False},
+            ]
+        },
+    }
+    phase = {
+        "scenario": "R2",
+        "projection": {
+            "battlefield": [
+                {"label": f"swamp-{index}", "name": "Swamp", "tapped": index <= 4}
+                for index in range(1, 7)
+            ]
+        },
+    }
+    mage = copy.deepcopy(phase)
+    for index, permanent in enumerate(mage["projection"]["battlefield"], start=1):
+        permanent["tapped"] = index in {1, 2, 4}
+
+    normalized_phase = normalize_label_insensitive_count_groups([scenario], [phase])
+    normalized_mage = normalize_label_insensitive_count_groups([scenario], [mage])
+    report = evaluate_known_diffs(
+        {"test": ["R2"]}, normalized_phase, normalized_mage, [], []
+    )
+    assert len(report["failed"]) == 1
+
+
+def test_count_group_normalization_requires_identical_setup_characteristics() -> None:
+    scenario = {
+        "name": "setup distinctions",
+        "setup": {
+            "P0": {
+                "battlefield": [
+                    {"label": "same-1", "card": "Swamp"},
+                    {"label": "same-2", "card": "Swamp"},
+                    {"label": "tapped", "card": "Swamp", "tapped": True},
+                    {"label": "countered", "card": "Swamp", "counters": {"blight": 1}},
+                    {"label": "attached", "card": "Swamp", "attached_to": "host"},
+                ]
+            }
+        },
+        "script": [],
+        "reach": {
+            "all": [
+                {"player": "P0", "card": "Swamp", "count": 1, "tapped": True},
+                {"player": "P0", "card": "Swamp", "count": 4, "tapped": False},
+            ]
+        },
+    }
+    result = {
+        "scenario": "setup distinctions",
+        "projection": {
+            "battlefield": [
+                {"label": label, "name": "Swamp", "tapped": tapped}
+                for label, tapped in [
+                    ("same-1", False),
+                    ("same-2", False),
+                    ("tapped", True),
+                    ("countered", False),
+                    ("attached", False),
+                ]
+            ]
+        },
+    }
+
+    normalized = normalize_label_insensitive_count_groups([scenario], [result])
+    labels = {
+        permanent.get("label")
+        for permanent in normalized[0]["projection"]["battlefield"]
+    }
+    group_tokens = {
+        label
+        for label in labels
+        if isinstance(label, str) and label.startswith("~group:")
+    }
+    assert labels == {"tapped", "countered", "attached", *group_tokens}
+    assert len(group_tokens) == 1
+
+
+def test_count_group_normalization_preserves_distinct_setup_groups() -> None:
+    scenario = {
+        "name": "cross-group tapped swap",
+        "setup": {
+            "P0": {
+                "battlefield": [
+                    {"label": "tapped-1", "card": "Swamp", "tapped": True},
+                    {"label": "tapped-2", "card": "Swamp", "tapped": True},
+                    {"label": "untapped-1", "card": "Swamp", "tapped": False},
+                    {"label": "untapped-2", "card": "Swamp", "tapped": False},
+                ]
+            }
+        },
+        "script": [],
+        "reach": {
+            "all": [
+                {"player": "P0", "card": "Swamp", "count": 2, "tapped": True},
+                {"player": "P0", "card": "Swamp", "count": 2, "tapped": False},
+            ]
+        },
+    }
+    phase = {
+        "scenario": "cross-group tapped swap",
+        "projection": {
+            "battlefield": [
+                {"label": "tapped-1", "name": "Swamp", "tapped": True},
+                {"label": "tapped-2", "name": "Swamp", "tapped": True},
+                {"label": "untapped-1", "name": "Swamp", "tapped": False},
+                {"label": "untapped-2", "name": "Swamp", "tapped": False},
+            ]
+        },
+        "reach": True,
+    }
+    mage = copy.deepcopy(phase)
+    for permanent in mage["projection"]["battlefield"]:
+        permanent["tapped"] = not permanent["tapped"]
+
+    normalized_phase = normalize_label_insensitive_count_groups([scenario], [phase])[0]
+    normalized_mage = normalize_label_insensitive_count_groups([scenario], [mage])[0]
+
+    assert compare(
+        {"cross-group tapped swap": normalized_phase},
+        {"cross-group tapped swap": normalized_mage},
+    ) == ["cross-group tapped swap"]
+    assert projection_sha256(normalized_phase) != projection_sha256(normalized_mage)
 
 
 def test_essence_burn_spec_contains_five_engine_computed_scenarios() -> None:
@@ -382,6 +589,131 @@ script = [{action}]
     )
 
     with pytest.raises(ValueError, match=message):
+        load_specs([spec])
+
+
+def test_load_specs_accepts_rottenmouth_viper_choice_scripts(tmp_path: Path) -> None:
+    spec = tmp_path / "rottenmouth-choices.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "Viper choices"
+script = [
+  { action = "unless_choices", player = "P1", choices = [
+    { sacrifice = "p1-fodder" }, { discard = "p1-card" }, "decline"
+  ] },
+  { action = "cast", card = "Rottenmouth Viper", sacrifice = ["p0-fodder"] }
+]
+
+[scenarios.setup.P0]
+hand = ["Rottenmouth Viper"]
+battlefield = [{ label = "p0-fodder", card = "Memnite" }]
+
+[scenarios.setup.P1]
+hand = [{ label = "p1-card", card = "Memnite" }]
+battlefield = [{ label = "p1-fodder", card = "Memnite" }]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+
+    assert loaded["scenarios"][0]["script"][0]["choices"] == [
+        {"sacrifice": "p1-fodder"},
+        {"discard": "p1-card"},
+        "decline",
+    ]
+    assert loaded["scenarios"][0]["script"][1]["sacrifice"] == ["p0-fodder"]
+
+
+@pytest.mark.parametrize(
+    ("script", "setup", "message"),
+    [
+        (
+            '[{ action = "cast", card = "Rottenmouth Viper", sacrifice = "fodder" }]',
+            '[scenarios.setup.P0]\nhand = ["Rottenmouth Viper"]\nbattlefield = [{ label = "fodder", card = "Memnite" }]',
+            "must be an array",
+        ),
+        (
+            '[{ action = "cast", card = "Rottenmouth Viper", sacrifice = ["unknown"] }]',
+            '[scenarios.setup.P0]\nhand = ["Rottenmouth Viper"]',
+            "unknown setup label",
+        ),
+        (
+            '[{ action = "cast", card = "Rottenmouth Viper", sacrifice = ["hand-card"] }]',
+            '[scenarios.setup.P0]\nhand = ["Rottenmouth Viper", { label = "hand-card", card = "Memnite" }]',
+            "must be in the battlefield",
+        ),
+        (
+            '[{ action = "cast", card = "Rottenmouth Viper", sacrifice = ["fodder", "fodder"] }]',
+            '[scenarios.setup.P0]\nhand = ["Rottenmouth Viper"]\nbattlefield = [{ label = "fodder", card = "Memnite" }]',
+            "cannot repeat labels",
+        ),
+    ],
+)
+def test_load_specs_rejects_invalid_cast_sacrifice_choices(
+    tmp_path: Path, script: str, setup: str, message: str
+) -> None:
+    spec = tmp_path / "invalid-cast-sacrifice.toml"
+    spec.write_text(
+        f'[[scenarios]]\nname = "invalid cast sacrifice"\nscript = {script}\n\n{setup}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        load_specs([spec])
+
+
+@pytest.mark.parametrize(
+    ("action", "setup", "message"),
+    [
+        (
+            '{ action = "unless_choices", choices = ["decline"] }',
+            "[scenarios.setup.P1]",
+            "player must be P0 or P1",
+        ),
+        (
+            '{ action = "unless_choices", player = "P1", choices = [] }',
+            "[scenarios.setup.P1]",
+            "non-empty array",
+        ),
+        (
+            '{ action = "unless_choices", player = "P1", choices = [{ unknown = "card" }] }',
+            '[scenarios.setup.P1]\nhand = [{ label = "card", card = "Memnite" }]',
+            "must use sacrifice or discard",
+        ),
+        (
+            '{ action = "unless_choices", player = "P1", choices = [{ sacrifice = "card", discard = "card" }] }',
+            '[scenarios.setup.P1]\nbattlefield = [{ label = "card", card = "Memnite" }]',
+            "exactly one",
+        ),
+        (
+            '{ action = "unless_choices", player = "P1", choices = [{ sacrifice = "card" }] }',
+            '[scenarios.setup.P0]\nbattlefield = [{ label = "card", card = "Memnite" }]',
+            "must be in P1's battlefield",
+        ),
+        (
+            '{ action = "unless_choices", player = "P1", choices = [{ discard = "missing" }] }',
+            "[scenarios.setup.P1]",
+            "unknown setup label",
+        ),
+        (
+            '{ action = "unless_choices", player = "P1", choices = ["decline"], extra = true }',
+            "[scenarios.setup.P1]",
+            "extra is unsupported",
+        ),
+    ],
+)
+def test_load_specs_rejects_invalid_unless_choices(
+    tmp_path: Path, action: str, setup: str, message: str
+) -> None:
+    spec = tmp_path / "invalid-unless-choices.toml"
+    spec.write_text(
+        f'[[scenarios]]\nname = "invalid unless choices"\nscript = [{action}]\n\n{setup}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises((TypeError, ValueError), match=message):
         load_specs([spec])
 
 

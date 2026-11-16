@@ -1,0 +1,194 @@
+[[scenarios]]
+name = "R1 no cast sacrifice and no unless options"
+active_player = 0
+script = [
+  { action = "cast", card = "Rottenmouth Viper", sacrifice = [] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "swamp-1", card = "Swamp" },
+  { label = "swamp-2", card = "Swamp" },
+  { label = "swamp-3", card = "Swamp" },
+  { label = "swamp-4", card = "Swamp" },
+  { label = "swamp-5", card = "Swamp" },
+  { label = "swamp-6", card = "Swamp" },
+]
+hand = ["Rottenmouth Viper"]
+
+[scenarios.setup.P1]
+life = 20
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Rottenmouth Viper", counters = { blight = 1 } },
+  { zone = "battlefield", player = "P0", card = "Swamp", tapped_labels = ["swamp-1", "swamp-2", "swamp-3", "swamp-4", "swamp-5", "swamp-6"], count = 6 },
+]
+
+[[scenarios]]
+name = "R2 sacrifice two permanents to reduce the cast cost"
+active_player = 0
+script = [
+  { action = "cast", card = "Rottenmouth Viper", sacrifice = ["fodder-1", "fodder-2"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "swamp-1", card = "Swamp" },
+  { label = "swamp-2", card = "Swamp" },
+  { label = "swamp-3", card = "Swamp" },
+  { label = "swamp-4", card = "Swamp" },
+  { label = "swamp-5", card = "Swamp" },
+  { label = "swamp-6", card = "Swamp" },
+  { label = "fodder-1", card = "Memnite" },
+  { label = "fodder-2", card = "Memnite" },
+]
+hand = ["Rottenmouth Viper"]
+
+[scenarios.setup.P1]
+life = 20
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Rottenmouth Viper", counters = { blight = 1 } },
+  { zone = "graveyard", player = "P0", card = "Memnite", count = 2 },
+  { zone = "battlefield", player = "P0", card = "Swamp", count = 4, tapped = true },
+  { zone = "battlefield", player = "P0", card = "Swamp", count = 2, tapped = false },
+]
+
+[[scenarios]]
+name = "R3 choose sacrifice over discard"
+active_player = 0
+script = [
+  { action = "unless_choices", player = "P1", choices = [{ sacrifice = "p1-permanent" }] },
+  { action = "cast", card = "Rottenmouth Viper", sacrifice = [] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "swamp-1", card = "Swamp" },
+  { label = "swamp-2", card = "Swamp" },
+  { label = "swamp-3", card = "Swamp" },
+  { label = "swamp-4", card = "Swamp" },
+  { label = "swamp-5", card = "Swamp" },
+  { label = "swamp-6", card = "Swamp" },
+]
+hand = ["Rottenmouth Viper"]
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [
+  { label = "p1-permanent", card = "Memnite" },
+  { label = "p1-permanent-other", card = "Walking Corpse" },
+]
+hand = [{ label = "p1-card", card = "Memnite" }]
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P1", card = "Memnite", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Walking Corpse", count = 1 },
+  { zone = "hand", player = "P1", card = "Memnite", count = 1 },
+]
+
+[[scenarios]]
+name = "R4 decline sacrifice and choose discard"
+active_player = 0
+script = [
+  { action = "unless_choices", player = "P1", choices = [{ discard = "p1-card" }] },
+  { action = "cast", card = "Rottenmouth Viper", sacrifice = [] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "swamp-1", card = "Swamp" },
+  { label = "swamp-2", card = "Swamp" },
+  { label = "swamp-3", card = "Swamp" },
+  { label = "swamp-4", card = "Swamp" },
+  { label = "swamp-5", card = "Swamp" },
+  { label = "swamp-6", card = "Swamp" },
+]
+hand = ["Rottenmouth Viper"]
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "p1-permanent", card = "Memnite" }]
+hand = [
+  { label = "p1-card", card = "Memnite" },
+  { label = "p1-card-other", card = "Walking Corpse" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P1", card = "Memnite", count = 1 },
+  { zone = "graveyard", player = "P1", card = "Memnite", count = 1 },
+  { zone = "hand", player = "P1", card = "Walking Corpse", count = 1 },
+]
+
+[[scenarios]]
+name = "R5 decline sacrifice and discard"
+active_player = 0
+script = [
+  { action = "unless_choices", player = "P1", choices = ["decline"] },
+  { action = "cast", card = "Rottenmouth Viper", sacrifice = [] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "swamp-1", card = "Swamp" },
+  { label = "swamp-2", card = "Swamp" },
+  { label = "swamp-3", card = "Swamp" },
+  { label = "swamp-4", card = "Swamp" },
+  { label = "swamp-5", card = "Swamp" },
+  { label = "swamp-6", card = "Swamp" },
+]
+hand = ["Rottenmouth Viper"]
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "p1-permanent", card = "Memnite" }]
+hand = [{ label = "p1-card", card = "Memnite" }]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P1", card = "Memnite", count = 1 },
+  { zone = "hand", player = "P1", card = "Memnite", count = 1 },
+]
+
+[[scenarios]]
+name = "R6 lands and empty hand are not eligible"
+active_player = 0
+script = [
+  { action = "cast", card = "Rottenmouth Viper", sacrifice = [] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "swamp-1", card = "Swamp" },
+  { label = "swamp-2", card = "Swamp" },
+  { label = "swamp-3", card = "Swamp" },
+  { label = "swamp-4", card = "Swamp" },
+  { label = "swamp-5", card = "Swamp" },
+  { label = "swamp-6", card = "Swamp" },
+]
+hand = ["Rottenmouth Viper"]
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "p1-land", card = "Swamp" }]
+
+[scenarios.reach]
+zone = "battlefield"
+player = "P1"
+card = "Swamp"

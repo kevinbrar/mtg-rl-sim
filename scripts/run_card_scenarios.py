@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -285,6 +286,106 @@ def projection_sha256(result: dict | None) -> str | None:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def normalize_label_insensitive_count_groups(
+    scenarios: list[dict], results: list[dict]
+) -> list[dict]:
+    scenario_by_name = {scenario["name"]: scenario for scenario in scenarios}
+    normalized = copy.deepcopy(results)
+
+    def strings(value: object):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from strings(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from strings(item)
+
+    def count_groups(value: object, groups: dict[tuple[str, str], set[bool]]) -> None:
+        if isinstance(value, dict):
+            player = value.get("player")
+            card = value.get("card")
+            tapped = value.get("tapped")
+            if (
+                isinstance(player, str)
+                and isinstance(card, str)
+                and isinstance(tapped, bool)
+                and isinstance(value.get("count"), int)
+            ):
+                groups.setdefault((player, card), set()).add(tapped)
+            for item in value.values():
+                count_groups(item, groups)
+        elif isinstance(value, list):
+            for item in value:
+                count_groups(item, groups)
+
+    for result in normalized:
+        scenario = scenario_by_name.get(result.get("scenario"))
+        projection = result.get("projection")
+        if scenario is None or not isinstance(projection, dict):
+            continue
+        labels = {}
+        for player, setup in scenario.get("setup", {}).items():
+            for item in setup.get("battlefield", []):
+                if not isinstance(item.get("label"), str):
+                    continue
+                characteristics = {
+                    field: value for field, value in item.items() if field != "label"
+                }
+                signature = json.dumps(
+                    characteristics, sort_keys=True, separators=(",", ":")
+                )
+                labels[item["label"]] = (player, item["card"], signature)
+        if not labels:
+            continue
+        referenced = set(strings(scenario.get("script", [])))
+        referenced.update(strings(scenario.get("reach", {})))
+        groups: dict[tuple[str, str], set[bool]] = {}
+        count_groups(scenario.get("reach", {}), groups)
+        setup_group_sizes: dict[tuple[str, str, str], int] = {}
+        for group in labels.values():
+            setup_group_sizes[group] = setup_group_sizes.get(group, 0) + 1
+        fungible = {
+            label
+            for label, (player, card, signature) in labels.items()
+            if label not in referenced
+            and setup_group_sizes[(player, card, signature)] > 1
+            and len(groups.get((player, card), set())) > 1
+        }
+        battlefield = projection.get("battlefield")
+        if not fungible or not isinstance(battlefield, list):
+            continue
+        group_tokens: dict[tuple[str, str, str], str] = {}
+        token_groups: dict[str, tuple[str, str, str]] = {}
+        for permanent in battlefield:
+            label = permanent.get("label")
+            if label not in fungible:
+                continue
+            group = labels[label]
+            token = group_tokens.get(group)
+            if token is None:
+                encoded_group = json.dumps(group, separators=(",", ":"))
+                token = (
+                    "~group:"
+                    + hashlib.sha256(encoded_group.encode("utf-8")).hexdigest()
+                )
+                if token in labels:
+                    raise ValueError(
+                        f"{result['scenario']}: count-group token collides with setup label {token!r}"
+                    )
+                previous_group = token_groups.get(token)
+                if previous_group is not None and previous_group != group:
+                    raise ValueError(
+                        f"{result['scenario']}: count-group token collision for {token!r}"
+                    )
+                group_tokens[group] = token
+                token_groups[token] = group
+            permanent["label"] = token
+        battlefield.sort(key=lambda permanent: json.dumps(permanent, sort_keys=True))
+    return normalized
+
+
 def _results_by_name(
     results: list[dict], engine: str
 ) -> tuple[dict[str, dict], list[str]]:
@@ -493,6 +594,7 @@ def _validate_setup(scenario: dict) -> None:
         raise TypeError(f"{name}: setup must be a table")
     labels: set[str] = set()
     graveyard_labels: set[str] = set()
+    label_locations: dict[str, tuple[str, str, str]] = {}
     for player, player_setup in setup.items():
         if player not in {"P0", "P1"}:
             raise ValueError(f"{name}: setup.{player} is unsupported")
@@ -530,6 +632,7 @@ def _validate_setup(scenario: dict) -> None:
                         if label in labels:
                             raise ValueError(f"{name}: duplicate setup label {label}")
                         labels.add(label)
+                        label_locations[label] = (player, field, card["card"])
                         if field == "graveyard":
                             graveyard_labels.add(label)
                 elif not isinstance(card, str):
@@ -564,6 +667,7 @@ def _validate_setup(scenario: dict) -> None:
             if not label or label in labels:
                 raise ValueError(f"{name}: duplicate or empty setup label {label}")
             labels.add(label)
+            label_locations[label] = (player, "battlefield", permanent["card"])
             if "tapped" in permanent and not isinstance(permanent["tapped"], bool):
                 raise ValueError(f"{context}.tapped must be a boolean")
             if "counters" in permanent and not isinstance(permanent["counters"], dict):
@@ -579,6 +683,65 @@ def _validate_setup(scenario: dict) -> None:
             raise ValueError(
                 f"{name}: script[{index}].behold is only valid for play_land actions"
             )
+        if "choices" in action and action.get("action") != "unless_choices":
+            raise ValueError(
+                f"{name}: script[{index}].choices is only valid for unless_choices actions"
+            )
+        if "sacrifice" in action:
+            context = f"{name}: script[{index}].sacrifice"
+            if action.get("action") != "cast":
+                raise ValueError(f"{context} is only valid for cast actions")
+            if "x" in action:
+                raise ValueError(f"{context} cannot be combined with cast.x")
+            sacrifices = action["sacrifice"]
+            if not isinstance(sacrifices, list):
+                raise TypeError(f"{context} must be an array of battlefield labels")
+            if any(not isinstance(label, str) or not label for label in sacrifices):
+                raise TypeError(f"{context} entries must be non-empty setup labels")
+            if len(sacrifices) != len(set(sacrifices)):
+                raise ValueError(f"{context} cannot repeat labels")
+            for label in sacrifices:
+                location = label_locations.get(label)
+                if location is None:
+                    raise ValueError(f"{context} contains unknown setup label {label}")
+                if location[1] != "battlefield":
+                    raise ValueError(
+                        f"{context} label {label} must be in the battlefield"
+                    )
+        if action.get("action") == "unless_choices":
+            context = f"{name}: script[{index}].unless_choices"
+            unknown = action.keys() - {"action", "player", "choices"}
+            if unknown:
+                raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            player = action.get("player")
+            if not isinstance(player, str) or player not in {"P0", "P1"}:
+                raise ValueError(f"{context}.player must be P0 or P1")
+            choices = action.get("choices")
+            if not isinstance(choices, list) or not choices:
+                raise ValueError(f"{context}.choices must be a non-empty array")
+            for choice_index, choice in enumerate(choices):
+                if choice == "decline":
+                    continue
+                choice_context = f"{context}.choices[{choice_index}]"
+                if not isinstance(choice, dict) or len(choice) != 1:
+                    raise ValueError(
+                        f"{choice_context} must contain exactly one sacrifice or discard choice"
+                    )
+                kind, label = next(iter(choice.items()))
+                if kind not in {"sacrifice", "discard"}:
+                    raise ValueError(f"{choice_context} must use sacrifice or discard")
+                if not isinstance(label, str) or not label:
+                    raise TypeError(f"{choice_context}.{kind} must be a setup label")
+                location = label_locations.get(label)
+                if location is None:
+                    raise ValueError(
+                        f"{choice_context}.{kind} contains unknown setup label {label}"
+                    )
+                expected_zone = "battlefield" if kind == "sacrifice" else "hand"
+                if location[0] != player or location[1] != expected_zone:
+                    raise ValueError(
+                        f"{choice_context}.{kind} label {label} must be in {player}'s {expected_zone}"
+                    )
         if "from" in action:
             context = f"{name}: script[{index}].from"
             if action.get("action") != "cast":
@@ -838,8 +1001,18 @@ def main() -> int:
         runner_errors.append(f"Phase runner exited {phase.returncode}")
     if mage.returncode:
         runner_errors.append(f"XMage runner exited {mage.returncode}")
+    compared_phase_results = normalize_label_insensitive_count_groups(
+        spec["scenarios"], phase_results
+    )
+    compared_mage_results = normalize_label_insensitive_count_groups(
+        spec["scenarios"], mage_results
+    )
     report = evaluate_known_diffs(
-        suite_scenarios, phase_results, mage_results, known_diffs, runner_errors
+        suite_scenarios,
+        compared_phase_results,
+        compared_mage_results,
+        known_diffs,
+        runner_errors,
     )
     report_path = outdir / "known-diffs-report.json"
     report_path.write_text(
@@ -848,8 +1021,8 @@ def main() -> int:
     comparison_log = format_known_diff_report(report)
     (outdir / "compare.log").write_text(comparison_log, encoding="utf-8")
     print(comparison_log, end="")
-    phase_map, _ = _results_by_name(phase_results, "Phase")
-    mage_map, _ = _results_by_name(mage_results, "XMage")
+    phase_map, _ = _results_by_name(compared_phase_results, "Phase")
+    mage_map, _ = _results_by_name(compared_mage_results, "XMage")
     for item in [*report["triaged"], *report["failed"]]:
         scenario = item.get("scenario")
         if not scenario or scenario not in phase_map or scenario not in mage_map:
