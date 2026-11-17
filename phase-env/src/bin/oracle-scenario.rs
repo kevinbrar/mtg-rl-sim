@@ -669,7 +669,7 @@ fn parse_loyalty_cost_selector(selector: &str) -> Option<String> {
 }
 
 fn select_activation_ability(
-    candidates: impl IntoIterator<Item = (usize, AbilityKind, bool, Option<String>)>,
+    candidates: impl IntoIterator<Item = (usize, AbilityKind, bool, Option<String>, Option<String>)>,
     selector: &str,
 ) -> Result<usize, String> {
     let cost_selector = parse_loyalty_cost_selector(selector);
@@ -678,15 +678,19 @@ fn select_activation_ability(
         return Err("activate needs a non-empty ability cost prefix".to_string());
     }
     let mut matches = Vec::new();
-    for (index, kind, is_mana_ability, description) in candidates {
+    for (index, kind, is_mana_ability, loyalty_cost_label, description) in candidates {
         if kind != AbilityKind::Activated || is_mana_ability {
             continue;
         }
-        let description = description
-            .ok_or_else(|| format!("activated ability {index} is missing a description"))?;
         let matches_selector = if let Some(cost_selector) = &cost_selector {
-            parse_loyalty_cost_selector(&description).as_deref() == Some(cost_selector)
+            loyalty_cost_label
+                .as_deref()
+                .and_then(parse_loyalty_cost_selector)
+                .as_deref()
+                == Some(cost_selector)
         } else {
+            let description = description
+                .ok_or_else(|| format!("activated ability {index} is missing a description"))?;
             normalize_ability_text(&description.replace('−', "-")).starts_with(&description_prefix)
         };
         if matches_selector {
@@ -2077,11 +2081,8 @@ fn activate(
                 index,
                 ability.kind,
                 is_mana_ability(ability),
-                ability
-                    .cost
-                    .as_ref()
-                    .and_then(loyalty_ability_label)
-                    .or_else(|| ability.description.clone()),
+                ability.cost.as_ref().and_then(loyalty_ability_label),
+                ability.description.clone(),
             )
         }),
         prefix,
@@ -3804,18 +3805,21 @@ mod tests {
                 0,
                 AbilityKind::Activated,
                 true,
+                None,
                 Some("{T}: Add {G}".to_string()),
             ),
             (
                 1,
                 AbilityKind::Activated,
                 false,
+                None,
                 Some("{2}{G}{W}: {this} becomes a Llama".to_string()),
             ),
             (
                 2,
                 AbilityKind::Activated,
                 false,
+                None,
                 Some("<i>Solved</i> &mdash; Sacrifice this Case: Draw a card.".to_string()),
             ),
         ];
@@ -3834,12 +3838,14 @@ mod tests {
                 0,
                 AbilityKind::Activated,
                 false,
+                None,
                 Some("{T}: First".to_string()),
             ),
             (
                 1,
                 AbilityKind::Activated,
                 false,
+                None,
                 Some("{T}: Second".to_string()),
             ),
         ];
@@ -3848,11 +3854,12 @@ mod tests {
             .contains("multiple activated abilities"));
 
         let mana_without_description = vec![
-            (0, AbilityKind::Activated, true, None),
+            (0, AbilityKind::Activated, true, None, None),
             (
                 1,
                 AbilityKind::Activated,
                 false,
+                None,
                 Some("{2}{U}, {T}: Empower Jace 2.".to_string()),
             ),
         ];
@@ -3861,7 +3868,7 @@ mod tests {
             Ok(1)
         );
 
-        let missing = vec![(0, AbilityKind::Activated, false, None)];
+        let missing = vec![(0, AbilityKind::Activated, false, None, None)];
         assert!(select_activation_ability(missing, "{T}:")
             .unwrap_err()
             .contains("missing a description"));
@@ -3880,18 +3887,21 @@ mod tests {
                 AbilityKind::Activated,
                 false,
                 loyalty_ability_label(&AbilityCost::Loyalty { amount: 2 }),
+                None,
             ),
             (
                 1,
                 AbilityKind::Activated,
                 false,
                 loyalty_ability_label(&AbilityCost::Loyalty { amount: -1 }),
+                None,
             ),
             (
                 2,
                 AbilityKind::Activated,
                 false,
                 loyalty_ability_label(&AbilityCost::Loyalty { amount: -10 }),
+                None,
             ),
         ];
 
@@ -3899,6 +3909,50 @@ mod tests {
         assert_eq!(select_activation_ability(candidates.clone(), "−1"), Ok(1));
         assert_eq!(select_activation_ability(candidates.clone(), "-10"), Ok(2));
         assert_eq!(select_activation_ability(candidates, "+2"), Ok(0));
+    }
+
+    #[test]
+    fn loyalty_description_prefix_is_supported_and_must_be_unique() {
+        let candidates = vec![
+            (
+                0,
+                AbilityKind::Activated,
+                false,
+                loyalty_ability_label(&AbilityCost::Loyalty { amount: -1 }),
+                Some("−1: Surveil 1.".to_string()),
+            ),
+            (
+                1,
+                AbilityKind::Activated,
+                false,
+                loyalty_ability_label(&AbilityCost::Loyalty { amount: -3 }),
+                Some("−3: Draw a card.".to_string()),
+            ),
+        ];
+        assert_eq!(
+            select_activation_ability(candidates.clone(), "−1: Surveil"),
+            Ok(0)
+        );
+
+        let ambiguous = vec![
+            (
+                0,
+                AbilityKind::Activated,
+                false,
+                None,
+                Some("0: Draw a card and gain life.".to_string()),
+            ),
+            (
+                1,
+                AbilityKind::Activated,
+                false,
+                None,
+                Some("0: Draw a card and scry 1.".to_string()),
+            ),
+        ];
+        assert!(select_activation_ability(ambiguous, "0: Draw")
+            .unwrap_err()
+            .contains("multiple activated abilities"));
     }
 
     #[test]
