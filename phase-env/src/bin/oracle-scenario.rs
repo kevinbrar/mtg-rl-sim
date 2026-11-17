@@ -3,14 +3,18 @@ use engine::game::ability_utils::{
     build_resolved_from_def, build_target_slots, declared_targets_in_chain,
 };
 use engine::game::combat::AttackTarget;
+use engine::game::deck_loading::DeckEntry;
 use engine::game::filter::{matches_target_filter, FilterContext};
 use engine::game::game_object::GameObject;
 use engine::game::mana_abilities::is_mana_ability;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::types::ability::{AdditionalCost, ReplacementMode};
+use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::{
-    actions::{GameAction, UnlessCostBranch},
+    actions::{GameAction, OutsideGameSelection, UnlessCostBranch},
+    card::CardFace,
+    game_state::{OutsideGameChoiceSource, OutsideGameChoiceStage, PlayerDeckPool},
     parse_counter_type, AbilityCost, AbilityDefinition, AbilityKind, Effect, GameState, ManaColor,
     ObjectId, Phase, PlayerId, ReplacementDefinition, ResolvedAbility, TargetFilter, TargetRef,
     WaitingFor, Zone,
@@ -18,6 +22,20 @@ use engine::types::{
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
+use std::sync::Arc;
+
+#[derive(Debug)]
+struct OutsideGameScriptChoice {
+    player: PlayerId,
+    accept: bool,
+    labels: Vec<String>,
+}
+
+#[derive(Debug)]
+struct ManaScriptChoice {
+    player: PlayerId,
+    sources: Vec<String>,
+}
 
 fn card_name(state: &GameState, id: ObjectId) -> String {
     state.objects.get(&id).expect("object exists").name.clone()
@@ -51,6 +69,28 @@ fn cards(state: &GameState, player: usize, zone: &str) -> Vec<String> {
                     .is_some_and(|object| object.owner.0 as usize == player)
             }),
         ),
+        "sideboard" => {
+            let player_id = PlayerId(player as u8);
+            let mut names = state
+                .deck_pool_of(player_id)
+                .into_iter()
+                .flat_map(|pool| pool.current_sideboard.iter().enumerate())
+                .flat_map(|(index, entry)| {
+                    let used = state
+                        .outside_game_cards_brought_in
+                        .iter()
+                        .filter(|used| used.player == player_id && used.sideboard_index == index)
+                        .map(|used| used.count)
+                        .sum::<u32>();
+                    std::iter::repeat_n(
+                        entry.card.name.clone(),
+                        entry.count.saturating_sub(used) as usize,
+                    )
+                })
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        }
         "battlefield" => names(
             state,
             state.battlefield.iter().copied().filter(|id| {
@@ -78,20 +118,21 @@ fn project(
     legal_targets: Option<Vec<String>>,
     reached: bool,
 ) -> Value {
-    let players = (0..2)
-        .map(|index| {
-            (
-                format!("P{index}"),
-                json!({
-                    "life": state.players[index].life,
-                    "battlefield": cards(state, index, "battlefield"),
-                    "hand": cards(state, index, "hand"),
-                    "library": cards(state, index, "library"),
-                    "graveyard": cards(state, index, "graveyard"),
-                }),
-            )
-        })
-        .collect::<serde_json::Map<_, _>>();
+    let mut players = serde_json::Map::new();
+    for index in 0..2 {
+        let mut player = json!({
+            "life": state.players[index].life,
+            "battlefield": cards(state, index, "battlefield"),
+            "hand": cards(state, index, "hand"),
+            "library": cards(state, index, "library"),
+            "graveyard": cards(state, index, "graveyard"),
+        });
+        let sideboard = cards(state, index, "sideboard");
+        if !sideboard.is_empty() {
+            player["sideboard"] = json!(sideboard);
+        }
+        players.insert(format!("P{index}"), player);
+    }
     let mut battlefield = state
         .battlefield
         .iter()
@@ -201,6 +242,146 @@ fn resolve_card_choice_labels(
         .map(|value| {
             let label = value.as_str().ok_or("card choice labels must be strings")?;
             resolve_label(labels, label).map_err(|_| format!("unknown card label {label}"))
+        })
+        .collect()
+}
+
+fn parse_outside_game_choice(action: &Value) -> Result<OutsideGameScriptChoice, String> {
+    let player = match action["player"].as_str() {
+        Some("P0") => PlayerId(0),
+        Some("P1") => PlayerId(1),
+        _ => return Err("choose_outside_game.player must be P0 or P1".to_string()),
+    };
+    let cards = action["cards"]
+        .as_array()
+        .ok_or("choose_outside_game needs a cards array")?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|label| !label.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| "choose_outside_game card entries must be labels".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let accept = action["accept"]
+        .as_bool()
+        .ok_or("choose_outside_game.accept must be a boolean")?;
+    if !accept && !cards.is_empty() {
+        return Err("choose_outside_game.cards must be empty when declining".to_string());
+    }
+    Ok(OutsideGameScriptChoice {
+        player,
+        accept,
+        labels: cards,
+    })
+}
+
+fn parse_mana_choice(action: &Value) -> Result<ManaScriptChoice, String> {
+    let player = match action["player"].as_str() {
+        Some("P0") => PlayerId(0),
+        Some("P1") => PlayerId(1),
+        _ => return Err("choose_mana.player must be P0 or P1".to_string()),
+    };
+    let sources = action["sources"]
+        .as_array()
+        .ok_or("choose_mana.sources must be an array")?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|source| !source.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| "choose_mana.sources entries must be labels".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if sources.is_empty() {
+        return Err("choose_mana.sources must not be empty".to_string());
+    }
+    if sources.iter().collect::<HashSet<_>>().len() != sources.len() {
+        return Err("choose_mana.sources cannot repeat labels".to_string());
+    }
+    Ok(ManaScriptChoice { player, sources })
+}
+
+fn consume_mana_choice(
+    choices: &mut VecDeque<ManaScriptChoice>,
+    player: PlayerId,
+    spec: &Value,
+) -> Result<(), String> {
+    let Some(choice) = choices.pop_front() else {
+        return Ok(());
+    };
+    if choice.player != player {
+        return Err("choose_mana was scripted for a different player than the cast".to_string());
+    }
+    let key = format!("P{}", player.0);
+    let configured_sources = spec["setup"][key.as_str()]["mana_pool"]
+        .as_array()
+        .ok_or("choose_mana player has no mana_pool setup")?
+        .iter()
+        .filter_map(|unit| unit["source"].as_str())
+        .collect::<HashSet<_>>();
+    if choice
+        .sources
+        .iter()
+        .any(|source| !configured_sources.contains(source.as_str()))
+    {
+        return Err("choose_mana source is not in the player's mana_pool".to_string());
+    }
+    Ok(())
+}
+
+fn ensure_outside_game_choices_consumed(
+    choices: &VecDeque<OutsideGameScriptChoice>,
+) -> Result<(), String> {
+    if choices.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} choose_outside_game group(s) were unconsumed when the script ended",
+        choices.len()
+    ))
+}
+
+fn ensure_mana_choices_consumed(choices: &VecDeque<ManaScriptChoice>) -> Result<(), String> {
+    if choices.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} choose_mana group(s) were unconsumed when the script ended",
+        choices.len()
+    ))
+}
+
+fn sideboard_choice_indices(
+    choice: &OutsideGameScriptChoice,
+    labels: &HashMap<String, (PlayerId, usize, String)>,
+    owner: PlayerId,
+    offered: &[engine::types::game_state::OutsideGameChoiceEntry],
+) -> Result<Vec<OutsideGameSelection>, String> {
+    choice
+        .labels
+        .iter()
+        .map(|label| {
+            let (label_owner, index, name) = labels
+                .get(label)
+                .ok_or_else(|| format!("unknown sideboard label {label}"))?;
+            if *label_owner != owner {
+                return Err(format!("sideboard label {label} belongs to another player"));
+            }
+            if !offered.iter().any(|entry| {
+                matches!(
+                    &entry.source,
+                    OutsideGameChoiceSource::Sideboard { sideboard_index, .. }
+                        if sideboard_index == index
+                ) && entry.name == *name
+            }) {
+                return Err(format!("sideboard label {label} is not offered"));
+            }
+            Ok(OutsideGameSelection::Sideboard {
+                sideboard_index: *index,
+            })
         })
         .collect()
 }
@@ -1456,6 +1637,8 @@ fn pass_until_resolved(
     groups: &mut VecDeque<Vec<ObjectId>>,
     activation_target_groups: &mut VecDeque<Vec<ObjectId>>,
     card_choice_groups: &mut VecDeque<Vec<ObjectId>>,
+    sideboard_labels: &HashMap<String, (PlayerId, usize, String)>,
+    outside_game_choices: &mut VecDeque<OutsideGameScriptChoice>,
     copy_choices: &mut VecDeque<CopyChoice>,
     unless_choice_groups: &mut [VecDeque<UnlessScriptChoice>; 2],
 ) -> Result<(), String> {
@@ -1591,6 +1774,79 @@ fn pass_until_resolved(
                     pending_copy_target_choice = Some((player, targets));
                 }
             }
+            WaitingFor::OptionalEffectChoice {
+                player, source_id, ..
+            } if runner
+                .state()
+                .objects
+                .get(&source_id)
+                .is_some_and(|object| object.name == "Extrapolate the Impossible") =>
+            {
+                let choice = outside_game_choices
+                    .front()
+                    .ok_or("Extrapolate optional prompt has no choose_outside_game entry")?;
+                if choice.player != player {
+                    return Err(
+                        "choose_outside_game optional choice was offered to a different player"
+                            .to_string(),
+                    );
+                }
+                let accept = choice.accept;
+                if !accept || choice.labels.is_empty() {
+                    outside_game_choices.pop_front();
+                }
+                runner
+                    .act(GameAction::DecideOptionalEffect { accept })
+                    .map_err(|error| error.to_string())?;
+            }
+            WaitingFor::OutsideGameChoice {
+                player,
+                choices,
+                count,
+                stage,
+                ..
+            } => {
+                let choice = outside_game_choices
+                    .pop_front()
+                    .ok_or("outside-game choice prompt has no choose_outside_game entry")?;
+                if !choice.accept || choice.labels.is_empty() {
+                    return Err(
+                        "outside-game card choice requires an accepted, non-empty script entry"
+                            .to_string(),
+                    );
+                }
+                if choice.player != player {
+                    return Err(
+                        "choose_outside_game choice was offered to a different player".to_string(),
+                    );
+                }
+                let owner = match stage {
+                    OutsideGameChoiceStage::ControllerSelects
+                    | OutsideGameChoiceStage::RevealPairThenOpponentSelects => player,
+                    OutsideGameChoiceStage::OpponentSelects { owner }
+                    | OutsideGameChoiceStage::ControllerChoosesOpponent { owner } => owner,
+                };
+                if matches!(
+                    stage,
+                    OutsideGameChoiceStage::ControllerChoosesOpponent { .. }
+                ) {
+                    return Err(
+                        "choose_outside_game cannot select an opponent for a revealed pair"
+                            .to_string(),
+                    );
+                }
+                let selections =
+                    sideboard_choice_indices(&choice, sideboard_labels, owner, &choices)?;
+                if selections.len() != count {
+                    return Err(format!(
+                        "choose_outside_game selected {} cards but the prompt requires {count}",
+                        selections.len()
+                    ));
+                }
+                runner
+                    .act(GameAction::ChooseOutsideGameCards { selections })
+                    .map_err(|error| error.to_string())?;
+            }
             WaitingFor::OptionalEffectChoice { .. } if !copy_choices.is_empty() => {
                 return Err(
                     "copy_choice was queued but an optional prompt from another source arrived"
@@ -1608,6 +1864,7 @@ fn pass_until_resolved(
                     | WaitingFor::ChooseFromZoneChoice { .. }
                     | WaitingFor::DiscardChoice { .. }
                     | WaitingFor::OptionalEffectChoice { .. }
+                    | WaitingFor::OutsideGameChoice { .. }
                     | WaitingFor::CopyRetarget { .. }
                     | WaitingFor::UnlessPaymentChooseCost { .. }
                     | WaitingFor::WardSacrificeChoice { .. }
@@ -1774,13 +2031,21 @@ fn validate_setup(scenario: &Value) -> Result<(), String> {
             .as_object()
             .ok_or_else(|| format!("setup.{player} must be an object"))?;
         for field in player_setup.keys() {
-            if !["life", "battlefield", "hand", "library_top", "graveyard"]
-                .contains(&field.as_str())
+            if ![
+                "life",
+                "battlefield",
+                "hand",
+                "library_top",
+                "graveyard",
+                "sideboard",
+                "mana_pool",
+            ]
+            .contains(&field.as_str())
             {
                 return Err(format!("setup.{player}.{field} is unsupported"));
             }
         }
-        for field in ["hand", "library_top", "graveyard"] {
+        for field in ["hand", "library_top", "graveyard", "sideboard"] {
             let Some(value) = player_setup.get(field) else {
                 continue;
             };
@@ -1869,6 +2134,41 @@ fn validate_setup(scenario: &Value) -> Result<(), String> {
                     .is_some_and(|value| !value.is_object())
                 {
                     return Err(format!("{context}.counters must be an object"));
+                }
+            }
+        }
+        if let Some(value) = player_setup.get("mana_pool") {
+            let mana_pool = value
+                .as_array()
+                .ok_or_else(|| format!("setup.{player}.mana_pool must be an array"))?;
+            let battlefield_labels = player_setup
+                .get("battlefield")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|permanent| permanent["label"].as_str())
+                .collect::<HashSet<_>>();
+            for (index, unit) in mana_pool.iter().enumerate() {
+                let context = format!("setup.{player}.mana_pool[{index}]");
+                let unit = unit
+                    .as_object()
+                    .ok_or_else(|| format!("{context} needs color and source"))?;
+                if unit.len() != 2 || !unit.contains_key("color") || !unit.contains_key("source") {
+                    return Err(format!("{context} needs color and source"));
+                }
+                if !matches!(
+                    unit["color"].as_str(),
+                    Some("W" | "U" | "B" | "R" | "G" | "C")
+                ) {
+                    return Err(format!("{context}.color must be W, U, B, R, G, or C"));
+                }
+                if !unit["source"]
+                    .as_str()
+                    .is_some_and(|source| battlefield_labels.contains(source))
+                {
+                    return Err(format!(
+                        "{context}.source must name a card on {player}'s battlefield"
+                    ));
                 }
             }
         }
@@ -2214,11 +2514,35 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let mut labels = HashMap::<ObjectId, String>::new();
+    let mut sideboard_labels = HashMap::<String, (PlayerId, usize, String)>::new();
     let mut configured = Vec::new();
     let mut library_top = [Vec::new(), Vec::new()];
+    let mut sideboards: [Vec<DeckEntry>; 2] = std::array::from_fn(|_| Vec::new());
     for (index, player_library_top) in library_top.iter_mut().enumerate() {
         let key = format!("P{index}");
         let setup = &spec["setup"][&key];
+        if let Some(items) = setup["sideboard"].as_array() {
+            for item in items {
+                let card = item
+                    .as_str()
+                    .or_else(|| item["card"].as_str())
+                    .ok_or_else(|| format!("{key}.sideboard needs card names"))?;
+                let sideboard_index = sideboards[index].len();
+                sideboards[index].push(DeckEntry {
+                    card: CardFace {
+                        name: card.to_string(),
+                        ..Default::default()
+                    },
+                    count: 1,
+                });
+                if let Some(label) = item["label"].as_str() {
+                    sideboard_labels.insert(
+                        label.to_string(),
+                        (PlayerId(index as u8), sideboard_index, card.to_string()),
+                    );
+                }
+            }
+        }
         for (field, zone) in [
             ("battlefield", Zone::Battlefield),
             ("hand", Zone::Hand),
@@ -2249,8 +2573,45 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 }
             }
         }
+        if let Some(units) = setup["mana_pool"].as_array() {
+            let mana = units
+                .iter()
+                .map(|unit| {
+                    let color = match unit["color"].as_str() {
+                        Some("W") => ManaType::White,
+                        Some("U") => ManaType::Blue,
+                        Some("B") => ManaType::Black,
+                        Some("R") => ManaType::Red,
+                        Some("G") => ManaType::Green,
+                        Some("C") => ManaType::Colorless,
+                        _ => return Err("unsupported mana_pool color".to_string()),
+                    };
+                    let source_label = unit["source"]
+                        .as_str()
+                        .ok_or_else(|| "mana_pool source must be a label".to_string())?;
+                    let source_id = labels
+                        .iter()
+                        .find_map(|(id, label)| (label == source_label).then_some(*id))
+                        .ok_or_else(|| format!("unknown mana_pool source {source_label}"))?;
+                    Ok(ManaUnit::new(color, source_id, false, vec![]))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            scenario.with_mana_pool(PlayerId(index as u8), mana);
+        }
     }
     let mut runner = scenario.build();
+    if sideboards.iter().any(|sideboard| !sideboard.is_empty()) {
+        runner.state_mut().deck_pools = sideboards
+            .into_iter()
+            .enumerate()
+            .filter(|(_, sideboard)| !sideboard.is_empty())
+            .map(|(index, sideboard)| PlayerDeckPool {
+                player: PlayerId(index as u8),
+                current_sideboard: Arc::new(sideboard),
+                ..Default::default()
+            })
+            .collect();
+    }
     {
         let state = runner.state_mut();
         state.active_player = active;
@@ -2317,6 +2678,8 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     let mut trigger_target_groups = VecDeque::new();
     let mut activation_target_groups = VecDeque::new();
     let mut card_choice_groups = VecDeque::new();
+    let mut outside_game_choices = VecDeque::new();
+    let mut mana_choice_groups = VecDeque::new();
     let mut copy_choices = VecDeque::new();
     let mut unless_choice_groups = [VecDeque::new(), VecDeque::new()];
     let mut attack_needs_resolution = false;
@@ -2347,6 +2710,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 )?;
                 let card = action["card"].as_str().ok_or("cast needs card")?;
                 let player = runner.state().active_player;
+                consume_mana_choice(&mut mana_choice_groups, player, spec)?;
                 let spell = if cast_from(action)? == "hand" {
                     runner.state().players[player.0 as usize]
                         .hand
@@ -2473,6 +2837,12 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
             "choose_cards" => {
                 card_choice_groups.push_back(resolve_card_choice_labels(action, &labels)?);
             }
+            "choose_outside_game" => {
+                outside_game_choices.push_back(parse_outside_game_choice(action)?);
+            }
+            "choose_mana" => {
+                mana_choice_groups.push_back(parse_mana_choice(action)?);
+            }
             "pass_until_resolved" => {
                 pass_until_resolved(
                     name,
@@ -2481,6 +2851,8 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     &mut trigger_target_groups,
                     &mut activation_target_groups,
                     &mut card_choice_groups,
+                    &sideboard_labels,
+                    &mut outside_game_choices,
                     &mut copy_choices,
                     &mut unless_choice_groups,
                 )?;
@@ -2498,6 +2870,8 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     ensure_trigger_target_groups_consumed(&trigger_target_groups)?;
     ensure_activation_target_groups_consumed(&activation_target_groups)?;
     ensure_card_choice_groups_consumed(&card_choice_groups)?;
+    ensure_outside_game_choices_consumed(&outside_game_choices)?;
+    ensure_mana_choices_consumed(&mana_choice_groups)?;
     ensure_copy_choices_consumed(&copy_choices)?;
     ensure_unless_choice_groups_consumed(&unless_choice_groups)?;
     if attack_needs_resolution {
@@ -3650,6 +4024,8 @@ mod tests {
                 let mut trigger_targets = VecDeque::new();
                 let mut activation_targets = VecDeque::new();
                 let mut card_choices = VecDeque::new();
+                let sideboard_labels = HashMap::new();
+                let mut outside_game_choices = VecDeque::new();
                 let mut copy_choices = VecDeque::new();
                 let mut unless_choices = [VecDeque::new(), VecDeque::new()];
                 pass_until_resolved(
@@ -3659,6 +4035,8 @@ mod tests {
                     &mut trigger_targets,
                     &mut activation_targets,
                     &mut card_choices,
+                    &sideboard_labels,
+                    &mut outside_game_choices,
                     &mut copy_choices,
                     &mut unless_choices,
                 )
@@ -4368,5 +4746,122 @@ mod tests {
 
         assert_eq!(value["battlefield"][0]["name"], json!("Rat"));
         assert_eq!(value["battlefield"][0]["token"], json!(true));
+    }
+}
+
+#[cfg(test)]
+mod outside_game_choice_tests {
+    use super::*;
+    use engine::types::game_state::OutsideGameChoiceEntry;
+    use serde_json::json;
+
+    #[test]
+    fn outside_game_script_requires_a_player_and_card_labels() {
+        assert!(
+            parse_outside_game_choice(&json!({"player": "P2", "cards": ["card"]}))
+                .unwrap_err()
+                .contains("player must be P0 or P1")
+        );
+        assert!(
+            parse_outside_game_choice(&json!({"player": "P0", "cards": [1]}))
+                .unwrap_err()
+                .contains("card entries must be labels")
+        );
+        assert!(
+            parse_outside_game_choice(&json!({"player": "P0", "accept": true, "cards": []}))
+                .unwrap()
+                .labels
+                .is_empty()
+        );
+        assert!(parse_outside_game_choice(
+            &json!({"player": "P0", "accept": false, "cards": ["sideboard.card"]})
+        )
+        .is_err());
+
+        let mut choices = VecDeque::from([OutsideGameScriptChoice {
+            player: PlayerId(0),
+            accept: true,
+            labels: vec!["sideboard.card".to_string()],
+        }]);
+        assert!(ensure_outside_game_choices_consumed(&choices)
+            .unwrap_err()
+            .contains("unconsumed"));
+        choices.pop_front();
+        assert!(ensure_outside_game_choices_consumed(&choices).is_ok());
+    }
+
+    #[test]
+    fn outside_game_labels_must_map_to_offered_sideboard_slots() {
+        let choice = OutsideGameScriptChoice {
+            player: PlayerId(1),
+            accept: true,
+            labels: vec!["sideboard.divination".to_string()],
+        };
+        let labels = HashMap::from([(
+            "sideboard.divination".to_string(),
+            (PlayerId(0), 1, "Divination".to_string()),
+        )]);
+        let offered = [OutsideGameChoiceEntry {
+            source: OutsideGameChoiceSource::Sideboard {
+                sideboard_index: 1,
+                card: CardFace::default(),
+            },
+            count: 1,
+            name: "Divination".to_string(),
+        }];
+
+        assert_eq!(
+            sideboard_choice_indices(&choice, &labels, PlayerId(0), &offered).unwrap(),
+            vec![OutsideGameSelection::Sideboard { sideboard_index: 1 }]
+        );
+        assert!(sideboard_choice_indices(
+            &choice,
+            &labels,
+            PlayerId(0),
+            &[OutsideGameChoiceEntry {
+                source: OutsideGameChoiceSource::Sideboard {
+                    sideboard_index: 2,
+                    card: CardFace::default(),
+                },
+                count: 1,
+                name: "Opt".to_string(),
+            }]
+        )
+        .unwrap_err()
+        .contains("not offered"));
+        assert!(
+            sideboard_choice_indices(&choice, &labels, PlayerId(1), &offered)
+                .unwrap_err()
+                .contains("belongs to another player")
+        );
+    }
+
+    #[test]
+    fn mana_choice_sources_must_be_unique_and_configured_for_the_caster() {
+        let choice = parse_mana_choice(&json!({
+            "player": "P0",
+            "sources": ["mana.white", "mana.blue"]
+        }))
+        .unwrap();
+        let mut choices = VecDeque::from([choice]);
+        let spec = json!({
+            "setup": {
+                "P0": {
+                    "mana_pool": [
+                        {"color": "W", "source": "mana.white"},
+                        {"color": "U", "source": "mana.blue"}
+                    ]
+                }
+            }
+        });
+
+        consume_mana_choice(&mut choices, PlayerId(0), &spec).unwrap();
+        assert!(ensure_mana_choices_consumed(&choices).is_ok());
+        assert!(parse_mana_choice(&json!({
+            "player": "P0",
+            "sources": ["mana.white", "mana.white"]
+        }))
+        .is_err());
+        assert!(parse_mana_choice(&json!({"player": "P0", "sources": []})).is_err());
     }
 }

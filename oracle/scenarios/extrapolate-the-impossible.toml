@@ -1,0 +1,331 @@
+oracle = "forge"
+
+[[scenarios]]
+name = "E1-opponent-chooses-giant-growth"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.island.1", card = "Island", tapped = true },
+  { label = "mana.island.2", card = "Plains", tapped = true },
+  { label = "mana.island.3", card = "Swamp", tapped = true },
+  { label = "mana.island.4", card = "Mountain", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.island.1" },
+  { color = "W", source = "mana.island.2" },
+  { color = "B", source = "mana.island.3" },
+  { color = "R", source = "mana.island.4" },
+]
+hand = ["Extrapolate the Impossible"]
+sideboard = [
+  { label = "sideboard.giant-growth", card = "Giant Growth" },
+  { label = "sideboard.divination", card = "Divination" },
+]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.island.2"]
+
+[[scenarios.script]]
+action = "cast"
+card = "Extrapolate the Impossible"
+
+[[scenarios.script]]
+action = "choose_outside_game"
+player = "P0"
+accept = true
+cards = ["sideboard.giant-growth", "sideboard.divination"]
+
+[[scenarios.script]]
+action = "choose_outside_game"
+player = "P1"
+accept = true
+cards = ["sideboard.giant-growth"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Giant Growth", count = 1 },
+  { zone = "sideboard", player = "P0", card = "Divination", count = 1 },
+  { zone = "sideboard", player = "P0", card = "Giant Growth", count = 0 },
+  { zone = "graveyard", player = "P0", card = "Extrapolate the Impossible", count = 1 },
+]
+
+[[scenarios]]
+name = "E2-opponent-chooses-divination"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.island.1", card = "Island", tapped = true },
+  { label = "mana.island.2", card = "Plains", tapped = true },
+  { label = "mana.island.3", card = "Swamp", tapped = true },
+  { label = "mana.island.4", card = "Mountain", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.island.1" },
+  { color = "W", source = "mana.island.2" },
+  { color = "B", source = "mana.island.3" },
+  { color = "R", source = "mana.island.4" },
+]
+hand = ["Extrapolate the Impossible"]
+sideboard = [
+  { label = "sideboard.giant-growth", card = "Giant Growth" },
+  { label = "sideboard.divination", card = "Divination" },
+]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.island.2"]
+
+[[scenarios.script]]
+action = "cast"
+card = "Extrapolate the Impossible"
+
+[[scenarios.script]]
+action = "choose_outside_game"
+player = "P0"
+accept = true
+cards = ["sideboard.giant-growth", "sideboard.divination"]
+
+[[scenarios.script]]
+action = "choose_outside_game"
+player = "P1"
+accept = true
+cards = ["sideboard.divination"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Divination", count = 1 },
+  { zone = "sideboard", player = "P0", card = "Giant Growth", count = 1 },
+  { zone = "sideboard", player = "P0", card = "Divination", count = 0 },
+  { zone = "graveyard", player = "P0", card = "Extrapolate the Impossible", count = 1 },
+]
+
+[[scenarios]]
+name = "E3-reveal-second-and-third"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.island.1", card = "Island", tapped = true },
+  { label = "mana.island.2", card = "Plains", tapped = true },
+  { label = "mana.island.3", card = "Swamp", tapped = true },
+  { label = "mana.island.4", card = "Mountain", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.island.1" },
+  { color = "W", source = "mana.island.2" },
+  { color = "B", source = "mana.island.3" },
+  { color = "R", source = "mana.island.4" },
+]
+hand = ["Extrapolate the Impossible"]
+sideboard = [
+  { label = "sideboard.giant-growth", card = "Giant Growth" },
+  { label = "sideboard.divination", card = "Divination" },
+  { label = "sideboard.opt", card = "Opt" },
+]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.island.2"]
+
+[[scenarios.script]]
+action = "cast"
+card = "Extrapolate the Impossible"
+
+[[scenarios.script]]
+action = "choose_outside_game"
+player = "P0"
+accept = true
+cards = ["sideboard.divination", "sideboard.opt"]
+
+[[scenarios.script]]
+action = "choose_outside_game"
+player = "P1"
+accept = true
+cards = ["sideboard.opt"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Opt", count = 1 },
+  { zone = "sideboard", player = "P0", card = "Giant Growth", count = 1 },
+  { zone = "sideboard", player = "P0", card = "Divination", count = 1 },
+  { zone = "sideboard", player = "P0", card = "Opt", count = 0 },
+  { zone = "graveyard", player = "P0", card = "Extrapolate the Impossible", count = 1 },
+]
+
+[[scenarios]]
+name = "E4-decline-optional-reveal"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.island.1", card = "Island", tapped = true },
+  { label = "mana.island.2", card = "Plains", tapped = true },
+  { label = "mana.island.3", card = "Swamp", tapped = true },
+  { label = "mana.island.4", card = "Mountain", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.island.1" },
+  { color = "W", source = "mana.island.2" },
+  { color = "B", source = "mana.island.3" },
+  { color = "R", source = "mana.island.4" },
+]
+hand = ["Extrapolate the Impossible"]
+sideboard = [
+  { label = "sideboard.giant-growth", card = "Giant Growth" },
+  { label = "sideboard.divination", card = "Divination" },
+]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.island.2"]
+
+[[scenarios.script]]
+action = "cast"
+card = "Extrapolate the Impossible"
+
+[[scenarios.script]]
+action = "choose_outside_game"
+player = "P0"
+accept = false
+cards = []
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Giant Growth", count = 0 },
+  { zone = "hand", player = "P0", card = "Divination", count = 0 },
+  { zone = "sideboard", player = "P0", card = "Giant Growth", count = 1 },
+  { zone = "sideboard", player = "P0", card = "Divination", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Extrapolate the Impossible", count = 1 },
+]
+
+[[scenarios]]
+name = "E5-duplicate-sideboard-names"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.island.1", card = "Island", tapped = true },
+  { label = "mana.island.2", card = "Plains", tapped = true },
+  { label = "mana.island.3", card = "Swamp", tapped = true },
+  { label = "mana.island.4", card = "Mountain", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.island.1" },
+  { color = "W", source = "mana.island.2" },
+  { color = "B", source = "mana.island.3" },
+  { color = "R", source = "mana.island.4" },
+]
+hand = ["Extrapolate the Impossible"]
+sideboard = [
+  { label = "sideboard.giant-growth.first", card = "Giant Growth" },
+  { label = "sideboard.giant-growth.second", card = "Giant Growth" },
+]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.island.2"]
+
+[[scenarios.script]]
+action = "cast"
+card = "Extrapolate the Impossible"
+
+[[scenarios.script]]
+action = "choose_outside_game"
+player = "P0"
+accept = true
+cards = []
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Giant Growth", count = 0 },
+  { zone = "sideboard", player = "P0", card = "Giant Growth", count = 2 },
+  { zone = "graveyard", player = "P0", card = "Extrapolate the Impossible", count = 1 },
+]
+
+[[scenarios]]
+name = "E6-one-sideboard-card"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.island.1", card = "Island", tapped = true },
+  { label = "mana.island.2", card = "Plains", tapped = true },
+  { label = "mana.island.3", card = "Swamp", tapped = true },
+  { label = "mana.island.4", card = "Mountain", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.island.1" },
+  { color = "W", source = "mana.island.2" },
+  { color = "B", source = "mana.island.3" },
+  { color = "R", source = "mana.island.4" },
+]
+hand = ["Extrapolate the Impossible"]
+sideboard = [
+  { label = "sideboard.giant-growth", card = "Giant Growth" },
+]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.island.2"]
+
+[[scenarios.script]]
+action = "cast"
+card = "Extrapolate the Impossible"
+
+[[scenarios.script]]
+action = "choose_outside_game"
+player = "P0"
+accept = true
+cards = []
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Giant Growth", count = 0 },
+  { zone = "sideboard", player = "P0", card = "Giant Growth", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Extrapolate the Impossible", count = 1 },
+]

@@ -122,7 +122,10 @@ formatting (`Æ`, accents), zone ordering, phased-out permanents.
 identifies one exact scenario by suite stem and scenario name, and pins the
 SHA-256 of each engine's projection after the comparator's unordered-zone
 normalization. A divergence is triaged only by exactly one matching entry in
-category `engine-bug` or `xmage-bug` with both digests unchanged. `unsupported`
+category `engine-bug` or `xmage-bug` with both digests unchanged. A
+`forge-bug` entry instead pins the Phase projection and the structured
+fail-closed Forge prompt event; it is emitted as triaged, never matched, and
+cannot waive a Forge result that lacks that exact prompt event. `unsupported`
 never waives a divergence. Matching scenarios with an entry are stale and fail;
 duplicates, unknown scenarios in a run suite, malformed entries, and digest
 drift also fail closed. Entries for suites not run are ignored. The report

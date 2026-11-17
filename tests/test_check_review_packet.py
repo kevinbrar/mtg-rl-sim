@@ -227,6 +227,27 @@ def test_independent_row_with_result_and_artifact_counts() -> None:
     )
 
 
+def test_forge_differential_row_counts_as_independent_evidence() -> None:
+    row = (
+        "Phase vs Forge E1–E6 | run_card_scenarios.py | "
+        "4 matched, 2 triaged, 0 failed | "
+        "runs/card-scenarios/forge-extrapolate/known-diffs-report.json | Y, Forge"
+    )
+    assert (
+        validate_review_packet(
+            packet(
+                cards="cards: Extrapolate the Impossible",
+                evidence_rows=(row,),
+            ),
+            [
+                "oracle/forge-patches/0001-card-scenario-runner.patch",
+                "oracle/scenarios/extrapolate-the-impossible.toml",
+            ],
+        )
+        == []
+    )
+
+
 def test_engine_path_without_cards_line_fails() -> None:
     body = packet(cards="")
     errors = validate_review_packet(body, ["phase-patches/0001-example.patch"])

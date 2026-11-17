@@ -90,3 +90,29 @@ def test_known_diff_registry_with_cards_none_fails_closed() -> None:
     assert fail_closed_guard is not None
     assert re.compile(smoke_guard.group(1)).search(registry_path)
     assert re.compile(fail_closed_guard.group(1)).search(registry_path)
+
+
+def test_forge_suite_gate_caches_build_and_requires_reports() -> None:
+    workflow = WORKFLOW.read_text()
+    assert "Detect configured scenario oracles" in workflow
+    assert "steps.oracles.outputs.forge == 'true'" in workflow
+    assert "Cache isolated Forge Maven repository" in workflow
+    assert (
+        "key: forge-m2-${{ runner.os }}-${{ steps.forge-pin.outputs.sha }}-"
+        "${{ hashFiles('oracle/forge-patches/*.patch') }}"
+    ) in workflow
+    required_artifacts = workflow.split(
+        "- name: Require Forge scenario report artifacts", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert (
+        'test -s "runs/card-scenarios/ci-${GITHUB_RUN_ID}/forge-surefire-report.xml"'
+        in required_artifacts
+    )
+    assert (
+        'test -s "runs/card-scenarios/ci-${GITHUB_RUN_ID}/forge-projection.json"'
+        in required_artifacts
+    )
+    assert (
+        'test -s "runs/card-scenarios/ci-${GITHUB_RUN_ID}/known-diffs-report.json"'
+        in required_artifacts
+    )
