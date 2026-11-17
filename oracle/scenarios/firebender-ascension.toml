@@ -1,0 +1,168 @@
+[[scenarios]]
+name = "F1 enter-the-battlefield creates a firebending Soldier"
+active_player = 0
+script = [
+  { action = "cast", card = "Firebender Ascension" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [{ label = "mountain-1", card = "Mountain" }, { label = "mountain-2", card = "Mountain" }]
+hand = ["Firebender Ascension"]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { player = "P0", zone = "battlefield", card = "Firebender Ascension", count = 1 },
+  { player = "P0", zone = "battlefield", card = "Soldier", types = ["Creature"], subtypes = ["Soldier"], colors = ["R"], power = 2, toughness = 2, count = 1 },
+]
+
+[[scenarios]]
+name = "F2 attack trigger below four quest counters does not offer a copy"
+active_player = 0
+script = [
+  { action = "attack", attackers = ["pulse"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "ascension", card = "Firebender Ascension", counters = { quest = 0 } },
+  { label = "pulse", card = "Pulse Tracker" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { player = "P1", life = 19 },
+  { player = "P0", zone = "battlefield", card = "Firebender Ascension", counters = { quest = 1 }, count = 1 },
+]
+
+[[scenarios]]
+name = "F3 accept a Pulse Tracker ability copy"
+active_player = 0
+script = [
+  { action = "copy_choice", player = "P0", decision = "accept" },
+  { action = "attack", attackers = ["pulse"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "ascension", card = "Firebender Ascension", counters = { quest = 3 } },
+  { label = "pulse", card = "Pulse Tracker" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { player = "P1", life = 18 },
+  { player = "P0", zone = "battlefield", card = "Firebender Ascension", counters = { quest = 4 }, count = 1 },
+]
+
+[[scenarios]]
+name = "F4 decline a Pulse Tracker ability copy"
+active_player = 0
+script = [
+  { action = "copy_choice", player = "P0", decision = "decline" },
+  { action = "attack", attackers = ["pulse"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "ascension", card = "Firebender Ascension", counters = { quest = 3 } },
+  { label = "pulse", card = "Pulse Tracker" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { player = "P1", life = 19 },
+  { player = "P0", zone = "battlefield", card = "Firebender Ascension", counters = { quest = 4 }, count = 1 },
+]
+
+[[scenarios]]
+name = "F5 change the copied Spring Splasher target"
+active_player = 0
+script = [
+  { action = "trigger_targets", targets = ["defender-a"] },
+  { action = "copy_choice", player = "P0", decision = "accept", new_targets = ["defender-b"] },
+  { action = "attack", attackers = ["spring"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "ascension", card = "Firebender Ascension", counters = { quest = 3 } },
+  { label = "spring", card = "Spring Splasher" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "defender-a", card = "Centaur Courser" },
+  { label = "defender-b", card = "Centaur Courser" },
+]
+
+[scenarios.reach]
+all = [
+  { player = "P0", zone = "battlefield", card = "Firebender Ascension", counters = { quest = 4 }, count = 1 },
+  { player = "P1", zone = "battlefield", card = "Centaur Courser", power = 0, toughness = 3, count = 2 },
+]
+
+[[scenarios]]
+name = "F6 keep the copied Spring Splasher target"
+active_player = 0
+script = [
+  { action = "trigger_targets", targets = ["defender-a"] },
+  { action = "copy_choice", player = "P0", decision = "accept", new_targets = "keep" },
+  { action = "attack", attackers = ["spring"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "ascension", card = "Firebender Ascension", counters = { quest = 3 } },
+  { label = "spring", card = "Spring Splasher" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "defender-a", card = "Centaur Courser" },
+  { label = "defender-b", card = "Centaur Courser" },
+]
+
+[scenarios.reach]
+all = [
+  { player = "P0", zone = "battlefield", card = "Firebender Ascension", counters = { quest = 4 }, count = 1 },
+  { player = "P1", zone = "battlefield", card = "Centaur Courser", power = -3, toughness = 3, count = 1 },
+  { player = "P1", zone = "battlefield", card = "Centaur Courser", power = 3, toughness = 3, count = 1 },
+]
+
+[[scenarios]]
+name = "F7 a noncreature attack trigger does not advance quest counters"
+active_player = 0
+script = [
+  { action = "attack", attackers = ["courser"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "ascension", card = "Firebender Ascension", counters = { quest = 3 } },
+  { label = "connecting", card = "Connecting the Dots" },
+  { label = "courser", card = "Centaur Courser" },
+]
+library_top = [{ label = "exiled-card", card = "Mountain" }, "Mountain"]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { player = "P0", zone = "battlefield", card = "Firebender Ascension", counters = { quest = 3 }, count = 1 },
+  { player = "P0", zone = "exile", card = "Mountain", count = 1 },
+]

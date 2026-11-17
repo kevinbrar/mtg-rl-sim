@@ -12,12 +12,21 @@
 - Follow-up: affordability previews conservatively remove sacrifice candidates before probing mana. The runtime test's four-Swamp/two-Birds control is castable, while two Swamps plus two Birds of Paradise is absent from `legal_actions` because the reduced `{3}{B}` still relies on the chosen Birds; the actual mana-before-deferred-sacrifice payment path is therefore not reached, and support for that sequence remains open.
 - Follow-up: a one-card forced-discard scenario is out of scope because XMage skips the selection callback when hand size is at most the minimum discard amount; R4 uses two cards to verify label mapping.
 - Patch-0003 sensitivity remains unproven for this suite even after regenerating card data from raw MTGJSON. The reverted export (`d7162c48df0f32d00fb9358068643309fc3581bb9610e7a91642d69c39d5eca2`) omits `repeat_for` but retains `unless_pay`; R1–R6 still match (6/0/0) and all six raw Phase projections are identical to the normal export because each scenario has only one blight counter. A multi-counter scenario is needed to test repeated iterations. Evidence: `runs/card-scenarios/rottenmouth-viper-1794844396/viper-patch-0003-reverted-fresh-data/known-diffs-report.json`, the mutant `card-data-0003-reverted.json`, and both R1–R6 `phase-projection.json` files.
+# Firebender Ascension
+
+- Status: 15 of 18 XMage-supported cards checked. Firebender Ascension F1–F7 match Phase and XMage (7 matched, 0 triaged, 0 failed); the full known-diffs gate matches all 66 scenarios (66 matched, 0 triaged, 0 failed). Evidence: `runs/card-scenarios/firebender-1794885342/f1-f7-copy-target-alias/known-diffs-report.json` and `runs/card-scenarios/firebender-1794885342/full-known-diffs/known-diffs-report.json`.
+- The runners declare labeled attackers against P1 and stop during declare attackers with an empty stack, before blockers or damage. F5 changes only the copy's target to defender B; F6 keeps defender A. Both attackers and defenders are verified as available/targetable in XMage and Phase.
+- The new Mage-Bench harness patch is `oracle/patches/mage-bench-zzzzzzzzzz-firebender-ascension.patch`; it applies to the baseline with existing patches applied.
+- Sensitivity check without Phase patches 0028/0029 is blocked: after applying patches 0001–0027 and skipping 0028/0029, patch 0030 fails at `triggers.rs:7401`. No alternate binary was built; a minimal revert preserving later patch context remains outstanding. Evidence: `runs/card-scenarios/firebender-1794885342/phase-undo-patch-stack.log`.
+- Firebending mana use and the negative for an attacker's combat-damage trigger remain untested; fresh-context review is pending.
+
 # Status
 
-_Updated 2026-11-16._
+_Updated 2026-11-17._
 
 ## State
 - phase-rs pinned at `988bc34` + 34 local patches (`phase-patches/`, apply with `scripts/apply-phase-patches.sh`); all 18 unsupported Standard-meta cards supported. The most recent full engine run on patch 0031 passed 29,425 tests. Vren V1–V4 and Urgent Necropsy U1–U4 match XMage; Theorist's Sanctum TS1–TS7 match (7 matched, 0 triaged, 0 failed), and the full 48-scenario gate matches all 48 (0 triaged, 0 failed). Evidence: `runs/card-scenarios/theorists-sanctum-baseline-1794599001/review-ts1-ts7-final/known-diffs-report.json`, `runs/card-scenarios/theorists-sanctum-baseline-1794599001/review-full-gate-final/known-diffs-report.json`.
+- XMage-supported card-scenario progress: 15 of 18 checked; Firebender Ascension F1–F7 match 7/0/0 and the full known-diffs gate matches 66/0/0. Artifacts are recorded in the Firebender section above.
 - Main now includes Vren patch 0032; V1–V4 match XMage (4 matched, 0 triaged, 0 failed), and the Vren V2 entry has been removed from `oracle/known-diffs.toml`.
 - Differential harness (`driver/diff_game.py`) v0: lands, creature casts, all-or-none attacks, no blocks, no targets. Real meta decks are **not** supported yet; the first Boros-vs-Dimir run reached an unmapped scry prompt at step 4.
 - phase-rs web client runs locally on the patched engine (`docs/play.md`).

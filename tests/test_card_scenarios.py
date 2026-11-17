@@ -626,6 +626,90 @@ battlefield = [{ label = "p1-fodder", card = "Memnite" }]
     assert loaded["scenarios"][0]["script"][1]["sacrifice"] == ["p0-fodder"]
 
 
+def test_load_specs_accepts_attack_and_copy_choice_scripts(tmp_path: Path) -> None:
+    spec = tmp_path / "attack-copy-choices.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "attack copy choices"
+script = [
+  { action = "copy_choice", player = "P0", decision = "accept", new_targets = "keep" },
+  { action = "attack", attackers = ["attacker"] }
+]
+
+[scenarios.setup.P0]
+battlefield = [{ label = "attacker", card = "Pulse Tracker" }]
+
+[scenarios.setup.P1]
+battlefield = [{ label = "defender-a", card = "Centaur Courser" }]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+
+    assert loaded["scenarios"][0]["script"][0] == {
+        "action": "copy_choice",
+        "player": "P0",
+        "decision": "accept",
+        "new_targets": "keep",
+    }
+    assert loaded["scenarios"][0]["script"][1]["attackers"] == ["attacker"]
+
+
+@pytest.mark.parametrize(
+    ("action", "setup", "message"),
+    [
+        (
+            '{ action = "attack", attackers = [] }',
+            '[scenarios.setup.P0]\nbattlefield = [{ label = "attacker", card = "Pulse Tracker" }]',
+            "non-empty label array",
+        ),
+        (
+            '{ action = "attack", attackers = ["attacker", "attacker"] }',
+            '[scenarios.setup.P0]\nbattlefield = [{ label = "attacker", card = "Pulse Tracker" }]',
+            "cannot repeat labels",
+        ),
+        (
+            '{ action = "attack", attackers = ["missing"] }',
+            "[scenarios.setup.P0]",
+            "unknown label",
+        ),
+        (
+            '{ action = "attack", attackers = ["attacker"] }',
+            '[scenarios.setup.P1]\nbattlefield = [{ label = "attacker", card = "Pulse Tracker" }]',
+            "must be on P0's battlefield",
+        ),
+        (
+            '{ action = "copy_choice", player = "P0", decision = "maybe" }',
+            "[scenarios.setup.P0]",
+            "decision must be accept or decline",
+        ),
+        (
+            '{ action = "copy_choice", player = "P0", decision = "accept", new_targets = ["missing"] }',
+            "[scenarios.setup.P0]",
+            "unknown setup label",
+        ),
+        (
+            '{ action = "copy_choice", player = "P0", decision = "decline", new_targets = ["target"] }',
+            '[scenarios.setup.P1]\nbattlefield = [{ label = "target", card = "Centaur Courser" }]',
+            "only valid when accepting",
+        ),
+    ],
+)
+def test_load_specs_rejects_invalid_attack_and_copy_choices(
+    tmp_path: Path, action: str, setup: str, message: str
+) -> None:
+    spec = tmp_path / "invalid-attack-copy-choice.toml"
+    spec.write_text(
+        f'[[scenarios]]\nname = "invalid action"\nscript = [{action}]\n\n{setup}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        load_specs([spec])
+
+
 @pytest.mark.parametrize(
     ("script", "setup", "message"),
     [
