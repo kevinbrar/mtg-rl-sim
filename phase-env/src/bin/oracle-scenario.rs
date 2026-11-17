@@ -3700,7 +3700,7 @@ mod tests {
             &json!({"action": "attack", "attackers": ["same"]})
         )
         .unwrap_err()
-            .contains("ambiguous setup label"));
+        .contains("ambiguous setup label"));
     }
 
     #[test]
@@ -3718,7 +3718,9 @@ mod tests {
                     let state = runner.state_mut();
                     state.active_player = PlayerId(1);
                     state.priority_player = PlayerId(1);
-                    state.waiting_for = WaitingFor::Priority { player: PlayerId(1) };
+                    state.waiting_for = WaitingFor::Priority {
+                        player: PlayerId(1),
+                    };
                 }
                 advance_to_next_turn(&mut runner, true).unwrap();
                 assert_eq!(runner.state().active_player, PlayerId(0));
