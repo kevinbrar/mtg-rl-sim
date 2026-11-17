@@ -668,10 +668,10 @@ fn ensure_copy_target_choice_consumed(
 
 fn declare_attackers(
     runner: &mut GameRunner,
-    active: PlayerId,
     labels: &HashMap<ObjectId, String>,
     action: &Value,
 ) -> Result<(), String> {
+    let active = runner.state().active_player;
     let fields = action.as_object().ok_or("attack must be a table")?;
     if fields
         .keys()
@@ -2467,7 +2467,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 if attack_needs_resolution {
                     return Err("attack must be followed by pass_until_resolved".to_string());
                 }
-                declare_attackers(&mut runner, active, &labels, action)?;
+                declare_attackers(&mut runner, &labels, action)?;
                 attack_needs_resolution = true;
             }
             "choose_cards" => {
@@ -3641,7 +3641,6 @@ mod tests {
                 let labels = HashMap::from([(attacker, "attacker".to_string())]);
                 declare_attackers(
                     &mut runner,
-                    PlayerId(0),
                     &labels,
                     &json!({"action": "attack", "attackers": ["attacker"]}),
                 )
@@ -3683,7 +3682,6 @@ mod tests {
         let mut runner = scenario.build();
         assert!(declare_attackers(
             &mut runner,
-            PlayerId(0),
             &labels,
             &json!({"action": "attack", "attackers": []})
         )
@@ -3691,7 +3689,6 @@ mod tests {
         .contains("non-empty"));
         assert!(declare_attackers(
             &mut runner,
-            PlayerId(0),
             &labels,
             &json!({"action": "attack", "attackers": ["missing"]})
         )
@@ -3699,12 +3696,45 @@ mod tests {
         .contains("unknown setup label"));
         assert!(declare_attackers(
             &mut runner,
-            PlayerId(0),
             &labels,
             &json!({"action": "attack", "attackers": ["same"]})
         )
         .unwrap_err()
-        .contains("ambiguous setup label"));
+            .contains("ambiguous setup label"));
+    }
+
+    #[test]
+    fn attack_action_uses_the_current_player_after_turn_advancement() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let attacker = scenario.add_creature(PlayerId(0), "Ready Bear", 2, 2).id();
+                scenario.with_library_top(PlayerId(0), &["P0 draw"]);
+                scenario.with_library_top(PlayerId(1), &["P1 draw"]);
+                let mut runner = scenario.build();
+                {
+                    let state = runner.state_mut();
+                    state.active_player = PlayerId(1);
+                    state.priority_player = PlayerId(1);
+                    state.waiting_for = WaitingFor::Priority { player: PlayerId(1) };
+                }
+                advance_to_next_turn(&mut runner, true).unwrap();
+                assert_eq!(runner.state().active_player, PlayerId(0));
+
+                let labels = HashMap::from([(attacker, "attacker".to_string())]);
+                declare_attackers(
+                    &mut runner,
+                    &labels,
+                    &json!({"action": "attack", "attackers": ["attacker"]}),
+                )
+                .unwrap();
+                assert_eq!(runner.state().phase, Phase::DeclareAttackers);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

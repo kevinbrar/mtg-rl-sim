@@ -196,3 +196,22 @@ all = [
   { player = "P1", zone = "battlefield", card = "Grizzly Bears", power = -1, toughness = 2, count = 1 },
 ]
 
+[[scenarios]]
+name = "F10 a P1 start advances to P0 before attackers are declared"
+active_player = 1
+script = [
+  { action = "next_turn" },
+  { action = "attack", attackers = ["pulse"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [{ label = "pulse", card = "Pulse Tracker" }]
+library_top = ["Mountain", "Mountain"]
+
+[scenarios.setup.P1]
+library_top = ["Mountain", "Mountain"]
+
+[scenarios.reach]
+player = "P1"
+life = 19
