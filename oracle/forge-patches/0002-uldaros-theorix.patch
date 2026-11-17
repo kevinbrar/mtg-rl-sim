@@ -1,0 +1,493 @@
+diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
+index 243a2c4b..24110e9d 100644
+--- a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
++++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
+@@ -10,6 +10,7 @@ import forge.LobbyPlayer;
+ import forge.card.mana.ManaAtom;
+ import forge.game.Game;
+ import forge.game.GameEntity;
++import forge.game.ability.AbilityKey;
+ import forge.game.card.Card;
+ import forge.game.card.CardCollection;
+ import forge.game.card.CardCollectionView;
+@@ -30,6 +31,7 @@ import forge.game.trigger.WrappedAbility;
+ import forge.game.zone.ZoneType;
+ import forge.gamesimulationtests.util.PlayerControllerForTests;
+ import forge.util.ITriggerEvent;
++import forge.util.Localizer;
+ import forge.util.MyRandom;
+ import forge.util.collect.FCollectionView;
+ import org.apache.commons.lang3.tuple.ImmutablePair;
+@@ -118,6 +120,31 @@ public final class CardScenarioProjectionTest extends AITest {
+         }
+     }
+ 
++    @Test
++    public void copyCastChoicesFailClosedWhenMissingOrUnconsumed() {
++        Game game = initAndCreateGame();
++        Player player = game.getPlayers().get(0);
++        Card source = addCardToZone("Uldaros Theorix", player, ZoneType.Hand);
++        ScriptedController controller = new ScriptedController(
++                game, player, player.getLobbyPlayer(), Map.of(), new IdentityHashMap<>());
++
++        try {
++            controller.chooseSpellAbilitiesForEffect(
++                    List.of(), null, "copy spells", 2, Map.of());
++            throw new AssertionError("missing copy-cast choice did not fail");
++        } catch (IllegalStateException expected) {
++            assertTrue(expected.getMessage().contains("unscripted spell-ability choice"));
++        }
++
++        controller.addCopyCastChoice(source, List.of());
++        try {
++            controller.assertConsumed();
++            throw new AssertionError("unconsumed copy-cast choice did not fail");
++        } catch (AssertionError expected) {
++            assertTrue(expected.getMessage().contains("unconsumed choose_copies entries"));
++        }
++    }
++
+     @Test
+     public void scriptedOpponentChoicesAreFifoByChooser() {
+         Game game = initAndCreateGame();
+@@ -145,6 +172,22 @@ public final class CardScenarioProjectionTest extends AITest {
+         Player player = game.getPlayers().get(0);
+         ScriptedController controller = new ScriptedController(
+                 game, player, player.getLobbyPlayer(), Map.of(), new IdentityHashMap<>());
++        Card host = addCardToZone("Lava Coil", player, ZoneType.Graveyard);
++        ReplacementEffect onlyChoice = new ReplacementEffect(Map.of(), host, false) {
++            @Override
++            public SpellAbility ensureAbility() {
++                return null;
++            }
++
++            @Override
++            public boolean canReplace(Map<AbilityKey, Object> runParams) {
++                return true;
++            }
++        };
++        assertTrue(controller.chooseSingleReplacementEffect(List.of(onlyChoice)) == onlyChoice);
++        controller.addReplacementChoice(onlyChoice.getDescription());
++        assertTrue(controller.chooseSingleReplacementEffect(List.of(onlyChoice)) == onlyChoice);
++        controller.assertConsumed();
+ 
+         try {
+             controller.chooseSingleReplacementEffect(List.of());
+@@ -392,7 +435,8 @@ public final class CardScenarioProjectionTest extends AITest {
+                     cast(caster, requiredString(action, "card"), labels);
+                 }
+                 case "choose_outside_game", "choose_mana", "choose_surveil", "choose_discard",
+-                        "trigger_targets", "choose_replacement", "choose_entity" -> { }
++                        "trigger_targets", "graveyard_targets", "copy_targets", "choose_copies",
++                        "choose_replacement", "choose_entity" -> { }
+                 case "pass_priority" -> passPriority(action, game);
+                 case "label_permanent" -> labelPermanent(action, game, labels);
+                 case "activate" -> activate(action, game, labels);
+@@ -794,6 +838,63 @@ public final class CardScenarioProjectionTest extends AITest {
+                     throw new IllegalArgumentException("trigger_targets requires at least one label");
+                 }
+                 controller0.addTriggerTargetChoice(targetLabels);
++            } else if ("graveyard_targets".equals(actionName)
++                    || "copy_targets".equals(actionName)) {
++                ScriptedController chooser = controllerFor(action, controller0, controller1);
++                if (!action.has("targets") || !action.get("targets").isJsonArray()) {
++                    throw new IllegalArgumentException(actionName + ".targets must be an array");
++                }
++                List<String> targetLabels = new ArrayList<>();
++                Set<String> uniqueLabels = new LinkedHashSet<>();
++                for (JsonElement target : action.getAsJsonArray("targets")) {
++                    if (!target.isJsonPrimitive() || !target.getAsJsonPrimitive().isString()) {
++                        throw new IllegalArgumentException(actionName + " labels must be strings");
++                    }
++                    String label = target.getAsString();
++                    if (!uniqueLabels.add(label)) {
++                        throw new IllegalArgumentException(actionName + " labels cannot repeat");
++                    }
++                    Card selected = labels.get(label);
++                    if (selected == null) {
++                        throw new IllegalArgumentException("unknown " + actionName + " label " + label);
++                    }
++                if ("graveyard_targets".equals(actionName)
++                        && (selected.getOwner() != chooser.getPlayer()
++                                || selected.getZone() == null
++                                || selected.getZone().getZoneType() != ZoneType.Graveyard)) {
++                        throw new IllegalArgumentException(
++                                "graveyard_targets label must be in the chooser's graveyard: " + label);
++                    }
++                    targetLabels.add(label);
++                }
++                if ("graveyard_targets".equals(actionName)) {
++                    chooser.addGraveyardTargetChoice(targetLabels);
++                } else {
++                    chooser.addTriggerTargetChoice(targetLabels);
++                }
++            } else if ("choose_copies".equals(actionName)) {
++                ScriptedController chooser = controllerFor(action, controller0, controller1);
++                Card source = labels.get(requiredString(action, "source"));
++                if (source == null || source.getOwner() != chooser.getPlayer()) {
++                    throw new IllegalArgumentException("choose_copies source must be the chooser's card");
++                }
++                List<Card> cards = new ArrayList<>();
++                Set<String> uniqueLabels = new LinkedHashSet<>();
++                for (JsonElement cardValue : action.getAsJsonArray("cards")) {
++                    String label = cardValue.getAsString();
++                    Card selected = labels.get(label);
++                    if (selected == null || selected.getOwner() != chooser.getPlayer()
++                            || selected.getZone() == null
++                            || selected.getZone().getZoneType() != ZoneType.Graveyard) {
++                        throw new IllegalArgumentException(
++                                "choose_copies label must be in the chooser's graveyard: " + label);
++                    }
++                    if (!uniqueLabels.add(label)) {
++                        throw new IllegalArgumentException("choose_copies labels cannot repeat");
++                    }
++                    cards.add(selected);
++                }
++                chooser.addCopyCastChoice(source, cards);
+             } else if ("choose_replacement".equals(actionName)) {
+                 ScriptedController chooser = controllerFor(action, controller0, controller1);
+                 chooser.addReplacementChoice(requiredString(action, "description"));
+@@ -873,11 +974,7 @@ public final class CardScenarioProjectionTest extends AITest {
+                             + ", found " + matches.size());
+         }
+         Card permanent = matches.get(0);
+-        String oldLabel = labels.entrySet().stream()
+-                .filter(entry -> entry.getValue() == permanent)
+-                .map(Map.Entry::getKey)
+-                .findFirst()
+-                .orElse(null);
++        String oldLabel = labelForCard(permanent, labels);
+         if (oldLabel != null) {
+             throw new IllegalArgumentException(
+                     "permanent already labeled " + oldLabel + "; cannot assign " + label);
+@@ -972,11 +1069,16 @@ public final class CardScenarioProjectionTest extends AITest {
+             } else if (game.getStack().hasSimultaneousStackEntries()) {
+                 game.getPhaseHandler().mainLoopStep();
+             }
++            game.getAction().checkStateEffects(true);
+             game.getTriggerHandler().runWaitingTriggers();
+         }
+         assertTrue(game.getStack().isEmpty(), "stack did not clear");
+         assertTrue(!game.getStack().hasSimultaneousStackEntries(), "simultaneous stack did not clear");
+         assertEquals(game.getTriggerHandler().getWaitingTriggerCount(), 0);
++        assertEquals(
++                game.getPhaseHandler().getPriorityPlayer(),
++                game.getPhaseHandler().getPlayerTurn(),
++                "priority did not return to the active player");
+     }
+ 
+     private JsonObject projection(Game game, Map<String, Card> labels, boolean reached) {
+@@ -1069,7 +1171,7 @@ public final class CardScenarioProjectionTest extends AITest {
+ 
+     private String labelForCard(Card target, Map<String, Card> labels) {
+         return labels.entrySet().stream()
+-                .filter(entry -> entry.getValue() == target)
++                .filter(entry -> entry.getValue().getId() == target.getId())
+                 .map(Map.Entry::getKey)
+                 .findFirst()
+                 .orElse(null);
+@@ -1233,12 +1335,16 @@ public final class CardScenarioProjectionTest extends AITest {
+     }
+ 
+     private static final class ScriptedController extends PlayerControllerForTests {
++        private record CopyCastChoice(Card source, List<Card> cards) {}
++
+         private final Deque<OutsideGameChoice> outsideGameChoices = new ArrayDeque<>();
+         private final Deque<ManaScriptPayment> manaChoices = new ArrayDeque<>();
+         private final Deque<List<String>> surveilChoices = new ArrayDeque<>();
+         private final Deque<List<String>> discardChoices = new ArrayDeque<>();
+         private final Deque<List<Card>> discardZoneOrders = new ArrayDeque<>();
+         private final Deque<List<String>> triggerTargetChoices;
++        private final Deque<List<String>> graveyardTargetChoices = new ArrayDeque<>();
++        private final Deque<CopyCastChoice> copyCastChoices = new ArrayDeque<>();
+         private final Deque<String> replacementChoices = new ArrayDeque<>();
+         private final Deque<String> singleEntityCardChoices = new ArrayDeque<>();
+         private final Map<String, Card> labels;
+@@ -1248,6 +1354,10 @@ public final class CardScenarioProjectionTest extends AITest {
+         private boolean outsideGameChoiceObserved;
+         private boolean pendingOutsideGameCancellation;
+         private boolean passingPriority;
++        private List<String> activeGraveyardTargetLabels;
++        private CopyCastChoice activeCopyCastChoice;
++        private int nextCopyCastCard;
++        private Card selectedCopyForPlayEffect;
+ 
+         private ScriptedController(
+                 Game game, Player player, LobbyPlayer lobbyPlayer, Map<String, Card> labels,
+@@ -1343,6 +1453,14 @@ public final class CardScenarioProjectionTest extends AITest {
+             triggerTargetChoices.addLast(List.copyOf(targetLabels));
+         }
+ 
++        private void addGraveyardTargetChoice(List<String> targetLabels) {
++            graveyardTargetChoices.addLast(List.copyOf(targetLabels));
++        }
++
++        private void addCopyCastChoice(Card source, List<Card> cards) {
++            copyCastChoices.addLast(new CopyCastChoice(source, List.copyOf(cards)));
++        }
++
+         private void addReplacementChoice(String description) {
+             replacementChoices.addLast(description);
+         }
+@@ -1397,6 +1515,9 @@ public final class CardScenarioProjectionTest extends AITest {
+         }
+ 
+         private void assertConsumed() {
++            if (activeGraveyardTargetLabels != null && activeGraveyardTargetLabels.isEmpty()) {
++                activeGraveyardTargetLabels = null;
++            }
+             assertTrue(outsideGameChoices.isEmpty(), "unconsumed outside-game choices for " + player.getName());
+             assertTrue(
+                     manaChoices.isEmpty(),
+@@ -1414,6 +1535,18 @@ public final class CardScenarioProjectionTest extends AITest {
+                     triggerTargetChoices.isEmpty(),
+                     "unconsumed trigger target choices for " + player.getName() + ": "
+                             + triggerTargetChoices);
++            assertTrue(
++                    graveyardTargetChoices.isEmpty() && activeGraveyardTargetLabels == null,
++                    "unconsumed graveyard target choices for " + player.getName() + ": "
++                            + graveyardTargetChoices + " active=" + activeGraveyardTargetLabels);
++            assertTrue(
++                    copyCastChoices.isEmpty(),
++                    "unconsumed choose_copies entries for " + player.getName() + ": "
++                            + copyCastChoices);
++            assertTrue(
++                    activeCopyCastChoice == null
++                            || nextCopyCastCard == activeCopyCastChoice.cards().size(),
++                    "incomplete choose_copies entry for " + player.getName());
+             assertTrue(
+                     replacementChoices.isEmpty(),
+                     "unconsumed replacement choices for " + player.getName() + ": " + replacementChoices);
+@@ -1446,6 +1579,12 @@ public final class CardScenarioProjectionTest extends AITest {
+ 
+         @Override
+         public boolean chooseTargetsFor(SpellAbility ability) {
++            if (activeGraveyardTargetLabels != null || !graveyardTargetChoices.isEmpty()) {
++                if (activeGraveyardTargetLabels == null) {
++                    activeGraveyardTargetLabels = new ArrayList<>(graveyardTargetChoices.removeFirst());
++                }
++                return chooseGraveyardTargetsFor(ability);
++            }
+             List<String> targetLabels = triggerTargetChoices.pollFirst();
+             if (targetLabels == null) {
+                 throw failClosed("unscripted targets: " + ability.getHostCard().getName());
+@@ -1477,6 +1616,39 @@ public final class CardScenarioProjectionTest extends AITest {
+             return true;
+         }
+ 
++        private boolean chooseGraveyardTargetsFor(SpellAbility ability) {
++            if (ability.getActivatingPlayer() != null && ability.getActivatingPlayer() != player) {
++                throw failClosed("graveyard target choice requested for wrong player");
++            }
++            int max = ability.getMaxTargets();
++            List<String> selected = new ArrayList<>();
++            List<String> remaining = new ArrayList<>();
++            for (String label : activeGraveyardTargetLabels) {
++                Card target = labels.get(label);
++                if (target == null) {
++                    throw failClosed("unknown scripted graveyard target label " + label);
++                }
++                if (selected.size() < max && ability.canTarget(target)) {
++                    selected.add(label);
++                } else {
++                    remaining.add(label);
++                }
++            }
++            if (selected.size() < ability.getMinTargets()) {
++                throw failClosed("scripted graveyard targets do not fill the current required slot");
++            }
++            for (String label : selected) {
++                if (!ability.getTargets().add(labels.get(label))) {
++                    throw failClosed("could not add scripted graveyard target: " + label);
++                }
++            }
++            if (!ability.isTargetNumberValid()) {
++                throw failClosed("scripted graveyard target count is invalid");
++            }
++            activeGraveyardTargetLabels = remaining;
++            return true;
++        }
++
+         @Override
+         public List<SpellAbility> orderSimultaneousSa(List<SpellAbility> abilities) {
+             if (abilities.size() != 1) {
+@@ -1659,6 +1831,13 @@ public final class CardScenarioProjectionTest extends AITest {
+ 
+         @Override
+         public ReplacementEffect chooseSingleReplacementEffect(List<ReplacementEffect> choices) {
++            if (choices != null && choices.size() == 1) {
++                ReplacementEffect onlyChoice = choices.get(0);
++                if (onlyChoice.getDescription().equals(replacementChoices.peekFirst())) {
++                    replacementChoices.removeFirst();
++                }
++                return onlyChoice;
++            }
+             String expected = replacementChoices.pollFirst();
+             if (expected == null) {
+                 throw failClosed("unscripted replacement selection: " + choices);
+@@ -1694,7 +1873,39 @@ public final class CardScenarioProjectionTest extends AITest {
+         public List<SpellAbility> chooseSpellAbilitiesForEffect(
+                 List<SpellAbility> choices, SpellAbility ability, String title, int num,
+                 Map<String, Object> params) {
+-            throw failClosed("unscripted spell-ability choice: " + title);
++            finishGraveyardTargetChoices();
++            CopyCastChoice choice = copyCastChoices.pollFirst();
++            if (choice == null) {
++                throw failClosed("unscripted spell-ability choice: " + title);
++            }
++            if (ability == null
++                    || !ability.getHostCard().getName().equals(choice.source().getName())
++                    || ability.getHostCard().getOwner() != choice.source().getOwner()) {
++                throw failClosed("choose_copies prompt came from a different source");
++            }
++            if (ability.getActivatingPlayer() != null && ability.getActivatingPlayer() != player) {
++                throw failClosed("choose_copies prompt was offered to a different player");
++            }
++            if (choice.cards().size() > num) {
++                throw failClosed(
++                        "choose_copies selected " + choice.cards().size() + " cards but the prompt allows " + num);
++            }
++            List<SpellAbility> selected = new ArrayList<>();
++            for (Card card : choice.cards()) {
++                List<SpellAbility> matching = choices.stream()
++                        .filter(candidate -> candidate.getHostCard().getName().equals(card.getName()))
++                        .toList();
++                if (matching.size() != 1) {
++                    throw failClosed(
++                            "choose_copies card did not identify one offered copy: " + card.getName());
++                }
++                SpellAbility selectedAbility = matching.get(0);
++                if (selected.contains(selectedAbility)) {
++                    throw failClosed("choose_copies selected the same copy more than once");
++                }
++                selected.add(selectedAbility);
++            }
++            return List.copyOf(selected);
+         }
+ 
+         @Override
+@@ -1735,6 +1946,10 @@ public final class CardScenarioProjectionTest extends AITest {
+         public <T extends GameEntity> T chooseSingleEntityForEffect(
+                 FCollectionView<T> choices, DelayedReveal reveal, SpellAbility ability, String title,
+                 boolean optional, Player relatedPlayer, Map<String, Object> params) {
++            if ("Select a card to play".equals(title)
++                    && (activeCopyCastChoice != null || !copyCastChoices.isEmpty())) {
++                return chooseCopyCastCard(choices, ability, title, optional);
++            }
+             Player caster = ability == null ? null : ability.getActivatingPlayer();
+             if (caster == null || choices.isEmpty()) {
+                 throw failClosed("unscripted or empty single-entity selection: " + title);
+@@ -1764,6 +1979,61 @@ public final class CardScenarioProjectionTest extends AITest {
+             throw failClosed("unscripted single-entity selection: " + title + " in " + choices);
+         }
+ 
++        private <T extends GameEntity> T chooseCopyCastCard(
++                FCollectionView<T> choices, SpellAbility ability, String title, boolean optional) {
++            finishGraveyardTargetChoices();
++            if (activeCopyCastChoice == null) {
++                activeCopyCastChoice = copyCastChoices.removeFirst();
++                nextCopyCastCard = 0;
++            }
++            Card host = ability == null ? null : ability.getHostCard();
++            if (host == null
++                    || !host.getName().equals(activeCopyCastChoice.source().getName())
++                    || host.getOwner() != activeCopyCastChoice.source().getOwner()) {
++                String actual = host == null
++                        ? "<none>"
++                        : host.getName() + "#" + host.getId() + " owned by " + host.getOwner();
++                Card expected = activeCopyCastChoice.source();
++                throw failClosed(
++                        "choose_copies prompt came from a different source: expected "
++                                + expected.getName() + "#" + expected.getId() + " owned by "
++                                + expected.getOwner() + ", found " + actual + " (" + title + ")");
++            }
++            if (ability.getActivatingPlayer() != null && ability.getActivatingPlayer() != player) {
++                throw failClosed("choose_copies prompt was offered to a different player");
++            }
++            if (nextCopyCastCard == activeCopyCastChoice.cards().size()) {
++                if (!optional) {
++                    throw failClosed("choose_copies cannot stop at the scripted count");
++                }
++                activeCopyCastChoice = null;
++                nextCopyCastCard = 0;
++                return null;
++            }
++            Card expected = activeCopyCastChoice.cards().get(nextCopyCastCard);
++            List<T> matching = choices.stream()
++                    .filter(choice -> choice instanceof Card card
++                            && expected.getName().equals(card.getName()))
++                    .toList();
++            if (matching.size() != 1) {
++                throw failClosed(
++                        "choose_copies card did not identify one offered card: "
++                                + expected.getName() + " in " + choices);
++            }
++            nextCopyCastCard++;
++            selectedCopyForPlayEffect = (Card) matching.get(0);
++            return matching.get(0);
++        }
++
++        private void finishGraveyardTargetChoices() {
++            if (activeGraveyardTargetLabels == null) return;
++            if (!activeGraveyardTargetLabels.isEmpty()) {
++                throw failClosed(
++                        "unconsumed graveyard target labels: " + activeGraveyardTargetLabels);
++            }
++            activeGraveyardTargetLabels = null;
++        }
++
+         private String labelForSource(Card source) {
+             if (source == null) return null;
+             return labels.entrySet().stream()
+@@ -1796,9 +2066,30 @@ public final class CardScenarioProjectionTest extends AITest {
+                 pendingOutsideGameCancellation = false;
+                 return true;
+             }
++            if (isScriptedCopyMayConfirmation(ability, mode, message, cardToShow)) {
++                return true;
++            }
+             throw failClosed("unscripted confirmation: " + message);
+         }
+ 
++        private boolean isScriptedCopyMayConfirmation(
++                SpellAbility ability, PlayerActionConfirmMode mode, String message, Card cardToShow) {
++            if (mode != null
++                    || ability == null
++                    || cardToShow == null
++                    || cardToShow != selectedCopyForPlayEffect
++                    || !ability.hasParam("CopyCard")
++                    || !ability.hasParam("WithoutManaCost")
++                    || ability.getActivatingPlayer() != player) {
++                return false;
++            }
++            String prompt = ability.hasParam("CastTransformed")
++                    ? "lblDoYouWantPlayCardTransformed"
++                    : "lblDoYouWantPlayCard";
++            return message.equals(
++                    Localizer.getInstance().getMessage(prompt, cardToShow.getTranslatedName()));
++        }
++
+         @Override
+         public boolean confirmTrigger(WrappedAbility ability) {
+             throw failClosed("unscripted trigger confirmation: " + ability.getHostCard().getName());
+@@ -1812,7 +2103,19 @@ public final class CardScenarioProjectionTest extends AITest {
+ 
+         @Override
+         public boolean playSaFromPlayEffect(SpellAbility ability) {
+-            throw failClosed("unscripted play-from-effect choice");
++            Card selected = selectedCopyForPlayEffect;
++            Card played = ability == null ? null : ability.getHostCard();
++            if (selected == null || played == null || !played.getName().equals(selected.getName())) {
++                throw failClosed("unscripted play-from-effect choice");
++            }
++            if (ability.getActivatingPlayer() != null && ability.getActivatingPlayer() != player) {
++                throw failClosed("scripted copy was played by a different player");
++            }
++            selectedCopyForPlayEffect = null;
++            if (!PlaySpellAbility.playSpellAbility(this, player, ability)) {
++                throw failClosed("scripted copy cast was rejected: " + selected.getName());
++            }
++            return true;
+         }
+     }
+ 
