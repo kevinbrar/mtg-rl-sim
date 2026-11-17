@@ -13,7 +13,6 @@ use engine::types::ability::{AdditionalCost, ReplacementMode};
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::{
     actions::{GameAction, OutsideGameSelection, UnlessCostBranch},
-    card::CardFace,
     game_state::{OutsideGameChoiceSource, OutsideGameChoiceStage, PlayerDeckPool},
     parse_counter_type, AbilityCost, AbilityDefinition, AbilityKind, Effect, GameState, ManaColor,
     ObjectId, Phase, PlayerId, ReplacementDefinition, ResolvedAbility, TargetFilter, TargetRef,
@@ -330,6 +329,16 @@ fn consume_mana_choice(
         return Err("choose_mana source is not in the player's mana_pool".to_string());
     }
     Ok(())
+}
+
+fn sideboard_deck_entry(card: &str, db: &CardDatabase) -> Result<DeckEntry, String> {
+    let card_face = db
+        .get_face_by_name(card)
+        .ok_or_else(|| format!("sideboard card {card} is absent from the card database"))?;
+    Ok(DeckEntry {
+        card: card_face.clone(),
+        count: 1,
+    })
 }
 
 fn ensure_outside_game_choices_consumed(
@@ -2528,13 +2537,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     .or_else(|| item["card"].as_str())
                     .ok_or_else(|| format!("{key}.sideboard needs card names"))?;
                 let sideboard_index = sideboards[index].len();
-                sideboards[index].push(DeckEntry {
-                    card: CardFace {
-                        name: card.to_string(),
-                        ..Default::default()
-                    },
-                    count: 1,
-                });
+                sideboards[index].push(sideboard_deck_entry(card, db)?);
                 if let Some(label) = item["label"].as_str() {
                     sideboard_labels.insert(
                         label.to_string(),
@@ -4754,6 +4757,21 @@ mod outside_game_choice_tests {
     use super::*;
     use engine::types::game_state::OutsideGameChoiceEntry;
     use serde_json::json;
+
+    #[test]
+    fn sideboard_deck_entry_preserves_database_card_attributes() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../phase/client/public/card-data.json");
+        let db = CardDatabase::from_export(&path).unwrap();
+        let expected = db.get_face_by_name("Giant Growth").unwrap();
+
+        let entry = sideboard_deck_entry("Giant Growth", &db).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&entry.card).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+    }
 
     #[test]
     fn outside_game_script_requires_a_player_and_card_labels() {
