@@ -44,6 +44,7 @@ REACH_FIELDS = {
     "life",
     "zone",
     "card",
+    "label",
     "count",
     "tapped_labels",
     "types",
@@ -87,6 +88,13 @@ def _validate_reach_fields(name: str, reach: object, path: str = "reach") -> Non
         raise TypeError(f"{name}: {path}.token must be a boolean")
     if "token" in reach and reach.get("zone", "graveyard") != "battlefield":
         raise ValueError(f"{name}: {path}.token is only valid for battlefield cards")
+    if "label" in reach:
+        if not isinstance(reach["label"], str) or not reach["label"]:
+            raise TypeError(f"{name}: {path}.label must be a battlefield label")
+        if reach.get("zone", "graveyard") != "battlefield":
+            raise ValueError(
+                f"{name}: {path}.label is only valid for battlefield permanents"
+            )
     if "solved" in reach:
         if not isinstance(reach["solved"], bool):
             raise TypeError(f"{name}: {path}.solved must be a boolean")

@@ -13,6 +13,7 @@ use engine::types::ability::{AdditionalCost, ReplacementMode};
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::{
     actions::{GameAction, OutsideGameSelection, UnlessCostBranch},
+    events::GameEvent,
     game_state::{OutsideGameChoiceSource, OutsideGameChoiceStage, PlayerDeckPool},
     parse_counter_type, AbilityCost, AbilityDefinition, AbilityKind, Effect, GameState, ManaColor,
     ObjectId, Phase, PlayerId, ReplacementDefinition, ResolvedAbility, TargetFilter, TargetRef,
@@ -344,6 +345,129 @@ fn parse_surveil_choice(
         return Err("choose_surveil.cards cannot repeat labels".to_string());
     }
     Ok(SurveilScriptChoice { player, graveyard })
+}
+
+#[derive(Debug, Clone)]
+struct DiscardScriptChoice {
+    cards: Vec<ObjectId>,
+}
+
+fn parse_discard_choice(
+    action: &Value,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<(PlayerId, DiscardScriptChoice), String> {
+    let player = parse_script_player(action["player"].as_str(), "choose_discard")?;
+    let cards = resolve_card_choice_labels(action, labels)?;
+    if cards.iter().collect::<HashSet<_>>().len() != cards.len() {
+        return Err("choose_discard.cards cannot repeat labels".to_string());
+    }
+    Ok((player, DiscardScriptChoice { cards }))
+}
+
+fn take_discard_choice_group(
+    choices: &mut [VecDeque<DiscardScriptChoice>; 2],
+    player: PlayerId,
+    offered: &[ObjectId],
+    count: usize,
+    up_to: bool,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<Vec<ObjectId>, String> {
+    let queue = choices
+        .get_mut(player.0 as usize)
+        .ok_or("DiscardChoice prompt player must be P0 or P1")?;
+    let choice = queue.pop_front().ok_or_else(|| {
+        format!(
+            "P{} DiscardChoice prompt has no choose_discard entry",
+            player.0
+        )
+    })?;
+    let min_count = if up_to { 0 } else { count };
+    validate_card_choice_group(&choice.cards, offered, min_count, count, labels)?;
+    Ok(choice.cards)
+}
+
+fn ensure_discard_choices_consumed(
+    choices: &[VecDeque<DiscardScriptChoice>; 2],
+) -> Result<(), String> {
+    let unconsumed = choices.iter().map(VecDeque::len).sum::<usize>();
+    if unconsumed == 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "{unconsumed} choose_discard choice(s) were unconsumed when the script ended"
+    ))
+}
+
+fn consume_forced_discard_choices(
+    choices: &mut [VecDeque<DiscardScriptChoice>; 2],
+    events: &[GameEvent],
+    labels: &HashMap<ObjectId, String>,
+) -> Result<(), String> {
+    let mut discarded_by_player = [HashSet::new(), HashSet::new()];
+    for event in events {
+        if let GameEvent::Discarded {
+            player_id,
+            object_id,
+            ..
+        } = event
+        {
+            let Some(discarded) = discarded_by_player.get_mut(player_id.0 as usize) else {
+                continue;
+            };
+            discarded.insert(*object_id);
+        }
+    }
+
+    if discarded_by_player.iter().all(HashSet::is_empty) {
+        return Ok(());
+    }
+
+    for (index, queue) in choices.iter_mut().enumerate() {
+        let Some(expected) = queue.front() else {
+            continue;
+        };
+        let actual = &discarded_by_player[index];
+        let expected: HashSet<_> = expected.cards.iter().copied().collect();
+        if &expected != actual {
+            let render = |ids: &HashSet<ObjectId>| {
+                let mut names: Vec<_> = ids
+                    .iter()
+                    .map(|id| labels.get(id).cloned().unwrap_or_else(|| format!("{id:?}")))
+                    .collect();
+                names.sort();
+                format!("[{}]", names.join(", "))
+            };
+            let actual_by_player = discarded_by_player
+                .iter()
+                .enumerate()
+                .map(|(player, ids)| format!("P{player} {}", render(ids)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "P{index} forced discard did not match: scripted {}, actually discarded {actual_by_player}",
+                render(&expected),
+            ));
+        }
+        queue.pop_front();
+    }
+    Ok(())
+}
+
+fn consume_resolved_discard_choices(
+    pending_events: &mut Vec<GameEvent>,
+    events: Vec<GameEvent>,
+    choices: &mut [VecDeque<DiscardScriptChoice>; 2],
+    labels: &HashMap<ObjectId, String>,
+) -> Result<(), String> {
+    for event in events {
+        let resolution_finished = matches!(event, GameEvent::StackResolved { .. });
+        pending_events.push(event);
+        if resolution_finished {
+            consume_forced_discard_choices(choices, pending_events, labels)?;
+            pending_events.clear();
+        }
+    }
+    Ok(())
 }
 
 fn ensure_surveil_choices_consumed(choices: &VecDeque<SurveilScriptChoice>) -> Result<(), String> {
@@ -1785,6 +1909,7 @@ fn pass_until_resolved(
     groups: &mut VecDeque<Vec<ObjectId>>,
     activation_target_groups: &mut VecDeque<Vec<ObjectId>>,
     card_choice_groups: &mut VecDeque<Vec<ObjectId>>,
+    discard_choice_groups: &mut [VecDeque<DiscardScriptChoice>; 2],
     surveil_choices: &mut VecDeque<SurveilScriptChoice>,
     sideboard_labels: &HashMap<String, (PlayerId, usize, String)>,
     outside_game_choices: &mut VecDeque<OutsideGameScriptChoice>,
@@ -1793,6 +1918,7 @@ fn pass_until_resolved(
 ) -> Result<(), String> {
     let mut pending_unless_choice = None;
     let mut pending_copy_target_choice = None;
+    let mut pending_resolution_events = Vec::new();
     for _ in 0..128 {
         match runner.state().waiting_for.clone() {
             WaitingFor::TriggerTargetSelection { .. } => {
@@ -1892,9 +2018,26 @@ fn pass_until_resolved(
                     .act(GameAction::SelectCards { cards: vec![id] })
                     .map_err(|error| error.to_string())?;
             }
-            WaitingFor::EffectZoneChoice { .. }
-            | WaitingFor::ChooseFromZoneChoice { .. }
-            | WaitingFor::DiscardChoice { .. } => {
+            WaitingFor::DiscardChoice {
+                player,
+                count,
+                cards,
+                up_to,
+                ..
+            } => {
+                let selected = take_discard_choice_group(
+                    discard_choice_groups,
+                    player,
+                    &cards,
+                    count,
+                    up_to,
+                    labels,
+                )?;
+                runner
+                    .act(GameAction::SelectCards { cards: selected })
+                    .map_err(|error| error.to_string())?;
+            }
+            WaitingFor::EffectZoneChoice { .. } | WaitingFor::ChooseFromZoneChoice { .. } => {
                 apply_card_choice_group(runner, labels, card_choice_groups)?;
             }
             WaitingFor::SurveilChoice { player, cards } => {
@@ -2021,7 +2164,15 @@ fn pass_until_resolved(
                         .to_string(),
                 );
             }
-            _ => runner.advance_until_stack_empty(),
+            _ => {
+                let events = runner.advance_until_stack_empty_with_events();
+                consume_resolved_discard_choices(
+                    &mut pending_resolution_events,
+                    events,
+                    discard_choice_groups,
+                    labels,
+                )?;
+            }
         }
         if runner.state().stack.is_empty()
             && !matches!(
@@ -2058,6 +2209,8 @@ fn activate(
     labels: &HashMap<ObjectId, String>,
     action: &Value,
     activation_target_groups: &mut VecDeque<Vec<ObjectId>>,
+    mana_choice_groups: &mut VecDeque<ManaScriptChoice>,
+    spec: &Value,
 ) -> Result<(), String> {
     let source_label = action["source"].as_str().ok_or("activate needs source")?;
     let source_id = resolve_label(labels, source_label)?;
@@ -2070,11 +2223,22 @@ fn activate(
     let WaitingFor::Priority { player } = &runner.state().waiting_for else {
         return Err("activate requires a player with priority".to_string());
     };
-    if *player != object.controller {
+    let activation_player = if object.zone == Zone::Graveyard {
+        object.owner
+    } else {
+        object.controller
+    };
+    if *player != activation_player {
         return Err(format!(
             "activate source label {source_label} is not controlled by the player with priority"
         ));
     }
+    let activation_player = *player;
+    let mana_choice = consume_mana_choice(mana_choice_groups, activation_player, spec)?;
+    let mana_pool_before = mana_choice
+        .as_ref()
+        .map(|_| mana_pool_source_pips(runner.state(), activation_player))
+        .transpose()?;
     let ability_index = select_activation_ability(
         object.abilities.iter().enumerate().map(|(index, ability)| {
             (
@@ -2167,6 +2331,14 @@ fn activate(
     ensure_activation_cost_prompt_matches_field(alternative_cost, alternative_cost_prompt_seen)?;
     if runner.state().stack.len() <= stack_size {
         return Err("activated ability did not commit to the stack".to_string());
+    }
+    if let (Some(choice), Some(before)) = (&mana_choice, &mana_pool_before) {
+        verify_mana_choice_spent(
+            choice,
+            before,
+            &mana_pool_source_pips(runner.state(), activation_player)?,
+            labels,
+        )?;
     }
     Ok(())
 }
@@ -2935,6 +3107,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     let mut trigger_target_groups = VecDeque::new();
     let mut activation_target_groups = VecDeque::new();
     let mut card_choice_groups = VecDeque::new();
+    let mut discard_choice_groups = [VecDeque::new(), VecDeque::new()];
     let mut surveil_choices = VecDeque::new();
     let mut outside_game_choices = VecDeque::new();
     let mut mana_choice_groups = VecDeque::new();
@@ -3093,7 +3266,14 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     )?;
                 }
             }
-            "activate" => activate(&mut runner, &labels, action, &mut activation_target_groups)?,
+            "activate" => activate(
+                &mut runner,
+                &labels,
+                action,
+                &mut activation_target_groups,
+                &mut mana_choice_groups,
+                spec,
+            )?,
             "label_permanent" => label_permanent(&runner, &mut labels, action)?,
             "pass_priority" => pass_priority(&mut runner, action)?,
             "trigger_targets" => {
@@ -3116,6 +3296,13 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
             "choose_cards" => {
                 card_choice_groups.push_back(resolve_card_choice_labels(action, &labels)?);
             }
+            "choose_discard" => {
+                let (player, choice) = parse_discard_choice(action, &labels)?;
+                discard_choice_groups
+                    .get_mut(player.0 as usize)
+                    .ok_or("choose_discard.player must be P0 or P1")?
+                    .push_back(choice);
+            }
             "choose_surveil" => {
                 surveil_choices.push_back(parse_surveil_choice(action, &labels)?);
             }
@@ -3134,6 +3321,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     &mut trigger_target_groups,
                     &mut activation_target_groups,
                     &mut card_choice_groups,
+                    &mut discard_choice_groups,
                     &mut surveil_choices,
                     &sideboard_labels,
                     &mut outside_game_choices,
@@ -3154,6 +3342,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     ensure_trigger_target_groups_consumed(&trigger_target_groups)?;
     ensure_activation_target_groups_consumed(&activation_target_groups)?;
     ensure_card_choice_groups_consumed(&card_choice_groups)?;
+    ensure_discard_choices_consumed(&discard_choice_groups)?;
     ensure_surveil_choices_consumed(&surveil_choices)?;
     ensure_outside_game_choices_consumed(&outside_game_choices)?;
     ensure_mana_choices_consumed(&mana_choice_groups)?;
@@ -3176,6 +3365,7 @@ const REACH_FIELDS: &[&str] = &[
     "life",
     "zone",
     "card",
+    "label",
     "count",
     "tapped_labels",
     "types",
@@ -3254,6 +3444,18 @@ fn check_reach(
     }
     let zone = reach["zone"].as_str().unwrap_or("graveyard");
     let card = reach["card"].as_str().ok_or("reach needs card")?;
+    let labeled_id = reach
+        .get("label")
+        .map(|value| {
+            let label = value
+                .as_str()
+                .ok_or("reach.label must be a battlefield label")?;
+            resolve_label(labels, label)
+        })
+        .transpose()?;
+    if labeled_id.is_some() && zone != "battlefield" {
+        return Err("reach.label is only valid for battlefield permanents".to_string());
+    }
     if reach.get("solved").is_some() && zone != "battlefield" {
         return Err("reach.solved is only valid for battlefield Cases".to_string());
     }
@@ -3312,6 +3514,9 @@ fn check_reach(
 
     let mut matching_count = 0;
     for id in &state.battlefield {
+        if labeled_id.is_some_and(|expected| *id != expected) {
+            continue;
+        }
         let Some(object) = state
             .objects
             .get(id)
@@ -4416,6 +4621,7 @@ mod tests {
                 let mut trigger_targets = VecDeque::new();
                 let mut activation_targets = VecDeque::new();
                 let mut card_choices = VecDeque::new();
+                let mut discard_choices = [VecDeque::new(), VecDeque::new()];
                 let mut surveil_choices = VecDeque::new();
                 let sideboard_labels = HashMap::new();
                 let mut outside_game_choices = VecDeque::new();
@@ -4428,6 +4634,7 @@ mod tests {
                     &mut trigger_targets,
                     &mut activation_targets,
                     &mut card_choices,
+                    &mut discard_choices,
                     &mut surveil_choices,
                     &sideboard_labels,
                     &mut outside_game_choices,
@@ -4601,6 +4808,179 @@ mod tests {
     }
 
     #[test]
+    fn discard_choices_are_player_scoped_and_fail_closed() {
+        let first = ObjectId(17);
+        let second = ObjectId(18);
+        let labels = HashMap::from([
+            (first, "p0.hand.nonland".to_string()),
+            (second, "p0.drawn.land".to_string()),
+        ]);
+        let choice = DiscardScriptChoice {
+            cards: vec![first, second],
+        };
+        let offered = [first, second];
+
+        let mut wrong_player = [VecDeque::new(), VecDeque::from([choice.clone()])];
+        assert!(take_discard_choice_group(
+            &mut wrong_player,
+            PlayerId(0),
+            &offered,
+            2,
+            false,
+            &labels,
+        )
+        .unwrap_err()
+        .contains("no choose_discard entry"));
+        assert!(ensure_discard_choices_consumed(&wrong_player)
+            .unwrap_err()
+            .contains("unconsumed"));
+
+        let mut missing = [VecDeque::new(), VecDeque::new()];
+        assert!(
+            take_discard_choice_group(&mut missing, PlayerId(0), &offered, 2, false, &labels,)
+                .unwrap_err()
+                .contains("no choose_discard entry")
+        );
+
+        let mut extra = [VecDeque::from([choice.clone(), choice]), VecDeque::new()];
+        assert_eq!(
+            take_discard_choice_group(&mut extra, PlayerId(0), &offered, 2, false, &labels,)
+                .unwrap(),
+            offered
+        );
+        assert!(ensure_discard_choices_consumed(&extra)
+            .unwrap_err()
+            .contains("unconsumed"));
+    }
+
+    #[test]
+    fn forced_discard_events_consume_an_exact_scripted_set() {
+        let first = ObjectId(17);
+        let second = ObjectId(18);
+        let labels = HashMap::from([
+            (first, "p0.hand.nonland".to_string()),
+            (second, "p0.drawn.land".to_string()),
+        ]);
+        let mut choices = [
+            VecDeque::from([DiscardScriptChoice {
+                cards: vec![first, second],
+            }]),
+            VecDeque::new(),
+        ];
+        let mut pending_events = Vec::new();
+
+        consume_resolved_discard_choices(
+            &mut pending_events,
+            vec![
+                GameEvent::Discarded {
+                    player_id: PlayerId(0),
+                    object_id: second,
+                    source_id: None,
+                },
+                GameEvent::Discarded {
+                    player_id: PlayerId(0),
+                    object_id: first,
+                    source_id: None,
+                },
+                GameEvent::StackResolved {
+                    object_id: ObjectId(19),
+                },
+            ],
+            &mut choices,
+            &labels,
+        )
+        .unwrap();
+
+        assert!(ensure_discard_choices_consumed(&choices).is_ok());
+    }
+
+    #[test]
+    fn forced_discard_events_reject_a_different_scripted_set() {
+        let first = ObjectId(17);
+        let expected = ObjectId(18);
+        let actual = ObjectId(19);
+        let labels = HashMap::from([
+            (first, "p0.hand.nonland".to_string()),
+            (expected, "p0.drawn.land".to_string()),
+            (actual, "p0.extra".to_string()),
+        ]);
+        let mut choices = [
+            VecDeque::from([DiscardScriptChoice {
+                cards: vec![first, expected],
+            }]),
+            VecDeque::new(),
+        ];
+        let mut pending_events = Vec::new();
+
+        let error = consume_resolved_discard_choices(
+            &mut pending_events,
+            vec![
+                GameEvent::Discarded {
+                    player_id: PlayerId(0),
+                    object_id: first,
+                    source_id: None,
+                },
+                GameEvent::Discarded {
+                    player_id: PlayerId(0),
+                    object_id: actual,
+                    source_id: None,
+                },
+                GameEvent::StackResolved {
+                    object_id: ObjectId(20),
+                },
+            ],
+            &mut choices,
+            &labels,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("scripted [p0.drawn.land, p0.hand.nonland]"));
+        assert!(error.contains("actually discarded P0 [p0.extra, p0.hand.nonland]"));
+    }
+
+    #[test]
+    fn forced_discard_script_remains_unconsumed_when_resolution_discards_nothing() {
+        let card = ObjectId(17);
+        let mut choices = [
+            VecDeque::from([DiscardScriptChoice { cards: vec![card] }]),
+            VecDeque::new(),
+        ];
+        let mut pending_events = Vec::new();
+
+        consume_resolved_discard_choices(
+            &mut pending_events,
+            vec![GameEvent::StackResolved {
+                object_id: ObjectId(18),
+            }],
+            &mut choices,
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        assert!(ensure_discard_choices_consumed(&choices)
+            .unwrap_err()
+            .contains("unconsumed"));
+    }
+
+    #[test]
+    fn discard_choice_script_requires_player_and_unique_labels() {
+        let id = ObjectId(17);
+        let labels = HashMap::from([(id, "p0.hand.card".to_string())]);
+
+        assert!(
+            parse_discard_choice(&json!({"player": "P2", "cards": []}), &labels)
+                .unwrap_err()
+                .contains("player must be P0 or P1")
+        );
+        assert!(parse_discard_choice(
+            &json!({"player": "P0", "cards": ["p0.hand.card", "p0.hand.card"]}),
+            &labels,
+        )
+        .unwrap_err()
+        .contains("cannot repeat"));
+    }
+
+    #[test]
     fn empty_up_to_zone_choice_group_is_valid_for_the_real_prompt() {
         let first = ObjectId(17);
 
@@ -4723,11 +5103,13 @@ mod tests {
                     &mut runner,
                     &labels,
                     &json!({
-                        "source": "source",
-                        "ability": "{T}:",
+                            "source": "source",
+                            "ability": "{T}:",
                         "targets": ["target"]
                     }),
                     &mut VecDeque::new(),
+                    &mut VecDeque::new(),
+                    &json!({}),
                 )
                 .unwrap();
 
@@ -5342,6 +5724,7 @@ mod surveil_script_choice_tests {
                 let mut trigger_targets = VecDeque::new();
                 let mut activation_targets = VecDeque::new();
                 let mut card_choices = VecDeque::new();
+                let mut discard_choices = [VecDeque::new(), VecDeque::new()];
                 let sideboard_labels = HashMap::new();
                 let mut outside_game_choices = VecDeque::new();
                 let mut copy_choices = VecDeque::new();
@@ -5354,6 +5737,7 @@ mod surveil_script_choice_tests {
                     &mut trigger_targets,
                     &mut activation_targets,
                     &mut card_choices,
+                    &mut discard_choices,
                     &mut surveil_choices,
                     &sideboard_labels,
                     &mut outside_game_choices,

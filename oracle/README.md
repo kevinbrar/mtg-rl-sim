@@ -4,7 +4,8 @@
 
 Forge is the independent oracle for Standard cards absent from the pinned
 XMage/mage-bench source. The runner currently uses it for Extrapolate the
-Impossible and Jace's Machinations. The pin is recorded in `oracle/forge.txt`:
+Impossible, Jace's Machinations, and Seasoned Cryomancer. The pin is recorded
+in `oracle/forge.txt`:
 
 - Repository: `https://github.com/Card-Forge/forge`
 - Commit: `0f82b4f4693357638c368b9fb0b64833eb44faf8`
@@ -41,19 +42,36 @@ Tournament "outside the game" choices are represented by the sideboard.
 
 Forge projects ordered libraries, exile contents, and each permanent's
 characteristics and counters. Both runners support `pass_priority`,
-`label_permanent`, `activate`, and `choose_surveil`. Activation labels can match
-a unique loyalty-cost label (for example, `-3` or `+2`) or an ability
-description; missing and ambiguous matches fail closed. Forge token projections
-and reach checks strip exactly one trailing ` Token` from token names to match
-XMage's convention; Phase token names are unchanged. Forge also supports
-`choose_replacement` by exact description and `choose_entity` by unique exact
-card name. These scripted choices are FIFO and fail closed when absent,
-ambiguous, ineligible, or unconsumed.
+`label_permanent`, `activate`, `choose_surveil`, `choose_discard`, and
+`trigger_targets`.
+Activations can name a labeled battlefield permanent or a card in the
+activating player's graveyard. Activation labels can match a unique
+loyalty-cost label (for example, `-3` or `+2`) or an ability description;
+missing and ambiguous matches fail closed. `choose_discard` is a per-player
+FIFO of labeled cards, validated against the discarding player's offered cards
+and the prompt's count. Missing, extra, duplicate, ineligible, and
+wrong-player choices fail closed. For a multi-card discard, Forge uses the
+scripted selection order for the CR 404.3 graveyard-order choice and fails
+closed if that prompt is missing or unexpected. Use `reach.label` with a battlefield
+assertion to check a specific same-named permanent's state. Forge token
+projections and reach checks strip exactly one trailing ` Token` from token
+names to match XMage's convention; Phase token names are unchanged. Forge also
+supports `choose_replacement` by exact description and `choose_entity` by
+unique exact card name. These scripted choices are FIFO and fail closed when
+absent, ambiguous, ineligible, or unconsumed.
+
+Phase can resolve exact-count forced discards without presenting `DiscardChoice`.
+If a discard script is pending, the runner reconciles it against the `Discarded`
+events captured for that stack resolution and consumes it only on exact set
+equality; mismatches report both sets, while a resolution with no discard leaves
+the script unconsumed. Local card-data runs must use the CI-pinned release in
+`ci/card-data.txt`; after an undo build, restore or regenerate card data from the
+fully patched parser before running normal differentials.
 
 `choose_mana` accepts shared `sources`, or both `phase_sources` and
 `forge_sources` when the engines validly spend different equivalent sources.
-Each runner checks its exact scripted set; both oracle-specific lists are
-required, and choices left unconsumed fail closed.
+Each runner checks its exact scripted set for casts and activations; both
+oracle-specific lists are required, and choices left unconsumed fail closed.
 
 Working recipe (verified 2026-11-10, pinned mage-bench revision):
 

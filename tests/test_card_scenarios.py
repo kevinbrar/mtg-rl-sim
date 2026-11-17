@@ -424,6 +424,32 @@ loyalty = 4
         load_specs([spec])
 
 
+def test_load_specs_accepts_labeled_permanent_reach(tmp_path: Path) -> None:
+    spec = tmp_path / "labeled-permanent-reach.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "labeled permanent reach"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "bear.1", card = "Grizzly Bears", tapped = true, counters = { stun = 1 } },
+]
+
+[scenarios.reach]
+zone = "battlefield"
+player = "P0"
+card = "Grizzly Bears"
+label = "bear.1"
+tapped = true
+counters = { stun = 1 }
+""",
+        encoding="utf-8",
+    )
+
+    assert load_specs([spec])
+
+
 def test_load_specs_accepts_case_solved_reach_and_graveyard_cast(
     tmp_path: Path,
 ) -> None:

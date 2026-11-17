@@ -1,0 +1,408 @@
+oracle = "forge"
+
+[[scenarios]]
+name = "C1-discard-two-nonlands-target-both"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Island", tapped = true },
+  { label = "mana.2", card = "Island", tapped = true },
+  { label = "mana.3", card = "Island", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "U", source = "mana.3" },
+]
+hand = ["Seasoned Cryomancer"]
+library_top = [
+  { label = "draw.1", card = "Opt" },
+  { label = "draw.2", card = "Divination" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "bear.1", card = "Grizzly Bears" },
+  { label = "bear.2", card = "Grizzly Bears" },
+]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Seasoned Cryomancer"
+
+[[scenarios.script]]
+action = "choose_discard"
+player = "P0"
+cards = ["draw.1", "draw.2"]
+
+[[scenarios.script]]
+action = "trigger_targets"
+targets = ["bear.1", "bear.2"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Seasoned Cryomancer", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Opt", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Divination", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.1", tapped = true, counters = { stun = 1 } },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.2", tapped = true, counters = { stun = 1 } },
+]
+
+[[scenarios]]
+name = "C2-one-nonland-target-one"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Island", tapped = true },
+  { label = "mana.2", card = "Island", tapped = true },
+  { label = "mana.3", card = "Island", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "U", source = "mana.3" },
+]
+hand = ["Seasoned Cryomancer"]
+library_top = [
+  { label = "draw.land", card = "Island" },
+  { label = "draw.nonland", card = "Opt" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "bear.1", card = "Grizzly Bears" },
+  { label = "bear.2", card = "Grizzly Bears" },
+]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Seasoned Cryomancer"
+
+[[scenarios.script]]
+action = "choose_discard"
+player = "P0"
+cards = ["draw.land", "draw.nonland"]
+
+[[scenarios.script]]
+action = "trigger_targets"
+targets = ["bear.1"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Seasoned Cryomancer", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Island", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Opt", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.1", tapped = true, counters = { stun = 1 } },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.2", tapped = false, counters = { stun = 0 } },
+]
+
+[[scenarios]]
+name = "C3-two-lands-no-reflexive-trigger"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Island", tapped = true },
+  { label = "mana.2", card = "Island", tapped = true },
+  { label = "mana.3", card = "Island", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "U", source = "mana.3" },
+]
+hand = ["Seasoned Cryomancer"]
+library_top = [
+  { label = "draw.land.1", card = "Island" },
+  { label = "draw.land.2", card = "Plains" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "bear.1", card = "Grizzly Bears" },
+  { label = "bear.2", card = "Grizzly Bears" },
+]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Seasoned Cryomancer"
+
+[[scenarios.script]]
+action = "choose_discard"
+player = "P0"
+cards = ["draw.land.1", "draw.land.2"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Seasoned Cryomancer", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Island", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Plains", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.1", tapped = false, counters = { stun = 0 } },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.2", tapped = false, counters = { stun = 0 } },
+]
+
+[[scenarios]]
+name = "C4-discard-two-target-one"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Island", tapped = true },
+  { label = "mana.2", card = "Island", tapped = true },
+  { label = "mana.3", card = "Island", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "U", source = "mana.3" },
+]
+hand = ["Seasoned Cryomancer"]
+library_top = [
+  { label = "draw.1", card = "Opt" },
+  { label = "draw.2", card = "Divination" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "bear.1", card = "Grizzly Bears" },
+  { label = "bear.2", card = "Grizzly Bears" },
+]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Seasoned Cryomancer"
+
+[[scenarios.script]]
+action = "choose_discard"
+player = "P0"
+cards = ["draw.1", "draw.2"]
+
+[[scenarios.script]]
+action = "trigger_targets"
+targets = ["bear.1"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Seasoned Cryomancer", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Opt", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Divination", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.1", tapped = true, counters = { stun = 1 } },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.2", tapped = false, counters = { stun = 0 } },
+]
+
+[[scenarios]]
+name = "C5-already-tapped-targets"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Island", tapped = true },
+  { label = "mana.2", card = "Island", tapped = true },
+  { label = "mana.3", card = "Island", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "U", source = "mana.3" },
+]
+hand = ["Seasoned Cryomancer"]
+library_top = [
+  { label = "draw.1", card = "Opt" },
+  { label = "draw.2", card = "Divination" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "bear.1", card = "Grizzly Bears", tapped = true },
+  { label = "bear.2", card = "Grizzly Bears" },
+]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Seasoned Cryomancer"
+
+[[scenarios.script]]
+action = "choose_discard"
+player = "P0"
+cards = ["draw.1", "draw.2"]
+
+[[scenarios.script]]
+action = "trigger_targets"
+targets = ["bear.1", "bear.2"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Seasoned Cryomancer", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Opt", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Divination", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.1", tapped = true, counters = { stun = 1 } },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.2", tapped = true, counters = { stun = 1 } },
+]
+
+[[scenarios]]
+name = "C6-discard-one-card-from-hand"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Island", tapped = true },
+  { label = "mana.2", card = "Island", tapped = true },
+  { label = "mana.3", card = "Island", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "U", source = "mana.3" },
+]
+hand = [
+  { label = "p0.hand.nonland", card = "Opt" },
+  "Seasoned Cryomancer",
+]
+library_top = [
+  { label = "draw.land", card = "Island" },
+  { label = "draw.unused", card = "Divination" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "bear.1", card = "Grizzly Bears" },
+  { label = "bear.2", card = "Grizzly Bears" },
+]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Seasoned Cryomancer"
+
+[[scenarios.script]]
+action = "choose_discard"
+player = "P0"
+cards = ["p0.hand.nonland", "draw.land"]
+
+[[scenarios.script]]
+action = "trigger_targets"
+targets = ["bear.1"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Seasoned Cryomancer", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Opt", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Island", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.1", tapped = true, counters = { stun = 1 } },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.2", tapped = false, counters = { stun = 0 } },
+]
+
+[[scenarios]]
+name = "C7-activate-from-graveyard"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Island", tapped = true },
+  { label = "mana.2", card = "Island", tapped = true },
+  { label = "mana.3", card = "Island", tapped = true },
+  { label = "mana.4", card = "Island", tapped = true },
+  { label = "mana.5", card = "Island", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "U", source = "mana.3" },
+  { color = "U", source = "mana.4" },
+  { color = "U", source = "mana.5" },
+]
+graveyard = [{ label = "cryomancer", card = "Seasoned Cryomancer" }]
+library_top = [
+  { label = "draw.1", card = "Opt" },
+  { label = "draw.2", card = "Divination" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "bear.1", card = "Grizzly Bears" },
+  { label = "bear.2", card = "Grizzly Bears" },
+]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3", "mana.4", "mana.5"]
+
+[[scenarios.script]]
+action = "activate"
+source = "cryomancer"
+ability = "{3}{U}{U}, Exile this card from your graveyard: Draw two cards."
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Seasoned Cryomancer", count = 1 },
+  { zone = "hand", player = "P0", card = "Opt", count = 1 },
+  { zone = "hand", player = "P0", card = "Divination", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.1", tapped = false, counters = { stun = 0 } },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.2", tapped = false, counters = { stun = 0 } },
+]
