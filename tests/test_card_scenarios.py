@@ -1525,6 +1525,46 @@ cards = []
     assert loaded["scenarios"][0]["script"][1]["accept"] is True
 
 
+def test_load_specs_accepts_oracle_specific_mana_sources(tmp_path: Path) -> None:
+    spec = tmp_path / "oracle-specific-mana.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "oracle-specific mana sources"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "island.1", card = "Island" },
+  { label = "island.2", card = "Island" },
+]
+mana_pool = [
+  { color = "U", source = "island.1" },
+  { color = "U", source = "island.2" },
+]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+phase_sources = ["island.1"]
+forge_sources = ["island.2"]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+
+    assert loaded["scenarios"][0]["script"][0]["phase_sources"] == ["island.1"]
+    assert loaded["scenarios"][0]["script"][0]["forge_sources"] == ["island.2"]
+    spec.write_text(
+        spec.read_text(encoding="utf-8").replace('forge_sources = ["island.2"]\n', ""),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="both phase_sources and forge_sources"):
+        load_specs([spec])
+
+
 def test_known_diff_mixed_run_counts_matched_triaged_and_failed() -> None:
     matched_phase = _projection_result("match", {"life": 20})
     matched_mage = _projection_result("match", {"life": 20})
@@ -1725,6 +1765,107 @@ def test_forge_suite_dispatch_and_xmage_default(tmp_path: Path) -> None:
     assert loaded["suite_oracles"] == {"xmage-card": "xmage", "forge-card": "forge"}
     assert [scenario["name"] for scenario in dispatched["xmage"]] == ["default-suite"]
     assert [scenario["name"] for scenario in dispatched["forge"]] == ["forge-suite"]
+
+
+def test_load_specs_accepts_nonactive_priority_and_jace_scripts(tmp_path: Path) -> None:
+    spec = tmp_path / "jace-scripts.toml"
+    spec.write_text(
+        """
+oracle = "forge"
+[[scenarios]]
+name = "nonactive Jace script"
+active_player = 1
+priority_player = 1
+script = [
+  { action = "pass_priority", player = "P1" },
+  { action = "cast", player = "P0", card = "Jace's Machinations" },
+  { action = "label_permanent", player = "P0", card = "Jace", label = "jace-token", token = true },
+  { action = "activate", source = "jace-token", ability = "−1: Surveil 1" },
+  { action = "choose_surveil", player = "P0", cards = ["top-card"] },
+  { action = "choose_replacement", player = "P0", description = "Jace Token enters with zero loyalty counters on it." },
+  { action = "choose_entity", player = "P0", card = "Jace Token" }
+]
+
+[scenarios.setup.P0]
+hand = ["Jace's Machinations"]
+library_top = [{ label = "top-card", card = "Island" }]
+
+[scenarios.setup.P1]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+
+    assert loaded["scenarios"][0]["priority_player"] == 1
+    assert loaded["scenarios"][0]["script"][4]["cards"] == ["top-card"]
+    assert loaded["scenarios"][0]["script"][5]["description"] == (
+        "Jace Token enters with zero loyalty counters on it."
+    )
+    assert loaded["scenarios"][0]["script"][6]["card"] == "Jace Token"
+
+
+def test_load_specs_rejects_invalid_replacement_choice(tmp_path: Path) -> None:
+    spec = tmp_path / "invalid-replacement-choice.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "invalid replacement choice"
+script = [{ action = "choose_replacement", player = "P0", description = "" }]
+[scenarios.setup.P0]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="description must be a non-empty string"):
+        load_specs([spec])
+
+
+def test_load_specs_rejects_invalid_single_entity_choice(tmp_path: Path) -> None:
+    spec = tmp_path / "invalid-single-entity-choice.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "invalid single entity choice"
+script = [{ action = "choose_entity", player = "P0", card = "" }]
+[scenarios.setup.P0]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="card must be a non-empty string"):
+        load_specs([spec])
+
+
+def test_load_specs_rejects_invalid_nonactive_priority_and_surveil_choice(
+    tmp_path: Path,
+) -> None:
+    invalid_priority = tmp_path / "invalid-priority.toml"
+    invalid_priority.write_text(
+        """
+[[scenarios]]
+name = "invalid priority"
+priority_player = 2
+[scenarios.setup.P0]
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="priority_player must be 0 or 1"):
+        load_specs([invalid_priority])
+
+    invalid_surveil = tmp_path / "invalid-surveil.toml"
+    invalid_surveil.write_text(
+        """
+[[scenarios]]
+name = "invalid surveil label"
+script = [{ action = "choose_surveil", player = "P0", cards = ["not-top"] }]
+[scenarios.setup.P0]
+library_top = [{ label = "top", card = "Island" }]
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="must be in P0's library_top"):
+        load_specs([invalid_surveil])
 
 
 def test_choose_outside_game_requires_sideboard_labels(tmp_path: Path) -> None:

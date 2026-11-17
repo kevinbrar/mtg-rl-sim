@@ -36,6 +36,12 @@ struct ManaScriptChoice {
     sources: Vec<String>,
 }
 
+#[derive(Debug)]
+struct SurveilScriptChoice {
+    player: PlayerId,
+    graveyard: Vec<ObjectId>,
+}
+
 fn card_name(state: &GameState, id: ObjectId) -> String {
     state.objects.get(&id).expect("object exists").name.clone()
 }
@@ -282,25 +288,72 @@ fn parse_mana_choice(action: &Value) -> Result<ManaScriptChoice, String> {
         Some("P1") => PlayerId(1),
         _ => return Err("choose_mana.player must be P0 or P1".to_string()),
     };
-    let sources = action["sources"]
-        .as_array()
-        .ok_or("choose_mana.sources must be an array")?
-        .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .filter(|source| !source.is_empty())
-                .map(str::to_string)
-                .ok_or_else(|| "choose_mana.sources entries must be labels".to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if sources.is_empty() {
-        return Err("choose_mana.sources must not be empty".to_string());
+    let has_common = action.get("sources").is_some();
+    let has_phase = action.get("phase_sources").is_some();
+    let has_forge = action.get("forge_sources").is_some();
+    if has_common && (has_phase || has_forge) || !has_common && !(has_phase && has_forge) {
+        return Err(
+            "choose_mana needs sources or both phase_sources and forge_sources".to_string(),
+        );
     }
-    if sources.iter().collect::<HashSet<_>>().len() != sources.len() {
-        return Err("choose_mana.sources cannot repeat labels".to_string());
-    }
+    let parse_sources = |key: &str| -> Result<Vec<String>, String> {
+        let sources = action[key]
+            .as_array()
+            .ok_or_else(|| format!("choose_mana.{key} must be an array"))?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|source| !source.is_empty())
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("choose_mana.{key} entries must be labels"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if sources.is_empty() {
+            return Err(format!("choose_mana.{key} must not be empty"));
+        }
+        if sources.iter().collect::<HashSet<_>>().len() != sources.len() {
+            return Err(format!("choose_mana.{key} cannot repeat labels"));
+        }
+        Ok(sources)
+    };
+    let sources = if has_common {
+        parse_sources("sources")?
+    } else {
+        parse_sources("forge_sources")?;
+        parse_sources("phase_sources")?
+    };
     Ok(ManaScriptChoice { player, sources })
+}
+
+fn parse_script_player(value: Option<&str>, context: &str) -> Result<PlayerId, String> {
+    match value {
+        Some("P0") => Ok(PlayerId(0)),
+        Some("P1") => Ok(PlayerId(1)),
+        _ => Err(format!("{context}.player must be P0 or P1")),
+    }
+}
+
+fn parse_surveil_choice(
+    action: &Value,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<SurveilScriptChoice, String> {
+    let player = parse_script_player(action["player"].as_str(), "choose_surveil")?;
+    let graveyard = resolve_card_choice_labels(action, labels)?;
+    if graveyard.iter().collect::<HashSet<_>>().len() != graveyard.len() {
+        return Err("choose_surveil.cards cannot repeat labels".to_string());
+    }
+    Ok(SurveilScriptChoice { player, graveyard })
+}
+
+fn ensure_surveil_choices_consumed(choices: &VecDeque<SurveilScriptChoice>) -> Result<(), String> {
+    if choices.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} choose_surveil choice(s) were unconsumed when the script ended",
+        choices.len()
+    ))
 }
 
 fn consume_mana_choice(
@@ -584,30 +637,71 @@ fn normalize_ability_text(text: &str) -> String {
     stripped
 }
 
+fn loyalty_ability_label(cost: &AbilityCost) -> Option<String> {
+    match cost {
+        AbilityCost::Loyalty { amount } => Some(if *amount > 0 {
+            format!("+{amount}")
+        } else {
+            amount.to_string()
+        }),
+        _ => None,
+    }
+}
+
+fn parse_loyalty_cost_selector(selector: &str) -> Option<String> {
+    let normalized = selector
+        .to_lowercase()
+        .replace('−', "-")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let normalized = normalized.strip_suffix('.').unwrap_or(&normalized);
+    if normalized == "0" {
+        return Some(normalized.to_string());
+    }
+    let amount = normalized
+        .strip_prefix('+')
+        .or_else(|| normalized.strip_prefix('-'))?;
+    if amount.is_empty() || !amount.bytes().all(|digit| digit.is_ascii_digit()) {
+        return None;
+    }
+    Some(normalized.to_string())
+}
+
 fn select_activation_ability(
-    candidates: impl IntoIterator<Item = (usize, AbilityKind, bool, Option<String>)>,
-    prefix: &str,
+    candidates: impl IntoIterator<Item = (usize, AbilityKind, bool, Option<String>, Option<String>)>,
+    selector: &str,
 ) -> Result<usize, String> {
-    let prefix = normalize_ability_text(prefix);
-    if prefix.is_empty() {
+    let cost_selector = parse_loyalty_cost_selector(selector);
+    let description_prefix = normalize_ability_text(&selector.replace('−', "-"));
+    if selector.trim().is_empty() {
         return Err("activate needs a non-empty ability cost prefix".to_string());
     }
     let mut matches = Vec::new();
-    for (index, kind, is_mana_ability, description) in candidates {
+    for (index, kind, is_mana_ability, loyalty_cost_label, description) in candidates {
         if kind != AbilityKind::Activated || is_mana_ability {
             continue;
         }
-        let description = description
-            .ok_or_else(|| format!("activated ability {index} is missing a description"))?;
-        if normalize_ability_text(&description).starts_with(&prefix) {
+        let matches_selector = if let Some(cost_selector) = &cost_selector {
+            loyalty_cost_label
+                .as_deref()
+                .and_then(parse_loyalty_cost_selector)
+                .as_deref()
+                == Some(cost_selector)
+        } else {
+            let description = description
+                .ok_or_else(|| format!("activated ability {index} is missing a description"))?;
+            normalize_ability_text(&description.replace('−', "-")).starts_with(&description_prefix)
+        };
+        if matches_selector {
             matches.push(index);
         }
     }
     match matches.as_slice() {
         [index] => Ok(*index),
-        [] => Err(format!("no activated ability starts with {prefix}")),
+        [] => Err(format!("no activated ability matches {selector}")),
         _ => Err(format!(
-            "multiple activated abilities start with {prefix}: {matches:?}"
+            "multiple activated abilities match {selector}: {matches:?}"
         )),
     }
 }
@@ -1691,6 +1785,7 @@ fn pass_until_resolved(
     groups: &mut VecDeque<Vec<ObjectId>>,
     activation_target_groups: &mut VecDeque<Vec<ObjectId>>,
     card_choice_groups: &mut VecDeque<Vec<ObjectId>>,
+    surveil_choices: &mut VecDeque<SurveilScriptChoice>,
     sideboard_labels: &HashMap<String, (PlayerId, usize, String)>,
     outside_game_choices: &mut VecDeque<OutsideGameScriptChoice>,
     copy_choices: &mut VecDeque<CopyChoice>,
@@ -1801,6 +1896,25 @@ fn pass_until_resolved(
             | WaitingFor::ChooseFromZoneChoice { .. }
             | WaitingFor::DiscardChoice { .. } => {
                 apply_card_choice_group(runner, labels, card_choice_groups)?;
+            }
+            WaitingFor::SurveilChoice { player, cards } => {
+                let choice = surveil_choices
+                    .pop_front()
+                    .ok_or("SurveilChoice prompt has no choose_surveil entry")?;
+                if choice.player != player {
+                    return Err(
+                        "choose_surveil prompt was offered to a different player".to_string()
+                    );
+                }
+                validate_card_choice_group(&choice.graveyard, &cards, 0, cards.len(), labels)?;
+                let top_cards = cards
+                    .iter()
+                    .copied()
+                    .filter(|id| !choice.graveyard.contains(id))
+                    .collect();
+                runner
+                    .act(GameAction::SelectCards { cards: top_cards })
+                    .map_err(|error| error.to_string())?;
             }
             WaitingFor::OptionalEffectChoice {
                 player, source_id, ..
@@ -1914,6 +2028,7 @@ fn pass_until_resolved(
                 runner.state().waiting_for,
                 WaitingFor::TriggerTargetSelection { .. }
                     | WaitingFor::TargetSelection { .. }
+                    | WaitingFor::SurveilChoice { .. }
                     | WaitingFor::EffectZoneChoice { .. }
                     | WaitingFor::ChooseFromZoneChoice { .. }
                     | WaitingFor::DiscardChoice { .. }
@@ -1952,12 +2067,21 @@ fn activate(
         .objects
         .get(&source_id)
         .ok_or_else(|| format!("source label {source_label} is not on the battlefield"))?;
+    let WaitingFor::Priority { player } = &runner.state().waiting_for else {
+        return Err("activate requires a player with priority".to_string());
+    };
+    if *player != object.controller {
+        return Err(format!(
+            "activate source label {source_label} is not controlled by the player with priority"
+        ));
+    }
     let ability_index = select_activation_ability(
         object.abilities.iter().enumerate().map(|(index, ability)| {
             (
                 index,
                 ability.kind,
                 is_mana_ability(ability),
+                ability.cost.as_ref().and_then(loyalty_ability_label),
                 ability.description.clone(),
             )
         }),
@@ -2234,6 +2358,74 @@ fn validate_setup(scenario: &Value) -> Result<(), String> {
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn pass_priority(runner: &mut GameRunner, action: &Value) -> Result<(), String> {
+    let player = parse_script_player(action["player"].as_str(), "pass_priority")?;
+    match &runner.state().waiting_for {
+        WaitingFor::Priority { player: current } if *current == player => {}
+        WaitingFor::Priority { player: current } => {
+            return Err(format!(
+                "pass_priority was scripted for {player:?} while {current:?} has priority"
+            ));
+        }
+        other => return Err(format!("pass_priority cannot answer {other:?}")),
+    }
+    runner
+        .act(GameAction::PassPriority)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn label_permanent(
+    runner: &GameRunner,
+    labels: &mut HashMap<ObjectId, String>,
+    action: &Value,
+) -> Result<(), String> {
+    let player = parse_script_player(action["player"].as_str(), "label_permanent")?;
+    let card = action["card"]
+        .as_str()
+        .filter(|card| !card.is_empty())
+        .ok_or("label_permanent needs card")?;
+    let label = action["label"]
+        .as_str()
+        .filter(|label| !label.is_empty() && !label.starts_with('@'))
+        .ok_or("label_permanent needs a non-empty, non-reserved label")?;
+    if labels.values().any(|existing| existing == label) {
+        return Err(format!("duplicate script label {label}"));
+    }
+    let token = action["token"]
+        .as_bool()
+        .ok_or("label_permanent.token must be a boolean")?;
+    let mut matches = runner.state().battlefield.iter().copied().filter(|id| {
+        runner.state().objects.get(id).is_some_and(|object| {
+            object.controller == player && object.name == card && object.is_token == token
+        })
+    });
+    let object = matches
+        .next()
+        .ok_or_else(|| format!("no matching {card} permanent for {player:?}"))?;
+    if matches.next().is_some() {
+        return Err(format!(
+            "multiple matching {card} permanents for {player:?}; cannot assign {label}"
+        ));
+    }
+    ensure_permanent_unlabeled(labels, object, label)?;
+    labels.insert(object, label.to_string());
+    Ok(())
+}
+
+fn ensure_permanent_unlabeled(
+    labels: &HashMap<ObjectId, String>,
+    object: ObjectId,
+    label: &str,
+) -> Result<(), String> {
+    if let Some(old_label) = labels.get(&object) {
+        return Err(format!(
+            "permanent already labeled {old_label}; cannot assign {label}"
+        ));
     }
     Ok(())
 }
@@ -2569,6 +2761,14 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
         return Err("active_player must be 0 or 1".to_string());
     }
     let active = PlayerId(active_index as u8);
+    let priority_index = match spec.get("priority_player") {
+        None => active_index,
+        Some(value) => value.as_u64().ok_or("priority_player must be 0 or 1")?,
+    };
+    if priority_index > 1 {
+        return Err("priority_player must be 0 or 1".to_string());
+    }
+    let priority = PlayerId(priority_index as u8);
     let step = spec["step"].as_str().unwrap_or("precombat_main");
     if step != "precombat_main" {
         return Err(format!("unsupported step {step}"));
@@ -2672,8 +2872,8 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     {
         let state = runner.state_mut();
         state.active_player = active;
-        state.priority_player = active;
-        state.waiting_for = WaitingFor::Priority { player: active };
+        state.priority_player = priority;
+        state.waiting_for = WaitingFor::Priority { player: priority };
         for (index, (player, player_library_top)) in
             state.players.iter_mut().zip(&library_top).enumerate()
         {
@@ -2735,6 +2935,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     let mut trigger_target_groups = VecDeque::new();
     let mut activation_target_groups = VecDeque::new();
     let mut card_choice_groups = VecDeque::new();
+    let mut surveil_choices = VecDeque::new();
     let mut outside_game_choices = VecDeque::new();
     let mut mana_choice_groups = VecDeque::new();
     let mut copy_choices = VecDeque::new();
@@ -2766,7 +2967,13 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     &trigger_target_groups,
                 )?;
                 let card = action["card"].as_str().ok_or("cast needs card")?;
-                let player = runner.state().active_player;
+                let player = match action.get("player") {
+                    None => runner.state().active_player,
+                    Some(value) => parse_script_player(value.as_str(), "cast")?,
+                };
+                if runner.state().priority_player != player {
+                    return Err(format!("P{} does not have priority to cast", player.0));
+                }
                 let mana_choice = consume_mana_choice(&mut mana_choice_groups, player, spec)?;
                 let spell = if cast_from(action)? == "hand" {
                     runner.state().players[player.0 as usize]
@@ -2887,6 +3094,8 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 }
             }
             "activate" => activate(&mut runner, &labels, action, &mut activation_target_groups)?,
+            "label_permanent" => label_permanent(&runner, &mut labels, action)?,
+            "pass_priority" => pass_priority(&mut runner, action)?,
             "trigger_targets" => {
                 let targets = resolve_target_labels(action, &labels)?;
                 if targets.is_empty() {
@@ -2907,12 +3116,16 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
             "choose_cards" => {
                 card_choice_groups.push_back(resolve_card_choice_labels(action, &labels)?);
             }
+            "choose_surveil" => {
+                surveil_choices.push_back(parse_surveil_choice(action, &labels)?);
+            }
             "choose_outside_game" => {
                 outside_game_choices.push_back(parse_outside_game_choice(action)?);
             }
             "choose_mana" => {
                 mana_choice_groups.push_back(parse_mana_choice(action)?);
             }
+            "choose_replacement" | "choose_entity" => {}
             "pass_until_resolved" => {
                 pass_until_resolved(
                     name,
@@ -2921,6 +3134,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     &mut trigger_target_groups,
                     &mut activation_target_groups,
                     &mut card_choice_groups,
+                    &mut surveil_choices,
                     &sideboard_labels,
                     &mut outside_game_choices,
                     &mut copy_choices,
@@ -2940,6 +3154,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     ensure_trigger_target_groups_consumed(&trigger_target_groups)?;
     ensure_activation_target_groups_consumed(&activation_target_groups)?;
     ensure_card_choice_groups_consumed(&card_choice_groups)?;
+    ensure_surveil_choices_consumed(&surveil_choices)?;
     ensure_outside_game_choices_consumed(&outside_game_choices)?;
     ensure_mana_choices_consumed(&mana_choice_groups)?;
     ensure_copy_choices_consumed(&copy_choices)?;
@@ -2975,6 +3190,7 @@ const REACH_FIELDS: &[&str] = &[
     "attached_to",
     "counters",
     "solved",
+    "token",
 ];
 
 fn validate_reach_fields(reach: &Value) -> Result<(), String> {
@@ -3088,6 +3304,7 @@ fn check_reach(
             "tapped",
             "attached_to",
             "counters",
+            "token",
         ]
         .iter()
         .any(|key| reach.get(key).is_some()));
@@ -3114,6 +3331,14 @@ fn matches_reach_characteristics(
     reach: &Value,
     labels: &HashMap<ObjectId, String>,
 ) -> Result<bool, String> {
+    if let Some(expected) = reach.get("token") {
+        let Some(expected) = expected.as_bool() else {
+            return Err("reach.token must be a boolean".to_string());
+        };
+        if object.is_token != expected {
+            return Ok(false);
+        }
+    }
     for (key, actual) in [
         (
             "types",
@@ -3421,6 +3646,18 @@ mod tests {
     }
 
     #[test]
+    fn permanent_cannot_be_labeled_twice() {
+        let id = ObjectId(17);
+        let labels = HashMap::from([(id, "old".to_string())]);
+
+        assert_eq!(
+            ensure_permanent_unlabeled(&labels, id, "new"),
+            Err("permanent already labeled old; cannot assign new".to_string())
+        );
+        assert!(ensure_permanent_unlabeled(&labels, ObjectId(18), "new").is_ok());
+    }
+
+    #[test]
     fn cast_target_slots_require_labels_or_the_explicit_skip_token() {
         let id = ObjectId(17);
         let labels = HashMap::from([(id, "artifact".to_string())]);
@@ -3588,24 +3825,27 @@ mod tests {
     }
 
     #[test]
-    fn activation_selector_requires_one_described_prefix_match() {
+    fn activation_selector_requires_one_label_prefix_match() {
         let candidates = vec![
             (
                 0,
                 AbilityKind::Activated,
                 true,
+                None,
                 Some("{T}: Add {G}".to_string()),
             ),
             (
                 1,
                 AbilityKind::Activated,
                 false,
+                None,
                 Some("{2}{G}{W}: {this} becomes a Llama".to_string()),
             ),
             (
                 2,
                 AbilityKind::Activated,
                 false,
+                None,
                 Some("<i>Solved</i> &mdash; Sacrifice this Case: Draw a card.".to_string()),
             ),
         ];
@@ -3624,12 +3864,14 @@ mod tests {
                 0,
                 AbilityKind::Activated,
                 false,
+                None,
                 Some("{T}: First".to_string()),
             ),
             (
                 1,
                 AbilityKind::Activated,
                 false,
+                None,
                 Some("{T}: Second".to_string()),
             ),
         ];
@@ -3638,11 +3880,12 @@ mod tests {
             .contains("multiple activated abilities"));
 
         let mana_without_description = vec![
-            (0, AbilityKind::Activated, true, None),
+            (0, AbilityKind::Activated, true, None, None),
             (
                 1,
                 AbilityKind::Activated,
                 false,
+                None,
                 Some("{2}{U}, {T}: Empower Jace 2.".to_string()),
             ),
         ];
@@ -3651,10 +3894,91 @@ mod tests {
             Ok(1)
         );
 
-        let missing = vec![(0, AbilityKind::Activated, false, None)];
+        let missing = vec![(0, AbilityKind::Activated, false, None, None)];
         assert!(select_activation_ability(missing, "{T}:")
             .unwrap_err()
             .contains("missing a description"));
+
+        assert_eq!(
+            loyalty_ability_label(&AbilityCost::Loyalty { amount: 2 }).as_deref(),
+            Some("+2")
+        );
+    }
+
+    #[test]
+    fn loyalty_cost_selector_matches_exact_normalized_labels() {
+        let candidates = vec![
+            (
+                0,
+                AbilityKind::Activated,
+                false,
+                loyalty_ability_label(&AbilityCost::Loyalty { amount: 2 }),
+                None,
+            ),
+            (
+                1,
+                AbilityKind::Activated,
+                false,
+                loyalty_ability_label(&AbilityCost::Loyalty { amount: -1 }),
+                None,
+            ),
+            (
+                2,
+                AbilityKind::Activated,
+                false,
+                loyalty_ability_label(&AbilityCost::Loyalty { amount: -10 }),
+                None,
+            ),
+        ];
+
+        assert_eq!(select_activation_ability(candidates.clone(), "-1"), Ok(1));
+        assert_eq!(select_activation_ability(candidates.clone(), "−1"), Ok(1));
+        assert_eq!(select_activation_ability(candidates.clone(), "-10"), Ok(2));
+        assert_eq!(select_activation_ability(candidates, "+2"), Ok(0));
+    }
+
+    #[test]
+    fn loyalty_description_prefix_is_supported_and_must_be_unique() {
+        let candidates = vec![
+            (
+                0,
+                AbilityKind::Activated,
+                false,
+                loyalty_ability_label(&AbilityCost::Loyalty { amount: -1 }),
+                Some("−1: Surveil 1.".to_string()),
+            ),
+            (
+                1,
+                AbilityKind::Activated,
+                false,
+                loyalty_ability_label(&AbilityCost::Loyalty { amount: -3 }),
+                Some("−3: Draw a card.".to_string()),
+            ),
+        ];
+        assert_eq!(
+            select_activation_ability(candidates.clone(), "−1: Surveil"),
+            Ok(0)
+        );
+
+        let ambiguous = vec![
+            (
+                0,
+                AbilityKind::Activated,
+                false,
+                None,
+                Some("0: Draw a card and gain life.".to_string()),
+            ),
+            (
+                1,
+                AbilityKind::Activated,
+                false,
+                None,
+                Some("0: Draw a card and scry 1.".to_string()),
+            ),
+        ];
+        assert!(select_activation_ability(ambiguous, "0: Draw")
+            .unwrap_err()
+            .contains("multiple activated abilities"));
     }
 
     #[test]
@@ -4092,6 +4416,7 @@ mod tests {
                 let mut trigger_targets = VecDeque::new();
                 let mut activation_targets = VecDeque::new();
                 let mut card_choices = VecDeque::new();
+                let mut surveil_choices = VecDeque::new();
                 let sideboard_labels = HashMap::new();
                 let mut outside_game_choices = VecDeque::new();
                 let mut copy_choices = VecDeque::new();
@@ -4103,6 +4428,7 @@ mod tests {
                     &mut trigger_targets,
                     &mut activation_targets,
                     &mut card_choices,
+                    &mut surveil_choices,
                     &sideboard_labels,
                     &mut outside_game_choices,
                     &mut copy_choices,
@@ -4922,6 +5248,26 @@ mod outside_game_choice_tests {
 
     #[test]
     fn mana_choice_sources_must_be_unique_and_configured_for_the_caster() {
+        let oracle_specific = parse_mana_choice(&json!({
+            "player": "P0",
+            "phase_sources": ["phase.island"],
+            "forge_sources": ["forge.island"]
+        }))
+        .unwrap();
+        assert_eq!(oracle_specific.sources, vec!["phase.island"]);
+        assert!(parse_mana_choice(&json!({
+            "player": "P0",
+            "phase_sources": ["phase.island"]
+        }))
+        .is_err());
+        assert!(parse_mana_choice(&json!({
+            "player": "P0",
+            "sources": ["shared.island"],
+            "phase_sources": ["phase.island"],
+            "forge_sources": ["forge.island"]
+        }))
+        .is_err());
+
         let choice = parse_mana_choice(&json!({
             "player": "P0",
             "sources": ["mana.white", "mana.blue"]
@@ -4966,5 +5312,78 @@ mod outside_game_choice_tests {
         }))
         .is_err());
         assert!(parse_mana_choice(&json!({"player": "P0", "sources": []})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod surveil_script_choice_tests {
+    use super::*;
+
+    #[test]
+    fn pass_until_resolved_consumes_scripted_surveil_choice() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let top_card = scenario.add_card_to_library_top(PlayerId(0), "Top Card");
+                let spell = scenario
+                    .add_spell_to_hand_from_oracle(PlayerId(0), "Surveil Spell", true, "Surveil 1.")
+                    .id();
+                let mut runner = scenario.build();
+                runner.cast(spell).commit();
+
+                let labels = HashMap::from([(top_card, "library.top".to_string())]);
+                let mut surveil_choices = VecDeque::from([parse_surveil_choice(
+                    &json!({"player": "P0", "cards": ["library.top"]}),
+                    &labels,
+                )
+                .unwrap()]);
+                let mut trigger_targets = VecDeque::new();
+                let mut activation_targets = VecDeque::new();
+                let mut card_choices = VecDeque::new();
+                let sideboard_labels = HashMap::new();
+                let mut outside_game_choices = VecDeque::new();
+                let mut copy_choices = VecDeque::new();
+                let mut unless_choices = [VecDeque::new(), VecDeque::new()];
+
+                pass_until_resolved(
+                    "surveil script test",
+                    &mut runner,
+                    &labels,
+                    &mut trigger_targets,
+                    &mut activation_targets,
+                    &mut card_choices,
+                    &mut surveil_choices,
+                    &sideboard_labels,
+                    &mut outside_game_choices,
+                    &mut copy_choices,
+                    &mut unless_choices,
+                )
+                .unwrap();
+
+                assert!(surveil_choices.is_empty());
+                assert_eq!(runner.state().objects[&top_card].zone, Zone::Graveyard);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn scripted_surveil_cards_resolve_by_label_and_must_be_consumed() {
+        let labels = HashMap::from([(ObjectId(1), "top-card".to_string())]);
+        let choice =
+            parse_surveil_choice(&json!({"player": "P0", "cards": ["top-card"]}), &labels).unwrap();
+
+        assert_eq!(choice.player, PlayerId(0));
+        assert_eq!(choice.graveyard, vec![ObjectId(1)]);
+        assert!(ensure_surveil_choices_consumed(&VecDeque::new()).is_ok());
+        assert!(ensure_surveil_choices_consumed(&VecDeque::from([choice]))
+            .unwrap_err()
+            .contains("unconsumed"));
+        let other_player_choice =
+            parse_surveil_choice(&json!({"player": "P1", "cards": ["top-card"]}), &labels).unwrap();
+        assert_eq!(other_player_choice.player, PlayerId(1));
     }
 }

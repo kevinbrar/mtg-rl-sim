@@ -58,6 +58,7 @@ REACH_FIELDS = {
     "attached_to",
     "counters",
     "solved",
+    "token",
 }
 KNOWN_DIFF_FIELDS = {
     "card",
@@ -82,6 +83,10 @@ def _validate_reach_fields(name: str, reach: object, path: str = "reach") -> Non
     unknown = reach.keys() - REACH_FIELDS
     if unknown:
         raise ValueError(f"{name}: {path}.{min(unknown)} is unsupported")
+    if "token" in reach and not isinstance(reach["token"], bool):
+        raise TypeError(f"{name}: {path}.token must be a boolean")
+    if "token" in reach and reach.get("zone", "graveyard") != "battlefield":
+        raise ValueError(f"{name}: {path}.token is only valid for battlefield cards")
     if "solved" in reach:
         if not isinstance(reach["solved"], bool):
             raise TypeError(f"{name}: {path}.solved must be a boolean")
@@ -766,6 +771,11 @@ def format_known_diff_report(report: dict) -> str:
 
 def _validate_setup(scenario: dict) -> None:
     name = scenario.get("name", "<unnamed>")
+    for field in ("active_player", "priority_player"):
+        if field in scenario and (
+            type(scenario[field]) is not int or scenario[field] not in {0, 1}
+        ):
+            raise ValueError(f"{name}: {field} must be 0 or 1")
     if "reach" in scenario:
         _validate_reach_fields(name, scenario["reach"])
     setup = scenario.get("setup")
@@ -879,6 +889,60 @@ def _validate_setup(scenario: dict) -> None:
     for index, action in enumerate(script):
         if not isinstance(action, dict):
             raise TypeError(f"{name}: script[{index}] must be a table")
+        if action.get("action") == "cast" and "player" in action:
+            if action["player"] not in {"P0", "P1"}:
+                raise ValueError(
+                    f"{name}: script[{index}].cast.player must be P0 or P1"
+                )
+        if action.get("action") == "pass_priority":
+            context = f"{name}: script[{index}].pass_priority"
+            unknown = action.keys() - {"action", "player"}
+            if unknown:
+                raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            if action.get("player") not in {"P0", "P1"}:
+                raise ValueError(f"{context}.player must be P0 or P1")
+        if action.get("action") == "label_permanent":
+            context = f"{name}: script[{index}].label_permanent"
+            unknown = action.keys() - {"action", "player", "card", "label", "token"}
+            if unknown:
+                raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            player = action.get("player")
+            if player not in {"P0", "P1"}:
+                raise ValueError(f"{context}.player must be P0 or P1")
+            for field in ("card", "label"):
+                if not isinstance(action.get(field), str) or not action[field]:
+                    raise ValueError(f"{context}.{field} must be a non-empty string")
+            if action["label"].startswith("@") or action["label"] in labels:
+                raise ValueError(
+                    f"{context}.label must be unique and not use the reserved @ prefix"
+                )
+            if not isinstance(action.get("token"), bool):
+                raise TypeError(f"{context}.token must be a boolean")
+            labels.add(action["label"])
+            label_locations[action["label"]] = (player, "battlefield", action["card"])
+        if action.get("action") == "choose_surveil":
+            context = f"{name}: script[{index}].choose_surveil"
+            unknown = action.keys() - {"action", "player", "cards"}
+            if unknown:
+                raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            player = action.get("player")
+            if player not in {"P0", "P1"}:
+                raise ValueError(f"{context}.player must be P0 or P1")
+            choices = action.get("cards")
+            if not isinstance(choices, list):
+                raise TypeError(f"{context}.cards must be an array")
+            if any(not isinstance(label, str) or not label for label in choices):
+                raise ValueError(f"{context}.cards entries must be labels")
+            if len(choices) != len(set(choices)):
+                raise ValueError(f"{context}.cards cannot repeat labels")
+            for label in choices:
+                if label_locations.get(label, (None, None, None))[:2] != (
+                    player,
+                    "library_top",
+                ):
+                    raise ValueError(
+                        f"{context} label {label} must be in {player}'s library_top"
+                    )
         if action.get("action") == "choose_outside_game":
             context = f"{name}: script[{index}].choose_outside_game"
             unknown = action.keys() - {"action", "player", "accept", "cards"}
@@ -900,27 +964,71 @@ def _validate_setup(scenario: dict) -> None:
                     raise ValueError(f"{context} label {label} must be in a sideboard")
         if action.get("action") == "choose_mana":
             context = f"{name}: script[{index}].choose_mana"
-            unknown = action.keys() - {"action", "player", "sources"}
+            unknown = action.keys() - {
+                "action",
+                "player",
+                "sources",
+                "phase_sources",
+                "forge_sources",
+            }
             if unknown:
                 raise ValueError(f"{context}.{min(unknown)} is unsupported")
             player = action.get("player")
             if player not in {"P0", "P1"}:
                 raise ValueError(f"{context}.player must be P0 or P1")
-            sources = action.get("sources")
-            if not isinstance(sources, list) or not sources:
-                raise TypeError(f"{context}.sources must be a non-empty array")
-            if any(not isinstance(source, str) or not source for source in sources):
-                raise ValueError(f"{context}.sources entries must be labels")
-            if len(sources) != len(set(sources)):
-                raise ValueError(f"{context}.sources cannot repeat labels")
+            source_sets = []
+            if "sources" in action:
+                if "phase_sources" in action or "forge_sources" in action:
+                    raise ValueError(
+                        f"{context} cannot combine sources with oracle-specific sources"
+                    )
+                source_sets.append(("sources", action["sources"]))
+            else:
+                if "phase_sources" not in action or "forge_sources" not in action:
+                    raise ValueError(
+                        f"{context} needs sources or both phase_sources and forge_sources"
+                    )
+                source_sets.extend(
+                    (
+                        ("phase_sources", action["phase_sources"]),
+                        ("forge_sources", action["forge_sources"]),
+                    )
+                )
             setup = scenario.get("setup", {}).get(player, {})
             mana_sources = {
                 unit.get("source")
                 for unit in setup.get("mana_pool", [])
                 if isinstance(unit, dict)
             }
-            if any(source not in mana_sources for source in sources):
-                raise ValueError(f"{context}.sources must name mana_pool sources")
+            for field, sources in source_sets:
+                if not isinstance(sources, list) or not sources:
+                    raise TypeError(f"{context}.{field} must be a non-empty array")
+                if any(not isinstance(source, str) or not source for source in sources):
+                    raise ValueError(f"{context}.{field} entries must be labels")
+                if len(sources) != len(set(sources)):
+                    raise ValueError(f"{context}.{field} cannot repeat labels")
+                if any(source not in mana_sources for source in sources):
+                    raise ValueError(f"{context}.{field} must name mana_pool sources")
+        if action.get("action") == "choose_replacement":
+            context = f"{name}: script[{index}].choose_replacement"
+            unknown = action.keys() - {"action", "player", "description"}
+            if unknown:
+                raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            if action.get("player") not in {"P0", "P1"}:
+                raise ValueError(f"{context}.player must be P0 or P1")
+            description = action.get("description")
+            if not isinstance(description, str) or not description.strip():
+                raise ValueError(f"{context}.description must be a non-empty string")
+        if action.get("action") == "choose_entity":
+            context = f"{name}: script[{index}].choose_entity"
+            unknown = action.keys() - {"action", "player", "card"}
+            if unknown:
+                raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            if action.get("player") not in {"P0", "P1"}:
+                raise ValueError(f"{context}.player must be P0 or P1")
+            card = action.get("card")
+            if not isinstance(card, str) or not card.strip():
+                raise ValueError(f"{context}.card must be a non-empty string")
         if "behold" in action and action.get("action") != "play_land":
             raise ValueError(
                 f"{name}: script[{index}].behold is only valid for play_land actions"
@@ -944,6 +1052,10 @@ def _validate_setup(scenario: dict) -> None:
         if "sources" in action and action.get("action") != "choose_mana":
             raise ValueError(
                 f"{name}: script[{index}].sources is only valid for choose_mana actions"
+            )
+        if "description" in action and action.get("action") != "choose_replacement":
+            raise ValueError(
+                f"{name}: script[{index}].description is only valid for choose_replacement actions"
             )
         if "sacrifice" in action:
             context = f"{name}: script[{index}].sacrifice"
