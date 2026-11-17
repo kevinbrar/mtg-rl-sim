@@ -486,10 +486,48 @@ impl DiscardChoiceReconciler {
         choices: &mut [VecDeque<DiscardScriptChoice>; 2],
         labels: &HashMap<ObjectId, String>,
     ) -> Result<(), String> {
+        self.act_excluding_discarded_cards(runner, action, &[], choices, labels)
+    }
+
+    fn act_for_discard_selection(
+        &mut self,
+        runner: &mut GameRunner,
+        selected_cards: Vec<ObjectId>,
+        choices: &mut [VecDeque<DiscardScriptChoice>; 2],
+        labels: &HashMap<ObjectId, String>,
+    ) -> Result<(), String> {
+        self.act_excluding_discarded_cards(
+            runner,
+            GameAction::SelectCards {
+                cards: selected_cards.clone(),
+            },
+            &selected_cards,
+            choices,
+            labels,
+        )
+    }
+
+    fn act_excluding_discarded_cards(
+        &mut self,
+        runner: &mut GameRunner,
+        action: GameAction,
+        excluded_cards: &[ObjectId],
+        choices: &mut [VecDeque<DiscardScriptChoice>; 2],
+        labels: &HashMap<ObjectId, String>,
+    ) -> Result<(), String> {
         let events = runner
             .act(action)
             .map_err(|error| error.to_string())?
             .events;
+        let events = events
+            .into_iter()
+            .filter(|event| {
+                !matches!(
+                    event,
+                    GameEvent::Discarded { object_id, .. } if excluded_cards.contains(object_id)
+                )
+            })
+            .collect();
         consume_resolved_discard_choices(&mut self.pending_events, events, choices, labels)
     }
 
@@ -745,9 +783,9 @@ fn apply_card_choice_group(
             let group = take_card_choice_group(groups)?;
             let min_count = if up_to { 0 } else { count };
             validate_card_choice_group(&group, &cards, min_count, count, labels)?;
-            discard_reconciler.act(
+            discard_reconciler.act_for_discard_selection(
                 runner,
-                GameAction::SelectCards { cards: group },
+                group,
                 discard_choice_groups,
                 labels,
             )
@@ -2109,9 +2147,9 @@ fn pass_until_resolved(
                     .get(&id)
                     .ok_or("unless discard label is not a setup object")?;
                 ensure_unless_choice_is_offered(label, id, &cards)?;
-                discard_reconciler.act(
+                discard_reconciler.act_for_discard_selection(
                     runner,
-                    GameAction::SelectCards { cards: vec![id] },
+                    vec![id],
                     discard_choice_groups,
                     labels,
                 )?;
@@ -2131,9 +2169,9 @@ fn pass_until_resolved(
                     up_to,
                     labels,
                 )?;
-                discard_reconciler.act(
+                discard_reconciler.act_for_discard_selection(
                     runner,
-                    GameAction::SelectCards { cards: selected },
+                    selected,
                     discard_choice_groups,
                     labels,
                 )?;
@@ -3919,6 +3957,38 @@ mod tests {
         )
     }
 
+    fn pass_until_resolved_with_discard_choices(
+        runner: &mut GameRunner,
+        labels: &HashMap<ObjectId, String>,
+        discard_choices: &mut [VecDeque<DiscardScriptChoice>; 2],
+        discard_reconciler: &mut DiscardChoiceReconciler,
+    ) -> Result<(), String> {
+        let mut trigger_target_groups = VecDeque::new();
+        let mut activation_target_groups = VecDeque::new();
+        let mut card_choice_groups = VecDeque::new();
+        let mut surveil_choices = VecDeque::new();
+        let sideboard_labels = HashMap::new();
+        let mut outside_game_choices = VecDeque::new();
+        let mut copy_choices = VecDeque::new();
+        let mut unless_choices = [VecDeque::new(), VecDeque::new()];
+
+        pass_until_resolved(
+            "discard reconciliation test",
+            runner,
+            labels,
+            &mut trigger_target_groups,
+            &mut activation_target_groups,
+            &mut card_choice_groups,
+            discard_choices,
+            &mut surveil_choices,
+            &sideboard_labels,
+            &mut outside_game_choices,
+            &mut copy_choices,
+            &mut unless_choices,
+            discard_reconciler,
+        )
+    }
+
     #[test]
     fn behold_prompt_presence_must_match_the_script_field() {
         assert!(ensure_behold_prompt_matches_field(false, false).is_ok());
@@ -5112,6 +5182,103 @@ mod tests {
                 assert!(ensure_discard_choices_consumed(&choices).is_ok());
                 assert_eq!(runner.state().objects[&first].zone, Zone::Graveyard);
                 assert_eq!(runner.state().objects[&second].zone, Zone::Graveyard);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn interactive_discard_does_not_match_the_next_forced_discard_script() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let interactive_spell = scenario
+                    .add_spell_to_hand_from_oracle(
+                        PlayerId(0),
+                        "Interactive discard",
+                        false,
+                        "Target player discards a card.",
+                    )
+                    .with_mana_cost(engine::types::mana::ManaCost::generic(0))
+                    .id();
+                let forced_spell = scenario
+                    .add_spell_to_hand_from_oracle(
+                        PlayerId(0),
+                        "Forced discard",
+                        false,
+                        "Target player discards two cards.",
+                    )
+                    .with_mana_cost(engine::types::mana::ManaCost::generic(0))
+                    .id();
+                let interactive_card = scenario.add_card_to_hand(PlayerId(1), "Interactive card");
+                let forced_card_one = scenario.add_card_to_hand(PlayerId(1), "Forced card one");
+                let forced_card_two = scenario.add_card_to_hand(PlayerId(1), "Forced card two");
+                let mut runner = scenario.build();
+                let targets = [Some(TargetRef::Player(PlayerId(1)))];
+                let labels = HashMap::from([
+                    (interactive_card, "p1.interactive".to_string()),
+                    (forced_card_one, "p1.forced.one".to_string()),
+                    (forced_card_two, "p1.forced.two".to_string()),
+                ]);
+                let mut choices = [
+                    VecDeque::new(),
+                    VecDeque::from([
+                        DiscardScriptChoice {
+                            cards: vec![interactive_card],
+                        },
+                        DiscardScriptChoice {
+                            cards: vec![forced_card_one, forced_card_two],
+                        },
+                    ]),
+                ];
+                let mut reconciler = DiscardChoiceReconciler::default();
+
+                let committed = runner
+                    .cast(interactive_spell)
+                    .target_slot_selections(&targets)
+                    .commit();
+                drop(committed);
+                pass_until_resolved_with_discard_choices(
+                    &mut runner,
+                    &labels,
+                    &mut choices,
+                    &mut reconciler,
+                )
+                .expect("interactive discard leaves the next scripted set queued");
+
+                assert_eq!(choices[1].len(), 1);
+                assert_eq!(
+                    runner.state().objects[&interactive_card].zone,
+                    Zone::Graveyard
+                );
+                assert_eq!(runner.state().objects[&forced_card_one].zone, Zone::Hand);
+                assert_eq!(runner.state().objects[&forced_card_two].zone, Zone::Hand);
+
+                let committed = runner
+                    .cast(forced_spell)
+                    .target_slot_selections(&targets)
+                    .commit();
+                drop(committed);
+                pass_until_resolved_with_discard_choices(
+                    &mut runner,
+                    &labels,
+                    &mut choices,
+                    &mut reconciler,
+                )
+                .expect("the forced discard consumes its own scripted set");
+
+                assert!(ensure_discard_choices_consumed(&choices).is_ok());
+                assert_eq!(
+                    runner.state().objects[&forced_card_one].zone,
+                    Zone::Graveyard
+                );
+                assert_eq!(
+                    runner.state().objects[&forced_card_two].zone,
+                    Zone::Graveyard
+                );
             })
             .unwrap()
             .join()
