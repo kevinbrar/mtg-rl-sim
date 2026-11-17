@@ -1,9 +1,9 @@
 diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
 new file mode 100644
-index 00000000..ef990633
+index 00000000..35e23518
 --- /dev/null
 +++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
-@@ -0,0 +1,675 @@
+@@ -0,0 +1,751 @@
 +package forge.ai;
 +
 +import com.google.gson.Gson;
@@ -43,9 +43,11 @@ index 00000000..ef990633
 +import java.util.ArrayList;
 +import java.util.Comparator;
 +import java.util.Deque;
++import java.util.LinkedHashSet;
 +import java.util.List;
 +import java.util.Map;
 +import java.util.Random;
++import java.util.Set;
 +
 +import static org.testng.Assert.assertEquals;
 +import static org.testng.Assert.assertTrue;
@@ -115,7 +117,8 @@ index 00000000..ef990633
 +        for (JsonElement value : scenario.getAsJsonArray("script")) {
 +            JsonObject action = value.getAsJsonObject();
 +            switch (requiredString(action, "action")) {
-+                case "cast" -> cast(game.getPlayers().get(activePlayer), requiredString(action, "card"));
++                case "cast" -> cast(
++                        game.getPlayers().get(activePlayer), requiredString(action, "card"), labels);
 +                case "choose_outside_game", "choose_mana" -> { }
 +                case "pass_until_resolved" -> {
 +                    controller0.setPassingPriority(true);
@@ -259,7 +262,7 @@ index 00000000..ef990633
 +        };
 +    }
 +
-+    private void cast(Player player, String cardName) {
++    private void cast(Player player, String cardName, Map<String, Card> labels) {
 +        Card card = player.getZone(ZoneType.Hand).getCards().stream()
 +                .filter(candidate -> candidate.getName().equals(cardName))
 +                .findFirst()
@@ -269,7 +272,11 @@ index 00000000..ef990633
 +                .findFirst()
 +                .orElseThrow(() -> new IllegalArgumentException("no spell ability: " + cardName));
 +        assertTrue(spell.canPlay(), cardName + " should be castable");
-+        assertTrue(PlaySpellAbility.playSpellAbility(player.getController(), player, spell));
++        ScriptedController controller = (ScriptedController) player.getController();
++        Map<Integer, Integer> manaBefore = controller.hasManaChoices()
++                ? controller.manaSourceCounts() : null;
++        assertTrue(PlaySpellAbility.playSpellAbility(controller, player, spell));
++        if (manaBefore != null) controller.verifyManaSourcesSpent(manaBefore);
 +    }
 +
 +    private void resolve(Game game) {
@@ -426,7 +433,7 @@ index 00000000..ef990633
 +
 +    private static final class ScriptedController extends PlayerControllerForTests {
 +        private final Deque<OutsideGameChoice> outsideGameChoices = new ArrayDeque<>();
-+        private final Deque<String> manaChoices = new ArrayDeque<>();
++        private final Deque<ManaScriptPayment> manaChoices = new ArrayDeque<>();
 +        private final Map<String, Card> labels;
 +        private boolean noOutsideGameChoiceExpected;
 +        private boolean outsideGameChoiceObserved;
@@ -434,10 +441,23 @@ index 00000000..ef990633
 +        private boolean passingPriority;
 +        private boolean opponentChoiceConsumed;
 +
-+        private ScriptedController(
-+                Game game, Player player, LobbyPlayer lobbyPlayer, Map<String, Card> labels) {
++        private ScriptedController(Game game, Player player, LobbyPlayer lobbyPlayer, Map<String, Card> labels) {
 +            super(game, player, lobbyPlayer);
 +            this.labels = labels;
++        }
++
++        private static final class ManaScriptPayment {
++            private final List<String> sourceOrder;
++            private final Set<String> expectedSources;
++            private int nextSource;
++
++            private ManaScriptPayment(List<String> sources) {
++                this.sourceOrder = List.copyOf(sources);
++                this.expectedSources = new LinkedHashSet<>(sources);
++                if (sources.isEmpty() || expectedSources.size() != sources.size()) {
++                    throw new IllegalArgumentException("mana sources must be non-empty and unique");
++                }
++            }
 +        }
 +
 +        private void addOutsideGameChoice(boolean accept, List<String> cards) {
@@ -452,7 +472,37 @@ index 00000000..ef990633
 +        }
 +
 +        private void addManaChoices(List<String> sources) {
-+            manaChoices.addAll(sources);
++            manaChoices.addLast(new ManaScriptPayment(sources));
++        }
++
++        private boolean hasManaChoices() {
++            return !manaChoices.isEmpty();
++        }
++
++        private Map<Integer, Integer> manaSourceCounts() {
++            Map<Integer, Integer> counts = new java.util.HashMap<>();
++            for (Mana mana : player.getManaPool()) {
++                Card source = mana.getSourceCard();
++                if (source == null) throw new IllegalStateException("mana source is not a card");
++                counts.merge(source.getId(), 1, Integer::sum);
++            }
++            return counts;
++        }
++
++        private void verifyManaSourcesSpent(Map<Integer, Integer> before) {
++            ManaScriptPayment payment = manaChoices.removeFirst();
++            Map<Integer, Integer> after = manaSourceCounts();
++            Set<String> spent = new LinkedHashSet<>();
++            for (Map.Entry<Integer, Integer> entry : before.entrySet()) {
++                if (entry.getValue() <= after.getOrDefault(entry.getKey(), 0)) continue;
++                String label = labels.entrySet().stream()
++                        .filter(candidate -> candidate.getValue().getId() == entry.getKey())
++                        .map(Map.Entry::getKey)
++                        .findFirst()
++                        .orElseThrow(() -> new IllegalStateException("spent mana source is not labeled"));
++                spent.add(label);
++            }
++            assertEquals(spent, payment.expectedSources, "scripted mana sources spent");
 +        }
 +
 +        private void setPassingPriority(boolean value) {
@@ -463,7 +513,7 @@ index 00000000..ef990633
 +            assertTrue(outsideGameChoices.isEmpty(), "unconsumed outside-game choices for " + player.getName());
 +            assertTrue(
 +                    manaChoices.isEmpty(),
-+                    "unconsumed mana choices for " + player.getName() + ": " + manaChoices);
++                    "unconsumed mana payments for " + player.getName() + ": " + manaChoices);
 +            assertTrue(!pendingOutsideGameCancellation, "unconsumed outside-game cancellation");
 +            if (noOutsideGameChoiceExpected) {
 +                assertTrue(!outsideGameChoiceObserved, "unexpected outside-game prompt for " + player.getName());
@@ -609,16 +659,33 @@ index 00000000..ef990633
 +            if (manaChoices.isEmpty()) {
 +                throw new IllegalStateException("unscripted mana choice");
 +            }
-+            String sourceLabel = manaChoices.removeFirst();
++            ManaScriptPayment payment = manaChoices.peekFirst();
++            List<String> offeredSources = choices.stream()
++                    .map(Mana::getSourceCard)
++                    .map(this::labelForSource)
++                    .filter(java.util.Objects::nonNull)
++                    .distinct()
++                    .toList();
++            boolean wholeSetOffered = offeredSources.containsAll(payment.expectedSources);
++            System.out.println("CARD_SCENARIO_MANA_PROMPT: shape="
++                    + (wholeSetOffered ? "whole-set" : "partial-set")
++                    + " scripted=" + payment.sourceOrder + " offered=" + offeredSources);
++            if (payment.nextSource >= payment.sourceOrder.size()) {
++                throw new IllegalStateException("unscripted mana choice after scripted sources were used");
++            }
++            String sourceLabel = payment.sourceOrder.get(payment.nextSource);
 +            Card source = labels.get(sourceLabel);
 +            if (source == null) {
 +                throw new IllegalStateException("unknown mana source label: " + sourceLabel);
 +            }
-+            return choices.stream()
-+                    .filter(mana -> mana.getSourceCard().equals(source))
++            Mana selected = choices.stream()
++                    .filter(mana -> mana.getSourceCard() != null
++                            && source.getId() == mana.getSourceCard().getId())
 +                    .findFirst()
 +                    .orElseThrow(() -> new IllegalStateException(
 +                            "scripted mana source was not offered: " + sourceLabel));
++            payment.nextSource++;
++            return selected;
 +        }
 +
 +        @Override
@@ -631,6 +698,15 @@ index 00000000..ef990633
 +            }
 +            opponentChoiceConsumed = true;
 +            return choices.get(0);
++        }
++
++        private String labelForSource(Card source) {
++            if (source == null) return null;
++            return labels.entrySet().stream()
++                    .filter(entry -> entry.getValue().getId() == source.getId())
++                    .map(Map.Entry::getKey)
++                    .findFirst()
++                    .orElse(null);
 +        }
 +
 +        @Override

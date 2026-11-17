@@ -307,9 +307,9 @@ fn consume_mana_choice(
     choices: &mut VecDeque<ManaScriptChoice>,
     player: PlayerId,
     spec: &Value,
-) -> Result<(), String> {
+) -> Result<Option<ManaScriptChoice>, String> {
     let Some(choice) = choices.pop_front() else {
-        return Ok(());
+        return Ok(None);
     };
     if choice.player != player {
         return Err("choose_mana was scripted for a different player than the cast".to_string());
@@ -327,6 +327,51 @@ fn consume_mana_choice(
         .any(|source| !configured_sources.contains(source.as_str()))
     {
         return Err("choose_mana source is not in the player's mana_pool".to_string());
+    }
+    Ok(Some(choice))
+}
+
+fn mana_pool_source_pips(
+    state: &GameState,
+    player: PlayerId,
+) -> Result<HashMap<engine::types::mana::ManaPipId, ObjectId>, String> {
+    let mut source_pips = HashMap::new();
+    for unit in state.players[player.0 as usize].mana_pool.units() {
+        if unit.pip_id == engine::types::mana::ManaPipId(0) {
+            return Err(
+                "cannot verify scripted mana choice with an unstamped mana unit".to_string(),
+            );
+        }
+        if source_pips.insert(unit.pip_id, unit.source_id).is_some() {
+            return Err(
+                "cannot verify scripted mana choice with duplicate mana pip IDs".to_string(),
+            );
+        }
+    }
+    Ok(source_pips)
+}
+
+fn verify_mana_choice_spent(
+    choice: &ManaScriptChoice,
+    before: &HashMap<engine::types::mana::ManaPipId, ObjectId>,
+    after: &HashMap<engine::types::mana::ManaPipId, ObjectId>,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<(), String> {
+    let spent_sources = before
+        .iter()
+        .filter(|(pip, _)| !after.contains_key(pip))
+        .map(|(_, source)| {
+            labels
+                .get(source)
+                .cloned()
+                .ok_or_else(|| format!("spent mana source {source:?} has no setup label"))
+        })
+        .collect::<Result<HashSet<_>, _>>()?;
+    let scripted_sources = choice.sources.iter().cloned().collect::<HashSet<_>>();
+    if spent_sources != scripted_sources {
+        return Err(format!(
+            "choose_mana source mismatch: scripted {scripted_sources:?}, spent {spent_sources:?}"
+        ));
     }
     Ok(())
 }
@@ -2713,7 +2758,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 )?;
                 let card = action["card"].as_str().ok_or("cast needs card")?;
                 let player = runner.state().active_player;
-                consume_mana_choice(&mut mana_choice_groups, player, spec)?;
+                let mana_choice = consume_mana_choice(&mut mana_choice_groups, player, spec)?;
                 let spell = if cast_from(action)? == "hand" {
                     runner.state().players[player.0 as usize]
                         .hand
@@ -2774,6 +2819,11 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 } else {
                     None
                 };
+                let mana_pool_before = if mana_choice.is_some() {
+                    Some(mana_pool_source_pips(runner.state(), player)?)
+                } else {
+                    None
+                };
                 let cast = runner.cast(spell);
                 let cast = if let Some(x) = x { cast.x(x) } else { cast };
                 let cast = if let Some(sacrifices) = sacrifice_objects.as_ref() {
@@ -2795,6 +2845,14 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 let committed = cast
                     .commit_with_card_choices(&mut card_choice_groups)
                     .map_err(|error| error.to_string())?;
+                if let (Some(choice), Some(before)) = (&mana_choice, &mana_pool_before) {
+                    verify_mana_choice_spent(
+                        choice,
+                        before,
+                        &mana_pool_source_pips(committed.state(), player)?,
+                        &labels,
+                    )?;
+                }
                 if let Some(sacrifices) = sacrifice_objects.as_ref() {
                     for id in sacrifices {
                         if committed
@@ -4873,8 +4931,27 @@ mod outside_game_choice_tests {
             }
         });
 
-        consume_mana_choice(&mut choices, PlayerId(0), &spec).unwrap();
+        let choice = consume_mana_choice(&mut choices, PlayerId(0), &spec)
+            .unwrap()
+            .unwrap();
         assert!(ensure_mana_choices_consumed(&choices).is_ok());
+        let before = HashMap::from([
+            (engine::types::mana::ManaPipId(1), ObjectId(1)),
+            (engine::types::mana::ManaPipId(2), ObjectId(2)),
+        ]);
+        let labels = HashMap::from([
+            (ObjectId(1), "mana.white".to_string()),
+            (ObjectId(2), "mana.blue".to_string()),
+        ]);
+        assert!(verify_mana_choice_spent(&choice, &before, &HashMap::new(), &labels).is_ok());
+        assert!(verify_mana_choice_spent(
+            &choice,
+            &before,
+            &HashMap::from([(engine::types::mana::ManaPipId(1), ObjectId(1))]),
+            &labels
+        )
+        .unwrap_err()
+        .contains("source mismatch"));
         assert!(parse_mana_choice(&json!({
             "player": "P0",
             "sources": ["mana.white", "mana.white"]
