@@ -1,1 +1,23 @@
-# Each [[diff]] pins one scenario's phase-rs and XMage projection digests.
+# Each [[diff]] pins the Phase projection and the corresponding oracle evidence.
+
+[[diff]]
+card = "Extrapolate the Impossible"
+category = "forge-bug"
+rationale = "Oracle text requires exactly two cards with different names; CR 609.3 means this is impossible with duplicate names or one card. Forge ChangeZoneEffect.java:1195-1199 applies DifferentNames after the first pick, exposing an outside-game prompt. The E5 zero/one-card and E6 zero/one-card probes all left the cards in the sideboard and Extrapolate in the graveyard with an empty hand: Forge's outcome is correct, and the defect is prompt shape only. The Forge runner records this prompt and does not answer it."
+link = "https://magic.wizards.com/en/rules"
+regression_test = "oracle/scenarios/extrapolate-the-impossible.toml"
+suite = "extrapolate-the-impossible"
+scenario = "E5-duplicate-sideboard-names"
+phase_sha256 = "287a8ff216a3a9a98366b13bc40d92ab56e7d73344f2c33d92586077774650e9"
+forge_sha256 = "fcb33209c9801fc7663888cae284459ccde2144fb1596827b34532aba097158f"
+
+[[diff]]
+card = "Extrapolate the Impossible"
+category = "forge-bug"
+rationale = "Oracle text requires exactly two cards with different names; CR 609.3 means this is impossible with one card. Forge ChangeZoneEffect.java:1195-1199 applies DifferentNames after the first pick, exposing an outside-game prompt. The E5 zero/one-card and E6 zero/one-card probes all left the card in the sideboard and Extrapolate in the graveyard with an empty hand: Forge's outcome is correct, and the defect is prompt shape only. The Forge runner records this prompt and does not answer it."
+link = "https://magic.wizards.com/en/rules"
+regression_test = "oracle/scenarios/extrapolate-the-impossible.toml"
+suite = "extrapolate-the-impossible"
+scenario = "E6-one-sideboard-card"
+phase_sha256 = "e65cf9c2bcc27fa537ec44d17f62285180543e19379f5634f02723ab07261580"
+forge_sha256 = "4f154ab766a350b9c6ea2f8b713577927083462662aecce5c10c2afc2d90cf74"

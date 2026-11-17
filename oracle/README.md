@@ -1,5 +1,44 @@
 # XMage oracle (mage-bench)
 
+## Forge differential oracle
+
+Forge is the independent oracle for Standard cards absent from the pinned
+XMage/mage-bench source. The runner currently uses it for Extrapolate the
+Impossible. The pin is recorded in `oracle/forge.txt`:
+
+- Repository: `https://github.com/Card-Forge/forge`
+- Commit: `0f82b4f4693357638c368b9fb0b64833eb44faf8`
+
+`scripts/run_forge_scenarios.sh` creates a blobless, shallow sparse checkout,
+applies `oracle/forge-patches/*.patch` in sorted order, and runs the headless
+`CardScenarioProjectionTest` in `forge-gui-desktop`. The Java test consumes the
+same JSON spec as the XMage runner and emits the same projection schema.
+`FORGE_CHECKOUT` selects the fresh checkout path; `FORGE_MAVEN_REPO` selects an
+isolated Maven local repository so Forge artifacts do not pollute `~/.m2`.
+
+The selected Maven reactor is `forge-gui-desktop -am` (plus its core/game/AI/GUI
+dependencies). `-Denforcer.skip=true` is required by the available Forge
+environment: its root POM requires Maven 3.8.1, while the provisioned Maven is
+3.6.3. The isolated settings file uses the same Google-hosted Central mirror as
+the feasibility spike.
+
+Scenario suites declare `oracle = "forge"` at the top level; omitted values
+default to XMage. CI caches the isolated Maven repository using the Forge SHA
+and the sorted Forge patch hashes, then requires both the Forge Surefire report
+and the shared known-diffs report artifact.
+
+Known Forge prompt-shape bugs use the `forge-bug` category. These entries pin
+the Phase projection and a structured Forge prompt-failure event. The runner
+records the event without answering it; it is counted as triaged rather than
+matched.
+
+Both scenario runners support a `setup.P0.sideboard` zone. Label an entry as
+`{ label = "sideboard.card", card = "Card Name" }`, then use
+`choose_outside_game` with those labels for the revealing player's and
+opponent's choices. Choices must match the offered prompt and every scripted
+choice must be consumed; a missing or ineligible selection fails closed.
+Tournament "outside the game" choices are represented by the sideboard.
+
 Working recipe (verified 2026-11-10, pinned mage-bench revision):
 
 1. `mvn install package -DskipTests` in a mage-bench clone (Java 21 + Maven; ~25 min).

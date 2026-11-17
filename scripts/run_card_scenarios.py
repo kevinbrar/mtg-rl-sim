@@ -26,7 +26,17 @@ else:
 
 ROOT = Path(__file__).resolve().parents[1]
 MAGE_RESULT_PREFIX = "CARD_SCENARIO_RESULT:"
-PLAYER_SETUP_FIELDS = {"life", "battlefield", "hand", "library_top", "graveyard"}
+FORGE_PROMPT_FAILURE_PREFIX = "CARD_SCENARIO_PROMPT_FAILURE:"
+PLAYER_SETUP_FIELDS = {
+    "life",
+    "battlefield",
+    "hand",
+    "library_top",
+    "graveyard",
+    "sideboard",
+    "mana_pool",
+    "exile",
+}
 PERMANENT_SETUP_FIELDS = {"label", "card", "tapped", "counters"}
 REACH_FIELDS = {
     "all",
@@ -57,10 +67,13 @@ KNOWN_DIFF_FIELDS = {
     "regression_test",
     "suite",
     "scenario",
+}
+KNOWN_DIFF_DIGEST_FIELDS = {
     "phase_sha256",
     "mage_sha256",
+    "forge_sha256",
 }
-KNOWN_DIFF_CATEGORIES = {"engine-bug", "xmage-bug", "unsupported"}
+KNOWN_DIFF_CATEGORIES = {"engine-bug", "xmage-bug", "forge-bug", "unsupported"}
 
 
 def _validate_reach_fields(name: str, reach: object, path: str = "reach") -> None:
@@ -153,6 +166,28 @@ def parse_mage_report(report: str) -> list[dict]:
     return results
 
 
+def parse_forge_report(report: str) -> list[dict]:
+    return parse_mage_report(report)
+
+
+def parse_forge_prompt_failures(report: str) -> list[dict]:
+    root = ET.fromstring(report)
+    failures = []
+    for output in root.iter("system-out"):
+        for line in (output.text or "").splitlines():
+            if line.startswith(FORGE_PROMPT_FAILURE_PREFIX):
+                event = json.loads(line[len(FORGE_PROMPT_FAILURE_PREFIX) :])
+                if (
+                    not isinstance(event, dict)
+                    or set(event) != {"scenario", "prompt"}
+                    or event["prompt"] != "outside_game"
+                    or not isinstance(event["scenario"], str)
+                ):
+                    raise ValueError(f"invalid Forge prompt failure event: {event!r}")
+                failures.append(event)
+    return failures
+
+
 def load_known_diffs(path: Path) -> list[dict]:
     with path.open("rb") as source:
         data = tomllib.load(source)
@@ -168,7 +203,7 @@ def load_known_diffs(path: Path) -> list[dict]:
         if not isinstance(entry, dict):
             raise ValueError(f"known-diffs diff {index} must be a table")
         missing = KNOWN_DIFF_FIELDS - entry.keys()
-        unknown = entry.keys() - KNOWN_DIFF_FIELDS
+        unknown = entry.keys() - KNOWN_DIFF_FIELDS - KNOWN_DIFF_DIGEST_FIELDS
         if missing:
             raise ValueError(
                 f"known-diffs diff {index} missing fields: {', '.join(sorted(missing))}"
@@ -186,7 +221,25 @@ def load_known_diffs(path: Path) -> list[dict]:
             raise ValueError(
                 f"known-diffs diff {index} has bad category {entry['category']!r}"
             )
-        for field in ("phase_sha256", "mage_sha256"):
+        required_digests = {"phase_sha256"}
+        required_digests.add(
+            "forge_sha256" if entry["category"] == "forge-bug" else "mage_sha256"
+        )
+        missing_digests = required_digests - entry.keys()
+        if missing_digests:
+            raise ValueError(
+                f"known-diffs diff {index} missing digest fields: "
+                f"{', '.join(sorted(missing_digests))}"
+            )
+        unexpected_digests = (
+            KNOWN_DIFF_DIGEST_FIELDS & entry.keys()
+        ) - required_digests
+        if unexpected_digests:
+            raise ValueError(
+                f"known-diffs diff {index} has unexpected digest fields: "
+                f"{', '.join(sorted(unexpected_digests))}"
+            )
+        for field in KNOWN_DIFF_DIGEST_FIELDS & entry.keys():
             if re.fullmatch(r"[0-9a-fA-F]{64}", entry[field]) is None:
                 raise ValueError(
                     f"known-diffs diff {index} field {field} must be a 64-digit hex SHA-256"
@@ -289,6 +342,11 @@ def projection_sha256(result: dict | None) -> str | None:
         return None
     projection = normalize_projection(result["projection"])
     canonical = json.dumps(projection, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def forge_prompt_sha256(event: dict) -> str:
+    canonical = json.dumps(event, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -408,36 +466,94 @@ def _results_by_name(
     return mapped, errors
 
 
+def _results_by_suite_scenario(
+    results: list[dict], engine: str, suite_by_scenario: dict[str, str]
+) -> tuple[dict[tuple[str, str], dict], list[str]]:
+    mapped = {}
+    errors = []
+    for index, result in enumerate(results, start=1):
+        if not isinstance(result, dict) or not isinstance(result.get("scenario"), str):
+            errors.append(f"{engine} result {index} has no scenario name")
+            continue
+        name = result["scenario"]
+        suite = suite_by_scenario.get(name)
+        if suite is None:
+            errors.append(f"{engine} returned unexpected scenario {name}")
+            continue
+        key = (suite, name)
+        if key in mapped:
+            errors.append(
+                f"{engine} returned duplicate scenario {name} in suite {suite}"
+            )
+        mapped[key] = result
+    return mapped, errors
+
+
 def evaluate_known_diffs(
     suite_scenarios: dict[str, list[str]],
     phase_results: list[dict],
-    mage_results: list[dict],
+    oracle_results: list[dict],
     entries: list[dict],
     runner_errors: list[str] | None = None,
+    forge_prompt_failures: list[dict] | None = None,
+    suite_oracles: dict[str, str] | None = None,
 ) -> dict:
-    expected_names = [
-        name for scenario_names in suite_scenarios.values() for name in scenario_names
+    expected_keys = [
+        (suite, name)
+        for suite, scenario_names in suite_scenarios.items()
+        for name in scenario_names
     ]
-    phase, phase_errors = _results_by_name(phase_results, "Phase")
-    mage, mage_errors = _results_by_name(mage_results, "XMage")
+    suite_by_scenario = {
+        name: suite for suite, names in suite_scenarios.items() for name in names
+    }
+    phase, phase_errors = _results_by_suite_scenario(
+        phase_results, "Phase", suite_by_scenario
+    )
+    oracle, oracle_errors = _results_by_suite_scenario(
+        oracle_results, "oracle", suite_by_scenario
+    )
+    prompt_failures = {
+        event["scenario"]: event for event in (forge_prompt_failures or [])
+    }
     failed = [
         {"suite": "<runner>", "scenario": "<runner>", "reason": error}
-        for error in [*(runner_errors or []), *phase_errors, *mage_errors]
+        for error in [*(runner_errors or []), *phase_errors, *oracle_errors]
     ]
-    if list(phase) != expected_names:
+    if len(prompt_failures) != len(forge_prompt_failures or []):
+        failed.append(
+            {
+                "suite": "<runner>",
+                "scenario": "<Forge>",
+                "reason": "duplicate Forge prompt failure events",
+            }
+        )
+    for name in prompt_failures:
+        suite = suite_by_scenario.get(name)
+        if suite is None or (suite_oracles or {}).get(suite) != "forge":
+            failed.append(
+                {
+                    "suite": suite or "<unknown>",
+                    "scenario": name,
+                    "reason": "Forge prompt failure event is outside a Forge-backed suite",
+                }
+            )
+    if set(phase) != set(expected_keys):
         failed.append(
             {
                 "suite": "<runner>",
                 "scenario": "<Phase>",
-                "reason": "Phase scenario names or order differ from the requested suites",
+                "reason": "Phase (suite, scenario) results are missing or unexpected",
             }
         )
-    if list(mage) != expected_names:
+    expected_oracle_keys = [
+        key for key in expected_keys if key[1] not in prompt_failures
+    ]
+    if set(oracle) != set(expected_oracle_keys):
         failed.append(
             {
                 "suite": "<runner>",
-                "scenario": "<XMage>",
-                "reason": "XMage scenario names or order differ from the requested suites",
+                "scenario": "<oracle>",
+                "reason": "oracle (suite, scenario) results are missing or unexpected",
             }
         )
 
@@ -479,14 +595,14 @@ def evaluate_known_diffs(
             matching = entries_by_key.get(key, [])
             if key in duplicate_keys:
                 continue
-            phase_result = phase.get(name)
-            mage_result = mage.get(name)
+            phase_result = phase.get(key)
+            oracle_result = oracle.get(key)
             differences = compare(
                 {name: phase_result} if phase_result is not None else {},
-                {name: mage_result} if mage_result is not None else {},
+                {name: oracle_result} if oracle_result is not None else {},
             )
             phase_digest = projection_sha256(phase_result)
-            mage_digest = projection_sha256(mage_result)
+            oracle_digest = projection_sha256(oracle_result)
             if not differences:
                 if matching:
                     failed.append(
@@ -496,7 +612,7 @@ def evaluate_known_diffs(
                             "reason": "stale known-diff entry; remove it",
                             "card": matching[0]["card"],
                             "phase_sha256": phase_digest,
-                            "mage_sha256": mage_digest,
+                            "mage_sha256": oracle_digest,
                         }
                     )
                 else:
@@ -508,12 +624,61 @@ def evaluate_known_diffs(
                 "scenario": name,
                 "differences": differences,
                 "phase_sha256": phase_digest,
-                "mage_sha256": mage_digest,
+                "mage_sha256": oracle_digest,
             }
             if not matching:
                 failed.append({**details, "reason": "untriaged divergence"})
                 continue
             entry = matching[0]
+            if entry["category"] == "forge-bug":
+                event = prompt_failures.get(name)
+                event_digest = forge_prompt_sha256(event) if event is not None else None
+                if (suite_oracles or {}).get(suite) != "forge":
+                    failed.append(
+                        {
+                            **details,
+                            "card": entry["card"],
+                            "reason": "forge-bug entries require a Forge-backed suite",
+                        }
+                    )
+                elif event is None or oracle_result is not None or phase_digest is None:
+                    failed.append(
+                        {
+                            **details,
+                            "card": entry["card"],
+                            "reason": "Forge prompt failure is missing or unexpected",
+                        }
+                    )
+                elif (
+                    entry["phase_sha256"].lower() != phase_digest
+                    or entry["forge_sha256"].lower() != event_digest
+                ):
+                    failed.append(
+                        {
+                            **details,
+                            "card": entry["card"],
+                            "forge_sha256": event_digest,
+                            "reason": (
+                                "digest mismatch; "
+                                f"expected phase_sha256={entry['phase_sha256'].lower()} "
+                                f"forge_sha256={entry['forge_sha256'].lower()}; "
+                                f"observed phase_sha256={phase_digest}; "
+                                f"observed forge_sha256={event_digest}"
+                            ),
+                        }
+                    )
+                else:
+                    triaged.append(
+                        {
+                            "suite": suite,
+                            "scenario": name,
+                            "category": entry["category"],
+                            "card": entry["card"],
+                            "phase_sha256": phase_digest,
+                            "forge_sha256": event_digest,
+                        }
+                    )
+                continue
             if entry["category"] == "unsupported":
                 failed.append(
                     {
@@ -522,7 +687,7 @@ def evaluate_known_diffs(
                         "reason": "unsupported entries never waive divergences",
                     }
                 )
-            elif phase_digest is None or mage_digest is None:
+            elif phase_digest is None or oracle_digest is None:
                 failed.append(
                     {
                         **details,
@@ -532,7 +697,7 @@ def evaluate_known_diffs(
                 )
             elif (
                 entry["phase_sha256"].lower() != phase_digest
-                or entry["mage_sha256"].lower() != mage_digest
+                or entry["mage_sha256"].lower() != oracle_digest
             ):
                 failed.append(
                     {
@@ -543,7 +708,7 @@ def evaluate_known_diffs(
                             f"expected phase_sha256={entry['phase_sha256'].lower()} "
                             f"mage_sha256={entry['mage_sha256'].lower()}; "
                             f"observed phase_sha256={phase_digest}; "
-                            f"observed mage_sha256={mage_digest}"
+                            f"observed mage_sha256={oracle_digest}"
                         ),
                     }
                 )
@@ -555,7 +720,7 @@ def evaluate_known_diffs(
                         "category": entry["category"],
                         "card": entry["card"],
                         "phase_sha256": phase_digest,
-                        "mage_sha256": mage_digest,
+                        "mage_sha256": oracle_digest,
                     }
                 )
 
@@ -577,17 +742,25 @@ def format_known_diff_report(report: dict) -> str:
         f"MATCHED: {counts['matched']}",
         f"TRIAGED: {counts['triaged']}",
     ]
-    lines.extend(
-        f"  [{item['category']}] {item['card']}: {item['suite']} / {item['scenario']} "
-        f"(phase_sha256={item['phase_sha256']}, mage_sha256={item['mage_sha256']})"
-        for item in report["triaged"]
-    )
+    for item in report["triaged"]:
+        oracle = report.get("oracles_by_suite", {}).get(item["suite"], "xmage")
+        oracle_hash = "forge_sha256" if oracle == "forge" else "mage_sha256"
+        oracle_digest = item.get("forge_sha256", item.get("mage_sha256"))
+        lines.append(
+            f"  [{item['category']}] {item['card']}: {item['suite']} / "
+            f"{item['scenario']} (phase_sha256={item['phase_sha256']}, "
+            f"{oracle_hash}={oracle_digest})"
+        )
     lines.append(f"FAILED: {counts['failed']}")
     lines.extend(
         f"  {item.get('suite', '<unknown>')} / {item.get('scenario', '<unknown>')}: "
         f"{item['reason']}"
         for item in report["failed"]
     )
+    if report.get("oracles_by_suite"):
+        lines.append(
+            f"ORACLES {json.dumps(report['oracles_by_suite'], sort_keys=True)}"
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -609,7 +782,13 @@ def _validate_setup(scenario: dict) -> None:
         unknown = player_setup.keys() - PLAYER_SETUP_FIELDS
         if unknown:
             raise ValueError(f"{name}: setup.{player}.{min(unknown)} is unsupported")
-        for field in ("hand", "library_top", "graveyard"):
+        if "life" in player_setup and (
+            isinstance(player_setup["life"], bool)
+            or not isinstance(player_setup["life"], int)
+            or not -(2**31) <= player_setup["life"] < 2**31
+        ):
+            raise ValueError(f"{name}: setup.{player}.life must be a 32-bit integer")
+        for field in ("hand", "library_top", "graveyard", "sideboard", "exile"):
             cards = player_setup.get(field, [])
             if not isinstance(cards, list):
                 raise TypeError(f"{name}: setup.{player}.{field} must be an array")
@@ -678,6 +857,21 @@ def _validate_setup(scenario: dict) -> None:
                 raise ValueError(f"{context}.tapped must be a boolean")
             if "counters" in permanent and not isinstance(permanent["counters"], dict):
                 raise TypeError(f"{context}.counters must be a table")
+        mana_pool = player_setup.get("mana_pool", [])
+        if not isinstance(mana_pool, list):
+            raise TypeError(f"{name}: setup.{player}.mana_pool must be an array")
+        for index, unit in enumerate(mana_pool):
+            context = f"{name}: {player}.mana_pool[{index}]"
+            if not isinstance(unit, dict) or unit.keys() != {"color", "source"}:
+                raise ValueError(f"{context} needs color and source")
+            if unit["color"] not in {"W", "U", "B", "R", "G", "C"}:
+                raise ValueError(f"{context}.color must be W, U, B, R, G, or C")
+            source = unit["source"]
+            location = label_locations.get(source) if isinstance(source, str) else None
+            if location is None or location[:2] != (player, "battlefield"):
+                raise ValueError(
+                    f"{context}.source must name a card on {player}'s battlefield"
+                )
 
     script = scenario.get("script", [])
     if not isinstance(script, list):
@@ -685,6 +879,48 @@ def _validate_setup(scenario: dict) -> None:
     for index, action in enumerate(script):
         if not isinstance(action, dict):
             raise TypeError(f"{name}: script[{index}] must be a table")
+        if action.get("action") == "choose_outside_game":
+            context = f"{name}: script[{index}].choose_outside_game"
+            unknown = action.keys() - {"action", "player", "accept", "cards"}
+            if unknown:
+                raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            if action.get("player") not in {"P0", "P1"}:
+                raise ValueError(f"{context}.player must be P0 or P1")
+            if not isinstance(action.get("accept"), bool):
+                raise TypeError(f"{context}.accept must be a boolean")
+            choices = action.get("cards")
+            if not isinstance(choices, list):
+                raise TypeError(f"{context}.cards must be an array")
+            if not action["accept"] and choices:
+                raise ValueError(f"{context}.cards must be empty when declining")
+            for label in choices:
+                if not isinstance(label, str) or not label:
+                    raise ValueError(f"{context}.cards entries must be labels")
+                if label_locations.get(label, (None, None, None))[1] != "sideboard":
+                    raise ValueError(f"{context} label {label} must be in a sideboard")
+        if action.get("action") == "choose_mana":
+            context = f"{name}: script[{index}].choose_mana"
+            unknown = action.keys() - {"action", "player", "sources"}
+            if unknown:
+                raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            player = action.get("player")
+            if player not in {"P0", "P1"}:
+                raise ValueError(f"{context}.player must be P0 or P1")
+            sources = action.get("sources")
+            if not isinstance(sources, list) or not sources:
+                raise TypeError(f"{context}.sources must be a non-empty array")
+            if any(not isinstance(source, str) or not source for source in sources):
+                raise ValueError(f"{context}.sources entries must be labels")
+            if len(sources) != len(set(sources)):
+                raise ValueError(f"{context}.sources cannot repeat labels")
+            setup = scenario.get("setup", {}).get(player, {})
+            mana_sources = {
+                unit.get("source")
+                for unit in setup.get("mana_pool", [])
+                if isinstance(unit, dict)
+            }
+            if any(source not in mana_sources for source in sources):
+                raise ValueError(f"{context}.sources must name mana_pool sources")
         if "behold" in action and action.get("action") != "play_land":
             raise ValueError(
                 f"{name}: script[{index}].behold is only valid for play_land actions"
@@ -700,6 +936,14 @@ def _validate_setup(scenario: dict) -> None:
         if "new_targets" in action and action.get("action") != "copy_choice":
             raise ValueError(
                 f"{name}: script[{index}].new_targets is only valid for copy_choice actions"
+            )
+        if "accept" in action and action.get("action") != "choose_outside_game":
+            raise ValueError(
+                f"{name}: script[{index}].accept is only valid for choose_outside_game actions"
+            )
+        if "sources" in action and action.get("action") != "choose_mana":
+            raise ValueError(
+                f"{name}: script[{index}].sources is only valid for choose_mana actions"
             )
         if "sacrifice" in action:
             context = f"{name}: script[{index}].sacrifice"
@@ -848,9 +1092,14 @@ def _validate_setup(scenario: dict) -> None:
 
 def load_specs(paths: list[Path]) -> dict:
     scenarios = []
+    suite_oracles = {}
     for path in paths:
         with path.open("rb") as source:
             data = tomllib.load(source)
+        oracle = data.get("oracle", "xmage")
+        if oracle not in {"xmage", "forge"}:
+            raise ValueError(f"{path}: oracle must be xmage or forge")
+        suite_oracles[path.stem] = oracle
         file_scenarios = data.get("scenarios", [])
         if not isinstance(file_scenarios, list) or not file_scenarios:
             raise ValueError(f"{path}: scenario file contains no scenarios")
@@ -866,7 +1115,30 @@ def load_specs(paths: list[Path]) -> dict:
     names = [scenario["name"] for scenario in scenarios]
     if len(names) != len(set(names)):
         raise ValueError("scenario names must be unique across spec files")
-    return {"scenarios": scenarios}
+    return {"scenarios": scenarios, "suite_oracles": suite_oracles}
+
+
+def split_scenarios_by_oracle(
+    scenarios: list[dict],
+    suite_scenarios: dict[str, list[str]],
+    suite_oracles: dict[str, str],
+) -> dict[str, list[dict]]:
+    suite_by_name = {
+        name: suite for suite, names in suite_scenarios.items() for name in names
+    }
+    if set(suite_by_name) != {scenario["name"] for scenario in scenarios}:
+        raise ValueError("scenario suites do not match the loaded scenario list")
+    unknown_suites = set(suite_scenarios) - suite_oracles.keys()
+    if unknown_suites:
+        raise ValueError(f"missing oracle for suite {min(unknown_suites)}")
+    return {
+        oracle: [
+            scenario
+            for scenario in scenarios
+            if suite_oracles[suite_by_name[scenario["name"]]] == oracle
+        ]
+        for oracle in ("xmage", "forge")
+    }
 
 
 def _print_differences(
@@ -910,6 +1182,11 @@ def main() -> int:
         "--mage-bench-root",
         type=Path,
         default=Path(os.environ.get("MAGE_BENCH_ROOT", ROOT / "mage-bench")),
+    )
+    parser.add_argument(
+        "--forge-root",
+        type=Path,
+        default=Path(os.environ.get("FORGE_CHECKOUT", ROOT / ".cache/forge")),
     )
     parser.add_argument(
         "--card-data",
@@ -1002,6 +1279,25 @@ def main() -> int:
     spec_path.write_text(
         json.dumps(spec, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    try:
+        dispatch = split_scenarios_by_oracle(
+            spec["scenarios"], suite_scenarios, spec["suite_oracles"]
+        )
+    except ValueError as error:
+        print(f"invalid oracle dispatch: {error}", file=sys.stderr)
+        return 2
+    xmage_scenarios = dispatch["xmage"]
+    forge_scenarios = dispatch["forge"]
+    xmage_spec_path = outdir / "xmage-scenario-spec.json"
+    forge_spec_path = outdir / "forge-scenario-spec.json"
+    xmage_spec_path.write_text(
+        json.dumps({"scenarios": xmage_scenarios}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    forge_spec_path.write_text(
+        json.dumps({"scenarios": forge_scenarios}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
     phase_bin = (
         args.phase_bin if args.phase_bin.is_absolute() else ROOT / args.phase_bin
@@ -1026,64 +1322,115 @@ def main() -> int:
     except (json.JSONDecodeError, ValueError) as error:
         print(f"Phase runner emitted invalid JSON: {error}", file=sys.stderr)
         runner_errors.append(f"Phase runner emitted invalid JSON: {error}")
-    mage_root = args.mage_bench_root
-    if not mage_root.is_absolute():
-        mage_root = ROOT / mage_root
-    if not mage_root.is_dir():
-        print(f"missing mage-bench checkout: {mage_root}", file=sys.stderr)
-        return 2
-    mage = subprocess.run(
-        [
-            "mvn",
-            "-B",
-            "-pl",
-            "Mage.Tests",
-            "-Dsurefire.useFile=false",
-            "-Dtest=CardScenarioProjectionTest",
-            f"-DoracleScenarioSpec={spec_path}",
-            "test",
-        ],
-        cwd=mage_root,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    (outdir / "mage.log").write_text(mage.stdout + mage.stderr, encoding="utf-8")
-    report_path = (
-        mage_root
-        / "Mage.Tests/target/surefire-reports/"
-        / "TEST-org.mage.test.testapi.CardScenarioProjectionTest.xml"
-    )
-    try:
-        report = report_path.read_text(encoding="utf-8")
-        (outdir / "mage-surefire-report.xml").write_text(report, encoding="utf-8")
-        mage_results = parse_mage_report(report)
-    except (OSError, ET.ParseError, json.JSONDecodeError) as error:
-        print(f"Could not read XMage scenario results: {error}", file=sys.stderr)
-        mage_results = []
+    mage_returncode = 0
+    mage_results = []
+    if xmage_scenarios:
+        mage_root = args.mage_bench_root
+        if not mage_root.is_absolute():
+            mage_root = ROOT / mage_root
+        if not mage_root.is_dir():
+            print(f"missing mage-bench checkout: {mage_root}", file=sys.stderr)
+            return 2
+        mage = subprocess.run(
+            [
+                "mvn",
+                "-B",
+                "-pl",
+                "Mage.Tests",
+                "-Dsurefire.useFile=false",
+                "-Dtest=CardScenarioProjectionTest",
+                f"-DoracleScenarioSpec={xmage_spec_path}",
+                "test",
+            ],
+            cwd=mage_root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        mage_returncode = mage.returncode
+        (outdir / "mage.log").write_text(mage.stdout + mage.stderr, encoding="utf-8")
+        mage_report_path = (
+            mage_root
+            / "Mage.Tests/target/surefire-reports/"
+            / "TEST-org.mage.test.testapi.CardScenarioProjectionTest.xml"
+        )
+        try:
+            report = mage_report_path.read_text(encoding="utf-8")
+            (outdir / "mage-surefire-report.xml").write_text(report, encoding="utf-8")
+            mage_results = parse_mage_report(report)
+        except (OSError, ET.ParseError, json.JSONDecodeError) as error:
+            print(f"Could not read XMage scenario results: {error}", file=sys.stderr)
+    else:
+        (outdir / "mage.log").write_text(
+            "XMage not selected by any suite\n", encoding="utf-8"
+        )
+
+    forge_returncode = 0
+    forge_results = []
+    forge_prompt_failures = []
+    if forge_scenarios:
+        forge_root = args.forge_root
+        if not forge_root.is_absolute():
+            forge_root = ROOT / forge_root
+        forge_output = outdir / "forge"
+        forge = subprocess.run(
+            [
+                str(ROOT / "scripts/run_forge_scenarios.sh"),
+                str(forge_spec_path),
+                str(forge_output),
+                str(forge_root),
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        forge_returncode = forge.returncode
+        (outdir / "forge.log").write_text(forge.stdout + forge.stderr, encoding="utf-8")
+        forge_report_path = forge_output / "surefire-report.xml"
+        try:
+            report = forge_report_path.read_text(encoding="utf-8")
+            (outdir / "forge-surefire-report.xml").write_text(report, encoding="utf-8")
+            forge_results = parse_forge_report(report)
+            forge_prompt_failures = parse_forge_prompt_failures(report)
+        except (OSError, ET.ParseError, json.JSONDecodeError) as error:
+            print(f"Could not read Forge scenario results: {error}", file=sys.stderr)
+    else:
+        (outdir / "forge.log").write_text(
+            "Forge not selected by any suite\n", encoding="utf-8"
+        )
     (outdir / "phase-projection.json").write_text(
         json.dumps(phase_results, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     (outdir / "mage-projection.json").write_text(
         json.dumps(mage_results, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    (outdir / "forge-projection.json").write_text(
+        json.dumps(forge_results, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     if phase.returncode:
         runner_errors.append(f"Phase runner exited {phase.returncode}")
-    if mage.returncode:
-        runner_errors.append(f"XMage runner exited {mage.returncode}")
+    if mage_returncode:
+        runner_errors.append(f"XMage runner exited {mage_returncode}")
+    if forge_returncode:
+        runner_errors.append(f"Forge runner exited {forge_returncode}")
     compared_phase_results = normalize_label_insensitive_count_groups(
         spec["scenarios"], phase_results
     )
-    compared_mage_results = normalize_label_insensitive_count_groups(
-        spec["scenarios"], mage_results
+    oracle_results = [*mage_results, *forge_results]
+    compared_oracle_results = normalize_label_insensitive_count_groups(
+        spec["scenarios"], oracle_results
     )
     report = evaluate_known_diffs(
         suite_scenarios,
         compared_phase_results,
-        compared_mage_results,
+        compared_oracle_results,
         known_diffs,
         runner_errors,
+        forge_prompt_failures,
+        spec["suite_oracles"],
     )
+    report["oracles_by_suite"] = spec["suite_oracles"]
     report_path = outdir / "known-diffs-report.json"
     report_path.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -1092,21 +1439,28 @@ def main() -> int:
     (outdir / "compare.log").write_text(comparison_log, encoding="utf-8")
     print(comparison_log, end="")
     phase_map, _ = _results_by_name(compared_phase_results, "Phase")
-    mage_map, _ = _results_by_name(compared_mage_results, "XMage")
+    oracle_map, _ = _results_by_name(compared_oracle_results, "oracle")
     for item in [*report["triaged"], *report["failed"]]:
         scenario = item.get("scenario")
-        if not scenario or scenario not in phase_map or scenario not in mage_map:
+        if not scenario or scenario not in phase_map or scenario not in oracle_map:
             continue
         differences = compare(
-            {scenario: phase_map[scenario]}, {scenario: mage_map[scenario]}
+            {scenario: phase_map[scenario]}, {scenario: oracle_map[scenario]}
         )
         if differences:
+            oracle_name = spec["suite_oracles"].get(item.get("suite"), "unknown")
+            oracle_label = "XMage" if oracle_name == "xmage" else "Forge"
             print(
-                f"DIVERGENCE {item.get('suite')} / {scenario}: {', '.join(differences)}"
+                f"DIVERGENCE {item.get('suite')} ({oracle_label}) / "
+                f"{scenario}: {', '.join(differences)}"
             )
             print(f"phase-rs: {json.dumps(phase_map[scenario], sort_keys=True)}")
-            print(f"XMage: {json.dumps(mage_map[scenario], sort_keys=True)}")
-    for engine, results in (("PHASE", phase_results), ("XMAGE", mage_results)):
+            print(f"{oracle_label}: {json.dumps(oracle_map[scenario], sort_keys=True)}")
+    for engine, results in (
+        ("PHASE", phase_results),
+        ("XMAGE", mage_results),
+        ("FORGE", forge_results),
+    ):
         for result in results:
             if result.get("projection") is not None:
                 print(

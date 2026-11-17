@@ -363,6 +363,26 @@ jobs:
         run: |
           git show "origin/$BASE_REF:oracle/known-diffs.toml" > "$RUNNER_TEMP/base-known-diffs.toml"
           python scripts/run_card_scenarios.py --cards "$CARDS" --check-changed-suites "$RUNNER_TEMP/changed-files.txt" --known-diffs oracle/known-diffs.toml --base-known-diffs "$RUNNER_TEMP/base-known-diffs.toml"
+      - name: Detect configured scenario oracles
+        id: oracles
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
+        env:
+          CARDS: ${{ steps.scope.outputs.cards }}
+          MODE: ${{ steps.scope.outputs.mode }}
+        run: |
+          if [[ "$MODE" == "smoke" ]]; then
+            echo "xmage=true" >> "$GITHUB_OUTPUT"
+            echo "forge=false" >> "$GITHUB_OUTPUT"
+          else
+            python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          from scripts.run_card_scenarios import load_specs, scenario_paths_for_cards
+
+          suites = load_specs(scenario_paths_for_cards(os.environ["CARDS"]))["suite_oracles"]
+          print(f"xmage={str('xmage' in suites.values()).lower()}")
+          print(f"forge={str('forge' in suites.values()).lower()}")
+          PY
+          fi
       - name: Read pinned mage-bench revision
         id: mage-bench-pin
         if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
@@ -385,6 +405,22 @@ jobs:
           fi
           echo "repository=$repo" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: Read pinned Forge revision
+        id: forge-pin
+        if: steps.oracles.outputs.forge == 'true'
+        run: |
+          mapfile -t pin < oracle/forge.txt
+          if [[ "${#pin[@]}" -ne 2 ]]; then
+            echo "::error::oracle/forge.txt must contain a repository URL and commit SHA"
+            exit 1
+          fi
+          repo_url="${pin[0]}"
+          sha="${pin[1]}"
+          if [[ "$repo_url" != https://github.com/Card-Forge/forge || ! "$sha" =~ ^[[:xdigit:]]{40}$ ]]; then
+            echo "::error::oracle/forge.txt must pin Card-Forge/forge at a full commit SHA"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         with:
@@ -399,6 +435,17 @@ jobs:
           java-version: "21"
           cache: maven
           cache-dependency-path: mage-bench/**/pom.xml
+      - uses: actions/setup-java@v4
+        if: steps.oracles.outputs.forge == 'true'
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Cache isolated Forge Maven repository
+        if: steps.oracles.outputs.forge == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/forge-m2
+          key: forge-m2-${{ runner.os }}-${{ steps.forge-pin.outputs.sha }}-${{ hashFiles('oracle/forge-patches/*.patch') }}
       - name: Apply local mage-bench patches
         if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         run: |
@@ -490,7 +537,15 @@ jobs:
         env:
           CARDS: ${{ steps.scope.outputs.cards }}
           MAGE_BENCH_ROOT: ${{ github.workspace }}/mage-bench
-        run: python scripts/run_card_scenarios.py --cards "$CARDS" --known-diffs oracle/known-diffs.toml
+          FORGE_CHECKOUT: ${{ runner.temp }}/forge
+          FORGE_MAVEN_REPO: ${{ runner.temp }}/forge-m2
+        run: python scripts/run_card_scenarios.py --cards "$CARDS" --known-diffs oracle/known-diffs.toml --outdir "runs/card-scenarios/ci-${GITHUB_RUN_ID}"
+      - name: Require Forge scenario report artifacts
+        if: steps.scope.outputs.mode == 'per-card' && steps.oracles.outputs.forge == 'true'
+        run: |
+          test -s "runs/card-scenarios/ci-${GITHUB_RUN_ID}/forge-surefire-report.xml"
+          test -s "runs/card-scenarios/ci-${GITHUB_RUN_ID}/forge-projection.json"
+          test -s "runs/card-scenarios/ci-${GITHUB_RUN_ID}/known-diffs-report.json"
       - name: Run two-seed mono-green differential smoke
         if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         env:

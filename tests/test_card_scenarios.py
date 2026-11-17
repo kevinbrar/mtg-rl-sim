@@ -12,14 +12,20 @@ from scripts.run_card_scenarios import (
     check_changed_known_diff_entries,
     check_changed_scenario_suites,
     evaluate_known_diffs,
+    format_known_diff_report,
     load_base_known_diffs,
     load_known_diffs,
     load_specs,
     main,
     normalize_label_insensitive_count_groups,
+    forge_prompt_sha256,
+    parse_forge_prompt_failures,
+    parse_forge_report,
     parse_mage_report,
     projection_sha256,
+    scenario_names_by_suite,
     scenario_paths_for_cards,
+    split_scenarios_by_oracle,
 )
 
 
@@ -821,6 +827,23 @@ library_top = [{ label = "same", card = "Grizzly Bears" }]
         load_specs([spec])
 
 
+def test_load_specs_accepts_exile_setup(tmp_path: Path) -> None:
+    spec = tmp_path / "exile.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "exile setup"
+
+[scenarios.setup.P0]
+exile = ["Walking Corpse"]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+    assert loaded["scenarios"][0]["setup"]["P0"]["exile"] == ["Walking Corpse"]
+
+
 def test_load_specs_rejects_unrepresentable_setup_fields(tmp_path: Path) -> None:
     spec = tmp_path / "unsupported.toml"
     spec.write_text(
@@ -829,11 +852,28 @@ def test_load_specs_rejects_unrepresentable_setup_fields(tmp_path: Path) -> None
 name = "unsupported setup"
 
 [scenarios.setup.P0]
-exile = ["Walking Corpse"]
+command = ["Walking Corpse"]
 """,
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="setup.P0.exile is unsupported"):
+    with pytest.raises(ValueError, match="setup.P0.command is unsupported"):
+        load_specs([spec])
+
+
+def test_load_specs_rejects_non_integer_setup_life(tmp_path: Path) -> None:
+    spec = tmp_path / "invalid-life.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "invalid life"
+
+[scenarios.setup.P0]
+life = 20.5
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="setup.P0.life must be a 32-bit integer"):
         load_specs([spec])
 
 
@@ -951,6 +991,44 @@ CARD_SCENARIO_RESULT:{"scenario":"S1","projection":{"reach":true},"reach":true}
     assert parse_mage_report(report) == [
         {"scenario": "S1", "projection": {"reach": True}, "reach": True}
     ]
+
+
+def test_parse_forge_report_extracts_projection_records() -> None:
+    report = """
+<testsuite>
+  <testcase>
+    <system-out><![CDATA[
+CARD_SCENARIO_RESULT:{"scenario":"E1","projection":{"reach":true},"reach":true}
+]]></system-out>
+  </testcase>
+</testsuite>
+"""
+    assert parse_forge_report(report) == [
+        {"scenario": "E1", "projection": {"reach": True}, "reach": True}
+    ]
+
+
+def test_known_diff_report_names_each_suite_oracle() -> None:
+    report = {
+        "counts": {"matched": 5, "triaged": 1, "failed": 0},
+        "matched": [],
+        "triaged": [
+            {
+                "category": "engine-bug",
+                "card": "Extrapolate the Impossible",
+                "suite": "extrapolate-the-impossible",
+                "scenario": "E1",
+                "phase_sha256": "phase",
+                "mage_sha256": "forge",
+            }
+        ],
+        "failed": [],
+        "oracles_by_suite": {"extrapolate-the-impossible": "forge"},
+    }
+
+    formatted = format_known_diff_report(report)
+    assert 'ORACLES {"extrapolate-the-impossible": "forge"}' in formatted
+    assert "forge_sha256=forge" in formatted
 
 
 def test_projection_comparator_requires_equal_projections_and_reach() -> None:
@@ -1216,6 +1294,49 @@ def test_known_diff_triaged_pass() -> None:
     assert report["triaged"][0]["card"] == "Test Card"
 
 
+def test_forge_bug_triage_is_digest_pinned_and_never_matched() -> None:
+    phase = _projection_result("E5", {"hand": [], "sideboard": ["Giant Growth"]})
+    event = {"scenario": "E5", "prompt": "outside_game"}
+    entry = _known_diff_entry("E5", phase, phase, category="forge-bug")
+    entry.pop("mage_sha256")
+    entry["forge_sha256"] = forge_prompt_sha256(event)
+
+    report = evaluate_known_diffs(
+        {"suite": ["E5"]},
+        [phase],
+        [],
+        [entry],
+        forge_prompt_failures=[event],
+        suite_oracles={"suite": "forge"},
+    )
+
+    assert report["counts"] == {"matched": 0, "triaged": 1, "failed": 0}
+    assert report["triaged"][0]["category"] == "forge-bug"
+    assert report["triaged"][0]["forge_sha256"] == entry["forge_sha256"]
+
+    report_without_event = evaluate_known_diffs(
+        {"suite": ["E5"]},
+        [phase],
+        [],
+        [entry],
+        suite_oracles={"suite": "forge"},
+    )
+    assert report_without_event["counts"]["triaged"] == 0
+    assert report_without_event["counts"]["failed"] > 0
+
+
+def test_parse_forge_prompt_failure_report() -> None:
+    event = {"scenario": "E5", "prompt": "outside_game"}
+    report = (
+        "<testsuite><testcase><system-out>"
+        "CARD_SCENARIO_PROMPT_FAILURE:"
+        + json.dumps(event)
+        + "</system-out></testcase></testsuite>"
+    )
+
+    assert parse_forge_prompt_failures(report) == [event]
+
+
 def test_known_diff_stale_entry_fails() -> None:
     result = _projection_result("S1", {"life": 20})
     entry = _known_diff_entry("S1", result, result)
@@ -1318,6 +1439,90 @@ def test_untriaged_divergence_still_fails() -> None:
     report = evaluate_known_diffs({"suite": ["S1"]}, [phase], [mage], [])
 
     assert report["counts"] == {"matched": 0, "triaged": 0, "failed": 1}
+
+
+def test_missing_oracle_results_are_reported_without_assuming_xmage() -> None:
+    phase = _projection_result("E1", {"life": 20})
+
+    report = evaluate_known_diffs({"forge-suite": ["E1"]}, [phase], [], [])
+
+    assert any(
+        failure["scenario"] == "<oracle>"
+        and "results are missing or unexpected" in failure["reason"]
+        for failure in report["failed"]
+    )
+
+
+def test_mixed_oracle_results_pair_by_suite_and_scenario_not_order() -> None:
+    forge = _projection_result("F1", {"life": 20})
+    xmage = _projection_result("X1", {"life": 20})
+
+    report = evaluate_known_diffs(
+        {"forge-suite": ["F1"], "xmage-suite": ["X1"]},
+        [forge, xmage],
+        [xmage, forge],
+        [],
+        suite_oracles={"forge-suite": "forge", "xmage-suite": "xmage"},
+    )
+
+    assert report["counts"] == {"matched": 2, "triaged": 0, "failed": 0}
+
+
+def test_mixed_oracle_results_reject_duplicate_and_missing_pairs() -> None:
+    forge = _projection_result("F1", {"life": 20})
+    xmage = _projection_result("X1", {"life": 20})
+
+    report = evaluate_known_diffs(
+        {"forge-suite": ["F1"], "xmage-suite": ["X1"]},
+        [forge, xmage],
+        [xmage, xmage],
+        [],
+        suite_oracles={"forge-suite": "forge", "xmage-suite": "xmage"},
+    )
+
+    assert any(
+        "duplicate scenario X1 in suite xmage-suite" in failure["reason"]
+        for failure in report["failed"]
+    )
+    assert any(failure["scenario"] == "<oracle>" for failure in report["failed"])
+
+
+def test_load_specs_accepts_mana_pool_with_a_labeled_battlefield_source(
+    tmp_path: Path,
+) -> None:
+    spec = tmp_path / "mana-pool.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "cast with seeded mana"
+
+[scenarios.setup.P0]
+battlefield = [{ label = "island", card = "Island", tapped = true }]
+mana_pool = [{ color = "U", source = "island" }]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["island"]
+
+[[scenarios.script]]
+action = "choose_outside_game"
+player = "P0"
+accept = true
+cards = []
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+
+    assert loaded["scenarios"][0]["setup"]["P0"]["mana_pool"] == [
+        {"color": "U", "source": "island"}
+    ]
+    assert loaded["scenarios"][0]["script"][0]["sources"] == ["island"]
+    assert loaded["scenarios"][0]["script"][1]["accept"] is True
 
 
 def test_known_diff_mixed_run_counts_matched_triaged_and_failed() -> None:
@@ -1497,6 +1702,72 @@ script = [{{ action = "activate", alternative_cost = "{decision}" }}]
     loaded = load_specs([spec])
 
     assert loaded["scenarios"][0]["script"][0]["alternative_cost"] == decision
+
+
+def test_forge_suite_dispatch_and_xmage_default(tmp_path: Path) -> None:
+    xmage = tmp_path / "xmage-card.toml"
+    xmage.write_text(
+        '[[scenarios]]\nname = "default-suite"\n[scenarios.setup.P0]\n',
+        encoding="utf-8",
+    )
+    forge = tmp_path / "forge-card.toml"
+    forge.write_text(
+        'oracle = "forge"\n[[scenarios]]\nname = "forge-suite"\n[scenarios.setup.P0]\n',
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([xmage, forge])
+    suites = scenario_names_by_suite([xmage, forge])
+    dispatched = split_scenarios_by_oracle(
+        loaded["scenarios"], suites, loaded["suite_oracles"]
+    )
+
+    assert loaded["suite_oracles"] == {"xmage-card": "xmage", "forge-card": "forge"}
+    assert [scenario["name"] for scenario in dispatched["xmage"]] == ["default-suite"]
+    assert [scenario["name"] for scenario in dispatched["forge"]] == ["forge-suite"]
+
+
+def test_choose_outside_game_requires_sideboard_labels(tmp_path: Path) -> None:
+    valid = tmp_path / "outside-game.toml"
+    valid.write_text(
+        """
+oracle = "forge"
+[[scenarios]]
+name = "outside game"
+[scenarios.setup.P0]
+sideboard = [{ label = "outside.card", card = "Giant Growth" }]
+[[scenarios.script]]
+action = "choose_outside_game"
+player = "P1"
+accept = true
+cards = ["outside.card"]
+[[scenarios.script]]
+action = "choose_outside_game"
+player = "P0"
+accept = false
+cards = []
+""",
+        encoding="utf-8",
+    )
+    assert load_specs([valid])["suite_oracles"] == {"outside-game": "forge"}
+
+    invalid = tmp_path / "invalid-outside-game.toml"
+    invalid.write_text(
+        """
+[[scenarios]]
+name = "outside game"
+[scenarios.setup.P0]
+hand = [{ label = "hand.card", card = "Giant Growth" }]
+[[scenarios.script]]
+action = "choose_outside_game"
+player = "P1"
+accept = true
+cards = ["hand.card"]
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="must be in a sideboard"):
+        load_specs([invalid])
 
 
 @pytest.mark.parametrize(
