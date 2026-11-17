@@ -1,5 +1,5 @@
 diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
-index 243a2c4b..618fe67d 100644
+index 243a2c4b..7325d370 100644
 --- a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
 +++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
 @@ -10,6 +10,7 @@ import forge.LobbyPlayer;
@@ -483,7 +483,7 @@ index 243a2c4b..618fe67d 100644
              String expected = replacementChoices.pollFirst();
              if (expected == null) {
                  throw failClosed("unscripted replacement selection: " + choices);
-@@ -1694,7 +1972,39 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1694,7 +1972,45 @@ public final class CardScenarioProjectionTest extends AITest {
          public List<SpellAbility> chooseSpellAbilitiesForEffect(
                  List<SpellAbility> choices, SpellAbility ability, String title, int num,
                  Map<String, Object> params) {
@@ -508,7 +508,7 @@ index 243a2c4b..618fe67d 100644
 +            List<SpellAbility> selected = new ArrayList<>();
 +            for (Card card : choice.cards()) {
 +                List<SpellAbility> matching = choices.stream()
-+                        .filter(candidate -> candidate.getHostCard().getCopiedPermanent() == card)
++                        .filter(candidate -> isCopyOf(candidate.getHostCard(), card))
 +                        .toList();
 +                if (matching.size() != 1) {
 +                    throw failClosed(
@@ -521,10 +521,16 @@ index 243a2c4b..618fe67d 100644
 +                selected.add(selectedAbility);
 +            }
 +            return List.copyOf(selected);
++        }
++
++        private boolean isCopyOf(Card candidate, Card expected) {
++            Card copiedPermanent = candidate.getCopiedPermanent();
++            return copiedPermanent == expected
++                    || copiedPermanent != null && copiedPermanent.getId() == expected.getId();
          }
  
          @Override
-@@ -1735,6 +2045,10 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1735,6 +2051,10 @@ public final class CardScenarioProjectionTest extends AITest {
          public <T extends GameEntity> T chooseSingleEntityForEffect(
                  FCollectionView<T> choices, DelayedReveal reveal, SpellAbility ability, String title,
                  boolean optional, Player relatedPlayer, Map<String, Object> params) {
@@ -535,7 +541,7 @@ index 243a2c4b..618fe67d 100644
              Player caster = ability == null ? null : ability.getActivatingPlayer();
              if (caster == null || choices.isEmpty()) {
                  throw failClosed("unscripted or empty single-entity selection: " + title);
-@@ -1764,6 +2078,61 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1764,6 +2084,61 @@ public final class CardScenarioProjectionTest extends AITest {
              throw failClosed("unscripted single-entity selection: " + title + " in " + choices);
          }
  
@@ -573,7 +579,7 @@ index 243a2c4b..618fe67d 100644
 +            Card expected = activeCopyCastChoice.cards().get(nextCopyCastCard);
 +            List<T> matching = choices.stream()
 +                    .filter(choice -> choice instanceof Card card
-+                            && card.getCopiedPermanent() == expected)
++                            && isCopyOf(card, expected))
 +                    .toList();
 +            if (matching.size() != 1) {
 +                throw failClosed(
@@ -597,7 +603,7 @@ index 243a2c4b..618fe67d 100644
          private String labelForSource(Card source) {
              if (source == null) return null;
              return labels.entrySet().stream()
-@@ -1796,9 +2165,30 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1796,9 +2171,30 @@ public final class CardScenarioProjectionTest extends AITest {
                  pendingOutsideGameCancellation = false;
                  return true;
              }
@@ -628,7 +634,7 @@ index 243a2c4b..618fe67d 100644
          @Override
          public boolean confirmTrigger(WrappedAbility ability) {
              throw failClosed("unscripted trigger confirmation: " + ability.getHostCard().getName());
-@@ -1812,9 +2202,23 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1812,9 +2208,23 @@ public final class CardScenarioProjectionTest extends AITest {
  
          @Override
          public boolean playSaFromPlayEffect(SpellAbility ability) {
