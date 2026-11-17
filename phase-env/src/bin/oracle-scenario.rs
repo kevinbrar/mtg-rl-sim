@@ -2,6 +2,7 @@ use engine::database::CardDatabase;
 use engine::game::ability_utils::{
     build_resolved_from_def, build_target_slots, declared_targets_in_chain,
 };
+use engine::game::combat::AttackTarget;
 use engine::game::filter::{matches_target_filter, FilterContext};
 use engine::game::game_object::GameObject;
 use engine::game::mana_abilities::is_mana_ability;
@@ -41,6 +42,15 @@ fn cards(state: &GameState, player: usize, zone: &str) -> Vec<String> {
         "hand" => names(state, p.hand.iter().copied()),
         "library" => ordered_names(state, p.library.iter().copied()),
         "graveyard" => names(state, p.graveyard.iter().copied()),
+        "exile" => names(
+            state,
+            state.exile.iter().copied().filter(|id| {
+                state
+                    .objects
+                    .get(id)
+                    .is_some_and(|object| object.owner.0 as usize == player)
+            }),
+        ),
         "battlefield" => names(
             state,
             state.battlefield.iter().copied().filter(|id| {
@@ -528,10 +538,227 @@ fn resolve_script_label(
     labels: &HashMap<ObjectId, String>,
     label: &str,
 ) -> Result<ObjectId, String> {
-    labels
+    let mut matches = labels
         .iter()
-        .find_map(|(id, candidate)| (candidate == label).then_some(*id))
-        .ok_or_else(|| format!("unknown setup label {label}"))
+        .filter_map(|(id, candidate)| (candidate == label).then_some(*id));
+    let id = matches
+        .next()
+        .ok_or_else(|| format!("unknown setup label {label}"))?;
+    if matches.next().is_some() {
+        return Err(format!("ambiguous setup label {label}"));
+    }
+    Ok(id)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CopyTargetChoice {
+    Keep,
+    Change(Vec<ObjectId>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CopyChoice {
+    player: PlayerId,
+    accept: bool,
+    new_targets: Option<CopyTargetChoice>,
+}
+
+fn take_copy_choice(
+    choices: &mut VecDeque<CopyChoice>,
+    player: PlayerId,
+) -> Result<CopyChoice, String> {
+    let choice = choices
+        .front()
+        .cloned()
+        .ok_or("Firebender copy prompt arrived without copy_choice")?;
+    if choice.player != player {
+        return Err("Firebender copy prompt was offered to a different player".to_string());
+    }
+    choices
+        .pop_front()
+        .ok_or("Firebender copy prompt arrived without copy_choice".to_string())
+}
+
+fn parse_copy_choice(
+    action: &Value,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<CopyChoice, String> {
+    let fields = action.as_object().ok_or("copy_choice must be a table")?;
+    if fields
+        .keys()
+        .any(|key| !["action", "player", "decision", "new_targets"].contains(&key.as_str()))
+    {
+        return Err("copy_choice supports only player, decision, and new_targets".to_string());
+    }
+    let player = match action.get("player").and_then(Value::as_str) {
+        Some("P0") => PlayerId(0),
+        Some("P1") => PlayerId(1),
+        _ => return Err("copy_choice.player must be P0 or P1".to_string()),
+    };
+    let accept = match action.get("decision").and_then(Value::as_str) {
+        Some("accept") => true,
+        Some("decline") => false,
+        _ => return Err("copy_choice.decision must be accept or decline".to_string()),
+    };
+    let new_targets = match action.get("new_targets") {
+        None => None,
+        Some(Value::String(mode)) if mode == "keep" && accept => Some(CopyTargetChoice::Keep),
+        Some(Value::Array(targets)) if accept && !targets.is_empty() => {
+            Some(CopyTargetChoice::Change(
+                targets
+                    .iter()
+                    .map(|target| {
+                        let label = target
+                            .as_str()
+                            .ok_or("copy_choice.new_targets entries must be labels")?;
+                        resolve_script_label(labels, label)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        Some(Value::String(_)) if !accept => {
+            return Err("copy_choice.new_targets is only valid when accepting the copy".to_string())
+        }
+        Some(Value::Array(_)) if !accept => {
+            return Err("copy_choice.new_targets is only valid when accepting the copy".to_string())
+        }
+        Some(Value::String(_)) => {
+            return Err(
+                "copy_choice.new_targets must be keep or a non-empty label array".to_string(),
+            )
+        }
+        Some(Value::Array(_)) => {
+            return Err("copy_choice.new_targets must be a non-empty label array".to_string())
+        }
+        Some(_) => return Err("copy_choice.new_targets must be keep or a label array".to_string()),
+    };
+    Ok(CopyChoice {
+        player,
+        accept,
+        new_targets,
+    })
+}
+
+fn take_copy_target_choice(
+    pending: &mut Option<(PlayerId, CopyTargetChoice)>,
+    player: PlayerId,
+) -> Result<CopyTargetChoice, String> {
+    let Some((expected_player, _)) = pending.as_ref() else {
+        return Err("copy retarget prompt arrived without copy_choice.new_targets".to_string());
+    };
+    if *expected_player != player {
+        return Err("copy retarget prompt was offered to a different player".to_string());
+    }
+    pending
+        .take()
+        .map(|(_, choice)| choice)
+        .ok_or_else(|| "copy retarget prompt arrived without copy_choice.new_targets".to_string())
+}
+
+fn ensure_copy_target_choice_consumed(
+    pending: &Option<(PlayerId, CopyTargetChoice)>,
+) -> Result<(), String> {
+    if pending.is_some() {
+        return Err(
+            "copy_choice.new_targets was not consumed by a copy retarget prompt".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn declare_attackers(
+    runner: &mut GameRunner,
+    labels: &HashMap<ObjectId, String>,
+    action: &Value,
+) -> Result<(), String> {
+    let active = runner.state().active_player;
+    let fields = action.as_object().ok_or("attack must be a table")?;
+    if fields
+        .keys()
+        .any(|key| !["action", "attackers"].contains(&key.as_str()))
+    {
+        return Err("attack supports only attackers".to_string());
+    }
+    if active != PlayerId(0) {
+        return Err("attack action requires P0 active so attackers can attack P1".to_string());
+    }
+    let entries = action
+        .get("attackers")
+        .and_then(Value::as_array)
+        .ok_or("attack.attackers must be a non-empty label array")?;
+    if entries.is_empty() {
+        return Err("attack.attackers must be a non-empty label array".to_string());
+    }
+
+    runner.advance_to_combat();
+    let (player, valid_attackers) = match &runner.state().waiting_for {
+        WaitingFor::DeclareAttackers {
+            player,
+            valid_attacker_ids,
+            ..
+        } => (*player, valid_attacker_ids),
+        waiting => {
+            return Err(format!(
+                "attack expected declare-attackers prompt, got {waiting:?}"
+            ))
+        }
+    };
+    if player != active {
+        return Err("declare-attackers prompt was offered to a different player".to_string());
+    }
+
+    let mut seen = HashSet::new();
+    let mut attacks = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let label = entry
+            .as_str()
+            .ok_or("attack.attackers entries must be labels")?;
+        let id = resolve_script_label(labels, label)?;
+        if !seen.insert(id) {
+            return Err(format!("attack.attackers repeats label {label}"));
+        }
+        let object = runner
+            .state()
+            .objects
+            .get(&id)
+            .ok_or_else(|| format!("attack label {label} is not a battlefield object"))?;
+        if object.zone != Zone::Battlefield || object.controller != active {
+            return Err(format!(
+                "attack label {label} must be a P0 battlefield creature"
+            ));
+        }
+        if !valid_attackers.contains(&id) {
+            return Err(format!(
+                "attack label {label} is not offered as a legal attacker"
+            ));
+        }
+        attacks.push((id, AttackTarget::Player(PlayerId(1))));
+    }
+    runner
+        .act(GameAction::DeclareAttackers {
+            attacks,
+            bands: Vec::new(),
+        })
+        .map_err(|error| error.to_string())?;
+    if runner.state().phase != Phase::DeclareAttackers {
+        return Err("attacker declaration advanced past the declare-attackers step".to_string());
+    }
+    Ok(())
+}
+
+fn ensure_attack_resolution_boundary(runner: &GameRunner) -> Result<(), String> {
+    if runner.state().phase != Phase::DeclareAttackers
+        || !runner.state().stack.is_empty()
+        || !matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
+    {
+        return Err(format!(
+            "attack triggers must finish at empty-stack priority in declare attackers; reached phase {:?}, waiting {:?}, stack {}",
+            runner.state().phase,
+            runner.state().waiting_for,
+            runner.state().stack.len()
+        ));
+    }
+    Ok(())
 }
 
 fn cast_sacrifice_labels(
@@ -1037,6 +1264,16 @@ fn ensure_trigger_target_groups_consumed(groups: &VecDeque<Vec<ObjectId>>) -> Re
     ))
 }
 
+fn ensure_copy_choices_consumed(choices: &VecDeque<CopyChoice>) -> Result<(), String> {
+    if choices.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} copy_choice entry(s) were unconsumed when the script ended",
+        choices.len()
+    ))
+}
+
 fn ensure_targeted_cast_has_no_pending_trigger_targets(
     action: &Value,
     trigger_target_groups: &VecDeque<Vec<ObjectId>>,
@@ -1121,6 +1358,97 @@ fn ensure_activation_target_groups_consumed(
     ))
 }
 
+fn apply_copy_target_choice(
+    runner: &mut GameRunner,
+    labels: &HashMap<ObjectId, String>,
+    player: PlayerId,
+    choice: CopyTargetChoice,
+) -> Result<(), String> {
+    let WaitingFor::CopyRetarget {
+        player: prompt_player,
+        target_slots,
+        current_slot: first_slot,
+        can_keep_rest,
+        announcer_election,
+        mode,
+        ..
+    } = runner.state().waiting_for.clone()
+    else {
+        return Err("copy target choice arrived without a copy retarget prompt".to_string());
+    };
+    if prompt_player != player {
+        return Err("copy retarget prompt was offered to a different player".to_string());
+    }
+    if mode != Some(engine::types::game_state::CopyChoiceMode::Retarget)
+        || announcer_election.is_some()
+    {
+        return Err("copy_choice.new_targets arrived for a non-retarget copy prompt".to_string());
+    }
+    match choice {
+        CopyTargetChoice::Keep => {
+            if !can_keep_rest {
+                return Err("copy_choice.new_targets=keep is not legal for this copy".to_string());
+            }
+            runner
+                .act(GameAction::KeepAllCopyTargets)
+                .map_err(|error| error.to_string())?;
+        }
+        CopyTargetChoice::Change(targets) => {
+            let remaining_slots = target_slots
+                .len()
+                .checked_sub(first_slot)
+                .ok_or("copy target slot index is out of range")?;
+            if targets.len() != remaining_slots {
+                return Err(format!(
+                    "copy_choice.new_targets has {} labels for {remaining_slots} remaining target slots",
+                    targets.len()
+                ));
+            }
+            for (offset, id) in targets.into_iter().enumerate() {
+                let WaitingFor::CopyRetarget {
+                    player: prompt_player,
+                    target_slots,
+                    current_slot,
+                    announcer_election,
+                    ..
+                } = runner.state().waiting_for.clone()
+                else {
+                    return Err(
+                        "copy retarget prompt ended before all scripted targets were chosen"
+                            .to_string(),
+                    );
+                };
+                if prompt_player != player
+                    || current_slot != first_slot + offset
+                    || announcer_election.is_some()
+                {
+                    return Err("copy retarget prompt changed unexpectedly".to_string());
+                }
+                let slot = target_slots
+                    .get(current_slot)
+                    .ok_or("copy target slot is missing")?;
+                let target = TargetRef::Object(id);
+                if !slot.legal_alternatives.contains(&target) {
+                    let label = labels.get(&id).map(String::as_str).unwrap_or("<unknown>");
+                    return Err(format!(
+                        "copy target label {label} is not legal for slot {current_slot}"
+                    ));
+                }
+                runner
+                    .act(GameAction::ChooseTarget {
+                        target: Some(target),
+                    })
+                    .map_err(|error| error.to_string())?;
+            }
+            if matches!(runner.state().waiting_for, WaitingFor::CopyRetarget { .. }) {
+                return Err("copy target labels did not complete the retarget prompt".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn pass_until_resolved(
     scenario_name: &str,
     runner: &mut GameRunner,
@@ -1128,9 +1456,11 @@ fn pass_until_resolved(
     groups: &mut VecDeque<Vec<ObjectId>>,
     activation_target_groups: &mut VecDeque<Vec<ObjectId>>,
     card_choice_groups: &mut VecDeque<Vec<ObjectId>>,
+    copy_choices: &mut VecDeque<CopyChoice>,
     unless_choice_groups: &mut [VecDeque<UnlessScriptChoice>; 2],
 ) -> Result<(), String> {
     let mut pending_unless_choice = None;
+    let mut pending_copy_target_choice = None;
     for _ in 0..128 {
         match runner.state().waiting_for.clone() {
             WaitingFor::TriggerTargetSelection { .. } => {
@@ -1138,6 +1468,10 @@ fn pass_until_resolved(
             }
             WaitingFor::TargetSelection { .. } => {
                 apply_activation_target_group(runner, labels, activation_target_groups)?;
+            }
+            WaitingFor::CopyRetarget { player, .. } => {
+                let choice = take_copy_target_choice(&mut pending_copy_target_choice, player)?;
+                apply_copy_target_choice(runner, labels, player, choice)?;
             }
             WaitingFor::UnlessPaymentChooseCost { player, costs, .. } => {
                 let mut payable_indices = Vec::new();
@@ -1231,6 +1565,38 @@ fn pass_until_resolved(
             | WaitingFor::DiscardChoice { .. } => {
                 apply_card_choice_group(runner, labels, card_choice_groups)?;
             }
+            WaitingFor::OptionalEffectChoice {
+                player, source_id, ..
+            } if runner
+                .state()
+                .objects
+                .get(&source_id)
+                .is_some_and(|object| object.name == "Firebender Ascension") =>
+            {
+                let choice = take_copy_choice(copy_choices, player)?;
+                if !choice.accept && choice.new_targets.is_some() {
+                    return Err(
+                        "copy_choice.new_targets is only valid when accepting the copy".to_string(),
+                    );
+                }
+                runner
+                    .act(GameAction::DecideOptionalEffect {
+                        accept: choice.accept,
+                    })
+                    .map_err(|error| error.to_string())?;
+                if let Some(targets) = choice.new_targets {
+                    if pending_copy_target_choice.is_some() {
+                        return Err("a copy target choice is already pending".to_string());
+                    }
+                    pending_copy_target_choice = Some((player, targets));
+                }
+            }
+            WaitingFor::OptionalEffectChoice { .. } if !copy_choices.is_empty() => {
+                return Err(
+                    "copy_choice was queued but an optional prompt from another source arrived"
+                        .to_string(),
+                );
+            }
             _ => runner.advance_until_stack_empty(),
         }
         if runner.state().stack.is_empty()
@@ -1242,6 +1608,7 @@ fn pass_until_resolved(
                     | WaitingFor::ChooseFromZoneChoice { .. }
                     | WaitingFor::DiscardChoice { .. }
                     | WaitingFor::OptionalEffectChoice { .. }
+                    | WaitingFor::CopyRetarget { .. }
                     | WaitingFor::UnlessPaymentChooseCost { .. }
                     | WaitingFor::WardSacrificeChoice { .. }
                     | WaitingFor::WardDiscardChoice { .. }
@@ -1250,10 +1617,14 @@ fn pass_until_resolved(
             if pending_unless_choice.is_some() {
                 return Err("unless cost branch was not followed by its choice prompt".to_string());
             }
+            ensure_copy_target_choice_consumed(&pending_copy_target_choice)?;
             return Ok(());
         }
     }
-    Err("stack did not resolve within 128 actions".to_string())
+    Err(format!(
+        "stack did not resolve within 128 actions; waiting_for={:?}",
+        runner.state().waiting_for
+    ))
 }
 
 fn activate(
@@ -1946,7 +2317,9 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     let mut trigger_target_groups = VecDeque::new();
     let mut activation_target_groups = VecDeque::new();
     let mut card_choice_groups = VecDeque::new();
+    let mut copy_choices = VecDeque::new();
     let mut unless_choice_groups = [VecDeque::new(), VecDeque::new()];
+    let mut attack_needs_resolution = false;
     for (action_index, action) in actions.iter().enumerate() {
         validate_script_cast_from(action)?;
         let sacrifice_objects = cast_sacrifice_labels(action, &labels)?;
@@ -2087,6 +2460,16 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 }
                 trigger_target_groups.push_back(targets);
             }
+            "copy_choice" => {
+                copy_choices.push_back(parse_copy_choice(action, &labels)?);
+            }
+            "attack" => {
+                if attack_needs_resolution {
+                    return Err("attack must be followed by pass_until_resolved".to_string());
+                }
+                declare_attackers(&mut runner, &labels, action)?;
+                attack_needs_resolution = true;
+            }
             "choose_cards" => {
                 card_choice_groups.push_back(resolve_card_choice_labels(action, &labels)?);
             }
@@ -2098,8 +2481,13 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     &mut trigger_target_groups,
                     &mut activation_target_groups,
                     &mut card_choice_groups,
+                    &mut copy_choices,
                     &mut unless_choice_groups,
                 )?;
+                if attack_needs_resolution {
+                    ensure_attack_resolution_boundary(&runner)?;
+                    attack_needs_resolution = false;
+                }
             }
             "end_turn" | "next_turn" => {
                 advance_to_next_turn(&mut runner, action_index + 1 < actions.len())?;
@@ -2110,7 +2498,11 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     ensure_trigger_target_groups_consumed(&trigger_target_groups)?;
     ensure_activation_target_groups_consumed(&activation_target_groups)?;
     ensure_card_choice_groups_consumed(&card_choice_groups)?;
+    ensure_copy_choices_consumed(&copy_choices)?;
     ensure_unless_choice_groups_consumed(&unless_choice_groups)?;
+    if attack_needs_resolution {
+        return Err("attack action was not followed by pass_until_resolved".to_string());
+    }
     let reached = check_reach(runner.state(), &labels, spec.get("reach"))?;
     Ok(json!({
         "scenario": name,
@@ -2122,6 +2514,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
 const REACH_FIELDS: &[&str] = &[
     "all",
     "player",
+    "life",
     "zone",
     "card",
     "count",
@@ -2179,6 +2572,26 @@ fn check_reach(
         return Ok(true);
     }
     let player = reach["player"].as_str().unwrap_or("P0");
+    let index = player
+        .strip_prefix('P')
+        .and_then(|value| value.parse::<usize>().ok())
+        .ok_or("reach player must be P0 or P1")?;
+    if index > 1 {
+        return Err("reach player must be P0 or P1".to_string());
+    }
+    if let Some(expected_life) = reach.get("life") {
+        if reach.as_object().is_some_and(|fields| {
+            fields
+                .keys()
+                .any(|key| !["player", "life"].contains(&key.as_str()))
+        }) {
+            return Err("reach.life can only be combined with player".to_string());
+        }
+        let expected_life = expected_life
+            .as_i64()
+            .ok_or("reach.life must be an integer")?;
+        return Ok(state.players[index].life as i64 == expected_life);
+    }
     let zone = reach["zone"].as_str().unwrap_or("graveyard");
     let card = reach["card"].as_str().ok_or("reach needs card")?;
     if reach.get("solved").is_some() && zone != "battlefield" {
@@ -2193,13 +2606,6 @@ fn check_reach(
                 .ok_or("reach.count must be a non-negative integer")
         })
         .transpose()?;
-    let index = player
-        .strip_prefix('P')
-        .and_then(|value| value.parse::<usize>().ok())
-        .ok_or("reach player must be P0 or P1")?;
-    if index > 1 {
-        return Err("reach player must be P0 or P1".to_string());
-    }
     let in_zone = cards(state, index, zone).iter().any(|name| name == card);
     if expected_count.is_none() && !in_zone {
         return Ok(false);
@@ -3096,6 +3502,244 @@ mod tests {
     }
 
     #[test]
+    fn copy_choices_fail_closed_for_missing_wrong_actor_and_unconsumed_choices() {
+        let mut choices = VecDeque::new();
+        assert!(take_copy_choice(&mut choices, PlayerId(0))
+            .unwrap_err()
+            .contains("without copy_choice"));
+
+        choices.push_back(CopyChoice {
+            player: PlayerId(0),
+            accept: true,
+            new_targets: None,
+        });
+        assert!(take_copy_choice(&mut choices, PlayerId(1))
+            .unwrap_err()
+            .contains("different player"));
+        assert_eq!(choices.len(), 1);
+        assert_eq!(
+            take_copy_choice(&mut choices, PlayerId(0)),
+            Ok(CopyChoice {
+                player: PlayerId(0),
+                accept: true,
+                new_targets: None,
+            })
+        );
+        assert!(choices.is_empty());
+
+        choices.push_back(CopyChoice {
+            player: PlayerId(0),
+            accept: false,
+            new_targets: None,
+        });
+        assert!(ensure_copy_choices_consumed(&choices)
+            .unwrap_err()
+            .contains("unconsumed"));
+    }
+
+    #[test]
+    fn copy_target_choices_fail_closed_for_missing_wrong_player_and_unconsumed_choices() {
+        let mut pending = None;
+        assert!(take_copy_target_choice(&mut pending, PlayerId(0))
+            .unwrap_err()
+            .contains("without copy_choice.new_targets"));
+
+        pending = Some((PlayerId(0), CopyTargetChoice::Keep));
+        assert!(take_copy_target_choice(&mut pending, PlayerId(1))
+            .unwrap_err()
+            .contains("different player"));
+        assert_eq!(
+            take_copy_target_choice(&mut pending, PlayerId(0)),
+            Ok(CopyTargetChoice::Keep)
+        );
+        assert!(ensure_copy_target_choice_consumed(&pending).is_ok());
+
+        pending = Some((PlayerId(0), CopyTargetChoice::Change(vec![ObjectId(17)])));
+        assert!(ensure_copy_target_choice_consumed(&pending)
+            .unwrap_err()
+            .contains("not consumed"));
+    }
+
+    #[test]
+    fn copy_choice_targets_keep_or_change_by_label() {
+        let original = ObjectId(17);
+        let changed = ObjectId(18);
+        let labels = HashMap::from([
+            (original, "defender-a".to_string()),
+            (changed, "defender-b".to_string()),
+        ]);
+        let choice = parse_copy_choice(
+            &json!({
+                "action": "copy_choice",
+                "player": "P0",
+                "decision": "accept",
+                "new_targets": "keep"
+            }),
+            &labels,
+        )
+        .unwrap();
+        assert_eq!(
+            choice,
+            CopyChoice {
+                player: PlayerId(0),
+                accept: true,
+                new_targets: Some(CopyTargetChoice::Keep),
+            }
+        );
+
+        let changed_choice = parse_copy_choice(
+            &json!({
+                "action": "copy_choice",
+                "player": "P0",
+                "decision": "accept",
+                "new_targets": ["defender-b"]
+            }),
+            &labels,
+        )
+        .unwrap();
+        assert_eq!(
+            changed_choice.new_targets,
+            Some(CopyTargetChoice::Change(vec![changed]))
+        );
+        assert!(parse_copy_choice(
+            &json!({
+                "action": "copy_choice",
+                "player": "P0",
+                "decision": "accept",
+                "new_targets": ["same"]
+            }),
+            &HashMap::from([
+                (original, "same".to_string()),
+                (changed, "same".to_string())
+            ]),
+        )
+        .unwrap_err()
+        .contains("ambiguous"));
+        assert!(parse_copy_choice(
+            &json!({
+                "action": "copy_choice",
+                "player": "P0",
+                "decision": "decline",
+                "new_targets": ["defender-b"]
+            }),
+            &labels,
+        )
+        .unwrap_err()
+        .contains("only valid when accepting"));
+    }
+
+    #[test]
+    fn attack_action_uses_ready_setup_creature_and_stops_before_blockers() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let attacker = scenario.add_creature(PlayerId(0), "Ready Bear", 2, 2).id();
+                let mut runner = scenario.build();
+                assert!(!runner.state().objects[&attacker].summoning_sick);
+                let labels = HashMap::from([(attacker, "attacker".to_string())]);
+                declare_attackers(
+                    &mut runner,
+                    &labels,
+                    &json!({"action": "attack", "attackers": ["attacker"]}),
+                )
+                .unwrap();
+                assert_eq!(runner.state().phase, Phase::DeclareAttackers);
+
+                let mut trigger_targets = VecDeque::new();
+                let mut activation_targets = VecDeque::new();
+                let mut card_choices = VecDeque::new();
+                let mut copy_choices = VecDeque::new();
+                let mut unless_choices = [VecDeque::new(), VecDeque::new()];
+                pass_until_resolved(
+                    "attack runner test",
+                    &mut runner,
+                    &labels,
+                    &mut trigger_targets,
+                    &mut activation_targets,
+                    &mut card_choices,
+                    &mut copy_choices,
+                    &mut unless_choices,
+                )
+                .unwrap();
+                ensure_attack_resolution_boundary(&runner).unwrap();
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn attack_action_rejects_empty_unknown_and_ambiguous_attackers() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let attacker = scenario.add_creature(PlayerId(0), "Ready Bear", 2, 2).id();
+        let labels = HashMap::from([
+            (attacker, "same".to_string()),
+            (ObjectId(18), "same".to_string()),
+        ]);
+        let mut runner = scenario.build();
+        assert!(declare_attackers(
+            &mut runner,
+            &labels,
+            &json!({"action": "attack", "attackers": []})
+        )
+        .unwrap_err()
+        .contains("non-empty"));
+        assert!(declare_attackers(
+            &mut runner,
+            &labels,
+            &json!({"action": "attack", "attackers": ["missing"]})
+        )
+        .unwrap_err()
+        .contains("unknown setup label"));
+        assert!(declare_attackers(
+            &mut runner,
+            &labels,
+            &json!({"action": "attack", "attackers": ["same"]})
+        )
+        .unwrap_err()
+        .contains("ambiguous setup label"));
+    }
+
+    #[test]
+    fn attack_action_uses_the_current_player_after_turn_advancement() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let attacker = scenario.add_creature(PlayerId(0), "Ready Bear", 2, 2).id();
+                scenario.with_library_top(PlayerId(0), &["P0 draw"]);
+                scenario.with_library_top(PlayerId(1), &["P1 draw"]);
+                let mut runner = scenario.build();
+                {
+                    let state = runner.state_mut();
+                    state.active_player = PlayerId(1);
+                    state.priority_player = PlayerId(1);
+                    state.waiting_for = WaitingFor::Priority {
+                        player: PlayerId(1),
+                    };
+                }
+                advance_to_next_turn(&mut runner, true).unwrap();
+                assert_eq!(runner.state().active_player, PlayerId(0));
+
+                let labels = HashMap::from([(attacker, "attacker".to_string())]);
+                declare_attackers(
+                    &mut runner,
+                    &labels,
+                    &json!({"action": "attack", "attackers": ["attacker"]}),
+                )
+                .unwrap();
+                assert_eq!(runner.state().phase, Phase::DeclareAttackers);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
     fn targeted_cast_rejects_pending_trigger_target_groups() {
         let action = json!({"action": "cast", "targets": ["artifact"]});
         let groups = VecDeque::from([vec![ObjectId(17)]]);
@@ -3488,6 +4132,17 @@ mod tests {
             "power": 3,
             "toughness": 3
         });
+
+        assert_eq!(
+            check_reach(runner.state(), &HashMap::new(), Some(&reach)),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn reach_life_assertion_does_not_require_a_card() {
+        let runner = GameScenario::new().build();
+        let reach = json!({"player": "P0", "life": 20});
 
         assert_eq!(
             check_reach(runner.state(), &HashMap::new(), Some(&reach)),

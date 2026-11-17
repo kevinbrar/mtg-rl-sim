@@ -1,0 +1,588 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+index ad7b606de090c9892391b19a259153163af47e78..62710864b7c7412570d0f5e3f44e0394287b1b62 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -110,6 +110,10 @@ public class TestPlayer implements Player {
+     private Boolean expectedBeholdChoice;
+     private final Map<String, UUID> aliases = new HashMap<>(); // aliases for game objects/players (use it for cards with same name to save and use)
+     private final Deque<RottenmouthUnlessChoice> rottenmouthUnlessChoices = new ArrayDeque<>();
++    private final Deque<FirebenderCopyChoice> firebenderCopyChoices = new ArrayDeque<>();
++    private FirebenderCopyChoice pendingFirebenderTargetChoice;
++    private final List<String> pendingFirebenderTargets = new ArrayList<>();
++    private boolean firebenderTargetSelectionActive;
+     private List<String> pendingCastSacrificeLabels;
+     private List<String> pendingCastSacrificeTargets;
+     private String pendingRottenmouthUnlessSacrificeLabel;
+@@ -168,6 +172,10 @@ public class TestPlayer implements Player {
+         this.expectedBeholdChoice = testPlayer.expectedBeholdChoice;
+         this.aliases.putAll(testPlayer.aliases);
+         this.rottenmouthUnlessChoices.addAll(testPlayer.rottenmouthUnlessChoices);
++        this.firebenderCopyChoices.addAll(testPlayer.firebenderCopyChoices);
++        this.pendingFirebenderTargetChoice = testPlayer.pendingFirebenderTargetChoice;
++        this.pendingFirebenderTargets.addAll(testPlayer.pendingFirebenderTargets);
++        this.firebenderTargetSelectionActive = testPlayer.firebenderTargetSelectionActive;
+         this.pendingCastSacrificeLabels = testPlayer.pendingCastSacrificeLabels == null
+                 ? null : new ArrayList<>(testPlayer.pendingCastSacrificeLabels);
+         this.pendingCastSacrificeTargets = testPlayer.pendingCastSacrificeTargets == null
+@@ -225,6 +233,59 @@ public class TestPlayer implements Player {
+     public record RottenmouthUnlessChoice(RottenmouthUnlessKind kind, String label) {
+     }
+ 
++    public enum CopyTargetMode {
++        NONE, KEEP, CHANGE
++    }
++
++    public record FirebenderCopyChoice(boolean accept, CopyTargetMode targetMode, List<String> newTargets) {
++        public FirebenderCopyChoice {
++            newTargets = List.copyOf(newTargets);
++        }
++    }
++
++    public void addFirebenderCopyChoice(FirebenderCopyChoice choice) {
++        firebenderCopyChoices.addLast(choice);
++    }
++
++    static FirebenderCopyChoice takeFirebenderCopyChoice(Deque<FirebenderCopyChoice> choices) {
++        if (choices.isEmpty()) {
++            throw new IllegalStateException("Firebender copy prompt arrived without copy_choice");
++        }
++        return choices.removeFirst();
++    }
++
++    static String firebenderCopyTargetDefinition(FirebenderCopyChoice choice) {
++        return choice.newTargets().stream()
++                .map(label -> "@" + label)
++                .collect(Collectors.joining("^"));
++    }
++
++    static List<String> targetDefinitionsForChoose(
++            List<String> targets,
++            List<String> firebenderTargets,
++            boolean firebenderTargetSelectionActive,
++            boolean strictTargetQueue,
++            int takeMaxTargetsPerChoose) {
++        List<String> currentTargets = firebenderTargetSelectionActive ? firebenderTargets : targets;
++        return currentTargets.stream()
++                .limit(strictTargetQueue ? 1 : takeMaxTargetsPerChoose)
++                .collect(Collectors.toList());
++    }
++
++    static void assertNoScriptedFirebenderCopyChoices(
++            Deque<FirebenderCopyChoice> choices,
++            FirebenderCopyChoice pendingTargetChoice,
++            List<String> pendingTargets) {
++        if (!choices.isEmpty() || pendingTargetChoice != null || !pendingTargets.isEmpty()) {
++            throw new IllegalStateException("copy_choice entry or target choice was unconsumed");
++        }
++    }
++
++    public void assertNoPendingFirebenderCopyChoices() {
++        assertNoScriptedFirebenderCopyChoices(
++                firebenderCopyChoices, pendingFirebenderTargetChoice, pendingFirebenderTargets);
++    }
++
+     public void setCastSacrificeLabels(List<String> labels) {
+         if (pendingCastSacrificeLabels != null || pendingCastSacrificeTargets != null) {
+             throw new IllegalStateException("a cast sacrifice choice is already pending");
+@@ -2123,15 +2184,31 @@ public class TestPlayer implements Player {
+                         }
+                     }
+                 }
+-                // First check to see if this controller actually owns the creature
+-                FilterControlledPermanent firstFilter = new FilterControlledPermanent();
+-                findPermanent(firstFilter, groups[0], this.getId(), game);
+-                // Second check to filter creature for combat - less strict to workaround issue in #3038
+-                FilterCreatureForCombat secondFilter = new FilterCreatureForCombat();
+-                // secondFilter.add(Predicates.not(AttackingPredicate.instance));
+-                secondFilter.add(Predicates.not(SummoningSicknessPredicate.instance));
+-                // TODO: Cannot enforce legal attackers multiple times per combat. See issue #3038
+-                Permanent attacker = findPermanent(secondFilter, groups[0], this.getId(), game, false);
++                String attackerSelector = groups[0];
++                Permanent attacker;
++                if (attackerSelector.startsWith("id=")) {
++                    UUID attackerId = UUID.fromString(attackerSelector.substring(3));
++                    attacker = game.getPermanent(attackerId);
++                    if (attacker == null || !attacker.getControllerId().equals(this.getId())) {
++                        throw new AssertionError("Attack action does not identify a permanent you control");
++                    }
++                    FilterCreatureForCombat secondFilter = new FilterCreatureForCombat();
++                    secondFilter.add(Predicates.not(SummoningSicknessPredicate.instance));
++                    if (!game.getBattlefield().getAllActivePermanents(secondFilter, this.getId(), game)
++                            .contains(attacker)) {
++                        attacker = null;
++                    }
++                } else {
++                    // First check to see if this controller actually owns the creature
++                    FilterControlledPermanent firstFilter = new FilterControlledPermanent();
++                    findPermanent(firstFilter, attackerSelector, this.getId(), game);
++                    // Second check to filter creature for combat - less strict to workaround issue in #3038
++                    FilterCreatureForCombat secondFilter = new FilterCreatureForCombat();
++                    // secondFilter.add(Predicates.not(AttackingPredicate.instance));
++                    secondFilter.add(Predicates.not(SummoningSicknessPredicate.instance));
++                    // TODO: Cannot enforce legal attackers multiple times per combat. See issue #3038
++                    attacker = findPermanent(secondFilter, attackerSelector, this.getId(), game, false);
++                }
+                 if (attacker != null && attacker.canAttack(defenderId, game)) {
+                     computerPlayer.declareAttacker(attacker.getId(), defenderId, game, false);
+                     it.remove();
+@@ -2498,10 +2575,17 @@ public class TestPlayer implements Player {
+         }
+     }
+ 
++    private List<String> currentTargetQueue() {
++        return firebenderTargetSelectionActive ? pendingFirebenderTargets : targets;
++    }
++
+     private List<String> targetDefinitionsForChoose() {
+-        return targets.stream()
+-                .limit(strictTargetQueue ? 1 : takeMaxTargetsPerChoose)
+-                .collect(Collectors.toList());
++        return targetDefinitionsForChoose(
++                targets,
++                pendingFirebenderTargets,
++                firebenderTargetSelectionActive,
++                strictTargetQueue,
++                takeMaxTargetsPerChoose);
+     }
+ 
+     @Override
+@@ -2512,13 +2596,14 @@ public class TestPlayer implements Player {
+                 && skipOptionalTargetWithoutCandidates(target, abilityControllerId, source, game, null)) {
+             return true;
+         }
+-        if (strictTargetQueue && targets.isEmpty() && !target.isNotTarget()) {
++        List<String> scriptedTargets = currentTargetQueue();
++        if (strictTargetQueue && scriptedTargets.isEmpty() && !target.isNotTarget()) {
+             Assert.fail("target prompt arrived with an empty cast.targets queue");
+         }
+-        if (!targets.isEmpty()) {
++        if (!scriptedTargets.isEmpty()) {
+ 
+             // skip targets
+-            if (tryToSkipSelection(game, target, targets, TARGET_SKIP)) {
++            if (tryToSkipSelection(game, target, scriptedTargets, TARGET_SKIP)) {
+                 Assert.assertTrue("found skip target, but it require more targets, needs "
+                                 + (target.getMinNumberOfTargets() - target.getTargets().size()) + " more",
+                         target.getTargets().size() >= target.getMinNumberOfTargets());
+@@ -2806,7 +2891,7 @@ public class TestPlayer implements Player {
+ 
+         // wrong target settings by addTarget
+         // how to fix: implement target class processing above (if it a permanent target then check "filter instanceof" code too)
+-        if (!targets.isEmpty()) {
++        if (!currentTargetQueue().isEmpty()) {
+             String message;
+             Set<UUID> possibleTargets = target.possibleTargets(abilityControllerId, source, game);
+ 
+@@ -2838,13 +2923,14 @@ public class TestPlayer implements Player {
+                 && skipOptionalTargetWithoutCandidates(target, abilityControllerId, source, game, cards)) {
+             return true;
+         }
+-        if (strictTargetQueue && targets.isEmpty() && !target.isNotTarget()) {
++        List<String> scriptedTargets = currentTargetQueue();
++        if (strictTargetQueue && scriptedTargets.isEmpty() && !target.isNotTarget()) {
+             Assert.fail("target prompt arrived with an empty cast.targets queue");
+         }
+-        if (!targets.isEmpty()) {
++        if (!scriptedTargets.isEmpty()) {
+ 
+             // skip targets
+-            if (tryToSkipSelection(game, target, targets, TARGET_SKIP)) {
++            if (tryToSkipSelection(game, target, scriptedTargets, TARGET_SKIP)) {
+                 Assert.assertTrue("found skip target, but it require more targets, needs "
+                                 + (target.getMinNumberOfTargets() - target.getTargets().size()) + " more",
+                         target.getTargets().size() >= target.getMinNumberOfTargets());
+@@ -2937,6 +3023,29 @@ public class TestPlayer implements Player {
+         if (rottenmouthChoice != null) {
+             return rottenmouthChoice;
+         }
++        if (pendingFirebenderTargetChoice != null) {
++            if (message == null || !message.startsWith("Change this ")) {
++                throw new IllegalStateException("expected the copied ability's new-target prompt");
++            }
++            FirebenderCopyChoice choice = pendingFirebenderTargetChoice;
++            pendingFirebenderTargetChoice = null;
++            if (choice.targetMode() == CopyTargetMode.CHANGE) {
++                if (firebenderTargetSelectionActive || !pendingFirebenderTargets.isEmpty()) {
++                    throw new IllegalStateException("another Firebender copy target choice is still pending");
++                }
++                pendingFirebenderTargets.add(firebenderCopyTargetDefinition(choice));
++                firebenderTargetSelectionActive = true;
++                return true;
++            }
++            return false;
++        }
++        if (isFirebenderCopyPrompt(source, game)) {
++            FirebenderCopyChoice choice = takeFirebenderCopyChoice(firebenderCopyChoices);
++            if (choice.accept() && choice.targetMode() != CopyTargetMode.NONE) {
++                pendingFirebenderTargetChoice = choice;
++            }
++            return choice.accept();
++        }
+         if (message != null && message.equals("Scry 1?")) {
+             return false;
+         }
+@@ -2963,6 +3072,11 @@ public class TestPlayer implements Player {
+         return computerPlayer.chooseUse(outcome, message, secondMessage, trueText, falseText, source, game);
+     }
+ 
++    private boolean isFirebenderCopyPrompt(Ability source, Game game) {
++        MageObject sourceObject = source == null ? null : source.getSourceObject(game);
++        return sourceObject != null && sourceObject.getName().equals("Firebender Ascension");
++    }
++
+     private boolean isRottenmouthViperSource(Ability source, Game game) {
+         MageObject sourceObject = source == null ? null : source.getSourceObject(game);
+         return sourceObject != null && sourceObject.getName().equals("Rottenmouth Viper");
+@@ -4684,10 +4798,11 @@ public class TestPlayer implements Player {
+ 
+         UUID abilityControllerId = target.getAffectedAbilityControllerId(this.getId());
+ 
+-        while (!targets.isEmpty()) {
++        List<String> scriptedTargets = currentTargetQueue();
++        while (!scriptedTargets.isEmpty()) {
+ 
+             // skip targets
+-            if (tryToSkipSelection(game, target, targets, TARGET_SKIP)) {
++            if (tryToSkipSelection(game, target, scriptedTargets, TARGET_SKIP)) {
+                 Assert.assertTrue("found skip target, but it require more targets, needs "
+                                 + (target.getMinNumberOfTargets() - target.getTargets().size()) + " more",
+                         target.getTargets().size() >= target.getMinNumberOfTargets());
+@@ -4695,10 +4810,10 @@ public class TestPlayer implements Player {
+             }
+ 
+             // only target amount needs
+-            String[] choiceSettings = targets.get(0).split("\\^");
++            String[] choiceSettings = scriptedTargets.get(0).split("\\^");
+             if (choiceSettings.length != 2
+                     || !choiceSettings[1].startsWith("X=")) {
+-                Assert.fail("Must be target amount, but found unknown target: " + targets.get(0));
++                Assert.fail("Must be target amount, but found unknown target: " + scriptedTargets.get(0));
+             }
+             String targetName = choiceSettings[0];
+             int targetAmount = Integer.parseInt(choiceSettings[1].substring("X=".length()));
+@@ -5132,11 +5247,16 @@ public class TestPlayer implements Player {
+     // TODO: make same logs for AI choices
+     private void targetsRemoveCurrent(String targetToRemove, Game game, String reason) {
+         String realReason = reason.isEmpty() ? "SBA" : reason;
+-        DataCollectorServices.getInstance().onTestsTargetUse(game, this, targets.get(0), "by addTarget, " + realReason);
++        List<String> targetQueue = currentTargetQueue();
++        DataCollectorServices.getInstance().onTestsTargetUse(
++                game, this, targetQueue.get(0), "by addTarget, " + realReason);
+         if (targetToRemove == null) {
+-            targets.remove(0);
++            targetQueue.remove(0);
+         } else {
+-            targets.remove(targetToRemove); // TODO: must be targets.remove(0), see todos above
++            targetQueue.remove(targetToRemove); // TODO: must be targets.remove(0), see todos above
++        }
++        if (firebenderTargetSelectionActive && pendingFirebenderTargets.isEmpty()) {
++            firebenderTargetSelectionActive = false;
+         }
+     }
+ 
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayerFirebenderCopyChoiceTest.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayerFirebenderCopyChoiceTest.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..9ce07a2d6edf3e833885b6ee99f8a1da89d965b4
+--- /dev/null
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayerFirebenderCopyChoiceTest.java
+@@ -0,0 +1,61 @@
++package org.mage.test.player;
++
++import org.junit.Assert;
++import org.junit.Test;
++
++import java.util.ArrayDeque;
++import java.util.ArrayList;
++import java.util.List;
++
++public final class TestPlayerFirebenderCopyChoiceTest {
++
++    @Test
++    public void copyPromptRequiresAScriptedChoiceAndConsumesItOnce() {
++        ArrayDeque<TestPlayer.FirebenderCopyChoice> choices = new ArrayDeque<>();
++        Assert.assertThrows(
++                IllegalStateException.class,
++                () -> TestPlayer.takeFirebenderCopyChoice(choices));
++
++        TestPlayer.FirebenderCopyChoice choice = new TestPlayer.FirebenderCopyChoice(
++                true, TestPlayer.CopyTargetMode.CHANGE, List.of("defender-b"));
++        choices.add(choice);
++        Assert.assertEquals(choice, TestPlayer.takeFirebenderCopyChoice(choices));
++        Assert.assertTrue(choices.isEmpty());
++    }
++
++    @Test
++    public void unconsumedCopyChoiceOrTargetDecisionFailsClosed() {
++        ArrayDeque<TestPlayer.FirebenderCopyChoice> choices = new ArrayDeque<>();
++        choices.add(new TestPlayer.FirebenderCopyChoice(
++                false, TestPlayer.CopyTargetMode.NONE, List.of()));
++        Assert.assertThrows(
++                IllegalStateException.class,
++                () -> TestPlayer.assertNoScriptedFirebenderCopyChoices(choices, null, List.of()));
++
++        choices.clear();
++        TestPlayer.FirebenderCopyChoice pending = new TestPlayer.FirebenderCopyChoice(
++                true, TestPlayer.CopyTargetMode.KEEP, List.of());
++        Assert.assertThrows(
++                IllegalStateException.class,
++                () -> TestPlayer.assertNoScriptedFirebenderCopyChoices(choices, pending, List.of()));
++        Assert.assertThrows(
++                IllegalStateException.class,
++                () -> TestPlayer.assertNoScriptedFirebenderCopyChoices(
++                        choices, null, List.of("@defender-b")));
++    }
++
++    @Test
++    public void copyRetargetUsesItsOwnQueueInsteadOfTheOriginalTargetQueue() {
++        TestPlayer.FirebenderCopyChoice choice = new TestPlayer.FirebenderCopyChoice(
++                true, TestPlayer.CopyTargetMode.CHANGE, List.of("defender-b"));
++        List<String> originalTargets = new ArrayList<>(List.of("@defender-a"));
++        List<String> copyTargets = new ArrayList<>(
++                List.of(TestPlayer.firebenderCopyTargetDefinition(choice)));
++
++        Assert.assertEquals(List.of("@defender-b"), TestPlayer.targetDefinitionsForChoose(
++                originalTargets, copyTargets, true, true, 4));
++        Assert.assertEquals(List.of("@defender-a"), TestPlayer.targetDefinitionsForChoose(
++                originalTargets, copyTargets, false, true, 4));
++        Assert.assertEquals(List.of("@defender-a"), originalTargets);
++    }
++}
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+index d72488250f69793bb4a30a34c1ea087ba57f76fd..d40360f3ed938d6aeec5e8cecb86701cfc052e2d 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -26,6 +26,7 @@ import mage.target.Target;
+ import org.junit.Test;
+ import org.junit.runner.RunWith;
+ import org.junit.runners.Parameterized;
++import org.mage.test.player.PlayerAction;
+ import org.mage.test.player.TestPlayer;
+ import org.mage.test.serverside.base.CardTestPlayerBase;
+ 
+@@ -48,7 +49,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+     private static final Gson GSON = new GsonBuilder().serializeNulls().create();
+     private static final String RESULT_PREFIX = "CARD_SCENARIO_RESULT:";
+     private static final Set<String> REACH_FIELDS = Set.of(
+-            "all", "player", "zone", "card", "count", "tapped_labels", "types", "subtypes",
++            "all", "player", "life", "zone", "card", "count", "tapped_labels", "types", "subtypes",
+             "colors", "power", "toughness", "power_is_null", "toughness_is_null", "creature",
+             "tapped", "attached_to", "counters", "solved"
+     );
+@@ -57,8 +58,10 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+     private final Map<String, UUID> labels = new LinkedHashMap<>();
+     private final Map<String, String> labelCards = new LinkedHashMap<>();
+     private final Map<String, Zone> labelZones = new LinkedHashMap<>();
++    private final Map<String, Integer> labelPlayers = new LinkedHashMap<>();
+     private final Map<String, Map<String, Integer>> counters = new LinkedHashMap<>();
+     private JsonArray initialLegalTargets;
++    private final List<String> expectedAttackers = new ArrayList<>();
+ 
+     public CardScenarioProjectionTest(String scenarioName, JsonObject scenario) {
+         this.scenarioName = scenarioName;
+@@ -109,7 +112,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             });
+         }
+         int finalTurn = scheduleScript(initialActive, step);
+-        PhaseStep finalStep = finalTurn == 1 ? step : lastStep;
++        PhaseStep finalStep = lastStep;
+         setStrictChooseMode(true);
+         player(0).setAutoOrderIdenticalTriggers(true);
+         player(1).setAutoOrderIdenticalTriggers(true);
+@@ -126,6 +129,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             }
+             player(index).assertNoCardChoiceGroups();
+             player(index).assertNoPendingRottenmouthUnlessChoices();
++            player(index).assertNoPendingFirebenderCopyChoices();
++        }
++        for (String label : expectedAttackers) {
++            UUID attacker = labels.get(label);
++            if (attacker == null || !currentGame.getCombat().getAttackers().contains(attacker)) {
++                throw new IllegalStateException("attack label " + label + " was not declared");
++            }
+         }
+         System.out.println(RESULT_PREFIX + GSON.toJson(result()));
+     }
+@@ -135,9 +145,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+     private int scheduleScript(int initialActive, PhaseStep step) {
+         int turn = 1;
+         int activeIndex = initialActive;
++        boolean attackNeedsResolution = false;
+         for (JsonElement item : array(scenario, "script")) {
+             JsonObject action = item.getAsJsonObject();
+             String kind = requiredString(action, "action");
++            if (attackNeedsResolution && !kind.equals("pass_until_resolved")) {
++                throw new IllegalArgumentException("attack must be followed by pass_until_resolved");
++            }
+             if (action.has("from") && !kind.equals("cast")) {
+                 throw new IllegalArgumentException("script.from is only valid for cast actions");
+             }
+@@ -404,6 +418,72 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                     }
+                     actingPlayer.addTarget(String.join("^", targets));
+                 }
++                case "copy_choice" -> {
++                    rejectUnknownKeys(action, Set.of("action", "player", "decision", "new_targets"),
++                            "script.copy_choice");
++                    String choicePlayer = requiredString(action, "player");
++                    if (!choicePlayer.equals("P0") && !choicePlayer.equals("P1")) {
++                        throw new IllegalArgumentException("copy_choice.player must be P0 or P1");
++                    }
++                    String decision = requiredString(action, "decision");
++                    if (!decision.equals("accept") && !decision.equals("decline")) {
++                        throw new IllegalArgumentException("copy_choice.decision must be accept or decline");
++                    }
++                    TestPlayer.CopyTargetMode targetMode = TestPlayer.CopyTargetMode.NONE;
++                    List<String> newTargets = List.of();
++                    if (action.has("new_targets")) {
++                        if (!decision.equals("accept")) {
++                            throw new IllegalArgumentException(
++                                    "copy_choice.new_targets is only valid when accepting the copy");
++                        }
++                        JsonElement value = action.get("new_targets");
++                        if (value.isJsonPrimitive() && value.getAsString().equals("keep")) {
++                            targetMode = TestPlayer.CopyTargetMode.KEEP;
++                        } else if (value.isJsonArray() && !value.getAsJsonArray().isEmpty()) {
++                            newTargets = strings(value.getAsJsonArray());
++                            for (String label : newTargets) {
++                                if (!labels.containsKey(label)) {
++                                    throw new IllegalArgumentException(
++                                            "unknown copy_choice.new_targets label " + label);
++                                }
++                            }
++                            targetMode = TestPlayer.CopyTargetMode.CHANGE;
++                        } else {
++                            throw new IllegalArgumentException(
++                                    "copy_choice.new_targets must be keep or a non-empty label array");
++                        }
++                    }
++                    TestPlayer choiceActor = player(choicePlayer.equals("P0") ? 0 : 1);
++                    choiceActor.addFirebenderCopyChoice(new TestPlayer.FirebenderCopyChoice(
++                            decision.equals("accept"), targetMode, newTargets));
++                }
++                case "attack" -> {
++                    rejectUnknownKeys(action, Set.of("action", "attackers"), "script.attack");
++                    if (activeIndex != 0) {
++                        throw new IllegalArgumentException("attack requires P0 active to attack P1");
++                    }
++                    List<String> attackers = strings(array(action, "attackers"));
++                    if (attackers.isEmpty()) {
++                        throw new IllegalArgumentException("attack.attackers must be a non-empty label array");
++                    }
++                    if (Set.copyOf(attackers).size() != attackers.size()) {
++                        throw new IllegalArgumentException("attack.attackers cannot repeat labels");
++                    }
++                    for (String label : attackers) {
++                        if (!labels.containsKey(label)) {
++                            throw new IllegalArgumentException("unknown attack label " + label);
++                        }
++                        if (labelZones.get(label) != Zone.BATTLEFIELD || labelPlayers.get(label) != 0) {
++                            throw new IllegalArgumentException(
++                                    "attack label " + label + " must be on P0's battlefield");
++                        }
++                        actingPlayer.addAction(new PlayerAction(
++                                "", turn, PhaseStep.DECLARE_ATTACKERS, "attack:id=" + labels.get(label)));
++                        expectedAttackers.add(label);
++                    }
++                    lastStep = PhaseStep.DECLARE_ATTACKERS;
++                    attackNeedsResolution = true;
++                }
+                 case "choose_cards" -> {
+                     if (!action.has("cards") || !action.get("cards").isJsonArray()) {
+                         throw new IllegalArgumentException("choose_cards needs cards");
+@@ -475,8 +555,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                     lastStep = step;
+                 }
+                 case "pass_until_resolved" -> {
+-                    waitStackResolved(turn, step, actingPlayer);
+-                    lastStep = step;
++                    if (attackNeedsResolution) {
++                        waitStackResolved(turn, lastStep, actingPlayer);
++                    } else {
++                        waitStackResolved(turn, step, actingPlayer);
++                        lastStep = step;
++                    }
++                    attackNeedsResolution = false;
+                 }
+                 case "end_turn", "next_turn" -> {
+                     turn++;
+@@ -486,6 +571,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                 default -> throw new IllegalArgumentException("unsupported action " + kind);
+             }
+         }
++        if (attackNeedsResolution) {
++            throw new IllegalArgumentException("attack action was not followed by pass_until_resolved");
++        }
+         return turn;
+     }
+ 
+@@ -515,13 +603,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                     playerName
+             );
+             addBattlefield(playerName, player, array(playerSetup, "battlefield"));
+-            addCards(Zone.HAND, player, array(playerSetup, "hand"));
++            addCards(Zone.HAND, player, array(playerSetup, "hand"), index);
+             List<JsonElement> library = new ArrayList<>();
+             array(playerSetup, "library_top").forEach(library::add);
+             for (int cardIndex = library.size() - 1; cardIndex >= 0; cardIndex--) {
+-                addSetupCard(Zone.LIBRARY, player, library.get(cardIndex));
++                addSetupCard(Zone.LIBRARY, player, library.get(cardIndex), index);
+             }
+-            addCards(Zone.GRAVEYARD, player, array(playerSetup, "graveyard"));
++            addCards(Zone.GRAVEYARD, player, array(playerSetup, "graveyard"), index);
+         }
+     }
+ 
+@@ -552,6 +640,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             labels.put(label, objectId);
+             labelCards.put(label, card);
+             labelZones.put(label, Zone.BATTLEFIELD);
++            labelPlayers.put(label, playerName.equals("P0") ? 0 : 1);
+             JsonObject cardCounters = object(item, "counters");
+             if (!cardCounters.entrySet().isEmpty()) {
+                 Map<String, Integer> parsed = new LinkedHashMap<>();
+@@ -567,13 +656,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         }
+     }
+ 
+-    private void addCards(Zone zone, TestPlayer player, JsonArray cards) {
++    private void addCards(Zone zone, TestPlayer player, JsonArray cards, int playerIndex) {
+         for (JsonElement card : cards) {
+-            addSetupCard(zone, player, card);
++            addSetupCard(zone, player, card, playerIndex);
+         }
+     }
+ 
+-    private void addSetupCard(Zone zone, TestPlayer player, JsonElement item) {
++    private void addSetupCard(Zone zone, TestPlayer player, JsonElement item, int playerIndex) {
+         String card = cardName(item);
+         if (item.isJsonObject() && item.getAsJsonObject().has("label")) {
+             String label = requiredString(item.getAsJsonObject(), "label");
+@@ -591,6 +680,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             labels.put(label, objectId);
+             labelCards.put(label, card);
+             labelZones.put(label, zone);
++            labelPlayers.put(label, playerIndex);
+         } else {
+             addCard(zone, player, card);
+         }
+@@ -808,6 +898,10 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             throw new IllegalArgumentException("reach player must be P0 or P1");
+         }
+         TestPlayer player = player(playerName.equals("P0") ? 0 : 1);
++        if (reach.has("life")) {
++            rejectUnknownKeys(reach, Set.of("player", "life"), "reach.life");
++            return player.getLife() == reach.get("life").getAsInt();
++        }
+         String zone = string(reach, "zone", "graveyard");
+         if (reach.has("solved") && !zone.equals("battlefield")) {
+             throw new IllegalArgumentException("reach.solved is only valid for battlefield Cases");
+@@ -817,6 +911,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             case "hand" -> names(player.getHand().getCards(currentGame));
+             case "library" -> names(player.getLibrary().getCards(currentGame));
+             case "graveyard" -> names(player.getGraveyard().getCards(currentGame));
++            case "exile" -> names(currentGame.getExile().getAllCards(currentGame).stream()
++                    .filter(exiledCard -> exiledCard.getOwnerId().equals(player.getId()))
++                    .toList());
+             case "battlefield" -> {
+                 List<String> values = new ArrayList<>();
+                 for (Permanent permanent : currentGame.getBattlefield().getAllActivePermanents()) {

@@ -31,6 +31,7 @@ PERMANENT_SETUP_FIELDS = {"label", "card", "tapped", "counters"}
 REACH_FIELDS = {
     "all",
     "player",
+    "life",
     "zone",
     "card",
     "count",
@@ -75,6 +76,11 @@ def _validate_reach_fields(name: str, reach: object, path: str = "reach") -> Non
             raise ValueError(
                 f"{name}: {path}.solved is only valid for battlefield Cases"
             )
+    if "life" in reach:
+        if isinstance(reach["life"], bool) or not isinstance(reach["life"], int):
+            raise TypeError(f"{name}: {path}.life must be an integer")
+        if reach.keys() - {"player", "life"}:
+            raise ValueError(f"{name}: {path}.life can only be combined with player")
     if "all" in reach:
         if len(reach) != 1:
             raise ValueError(
@@ -687,6 +693,14 @@ def _validate_setup(scenario: dict) -> None:
             raise ValueError(
                 f"{name}: script[{index}].choices is only valid for unless_choices actions"
             )
+        if "attackers" in action and action.get("action") != "attack":
+            raise ValueError(
+                f"{name}: script[{index}].attackers is only valid for attack actions"
+            )
+        if "new_targets" in action and action.get("action") != "copy_choice":
+            raise ValueError(
+                f"{name}: script[{index}].new_targets is only valid for copy_choice actions"
+            )
         if "sacrifice" in action:
             context = f"{name}: script[{index}].sacrifice"
             if action.get("action") != "cast":
@@ -708,6 +722,62 @@ def _validate_setup(scenario: dict) -> None:
                     raise ValueError(
                         f"{context} label {label} must be in the battlefield"
                     )
+        if action.get("action") == "attack":
+            context = f"{name}: script[{index}].attack"
+            unknown = action.keys() - {"action", "attackers"}
+            if unknown:
+                raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            attackers = action.get("attackers")
+            if not isinstance(attackers, list) or not attackers:
+                raise ValueError(f"{context}.attackers must be a non-empty label array")
+            if any(not isinstance(label, str) or not label for label in attackers):
+                raise TypeError(f"{context}.attackers entries must be non-empty labels")
+            if len(attackers) != len(set(attackers)):
+                raise ValueError(f"{context}.attackers cannot repeat labels")
+            for label in attackers:
+                location = label_locations.get(label)
+                if location is None:
+                    raise ValueError(
+                        f"{context}.attackers contains unknown label {label}"
+                    )
+                if location[0] != "P0" or location[1] != "battlefield":
+                    raise ValueError(
+                        f"{context}.attackers label {label} must be on P0's battlefield"
+                    )
+        if action.get("action") == "copy_choice":
+            context = f"{name}: script[{index}].copy_choice"
+            unknown = action.keys() - {"action", "player", "decision", "new_targets"}
+            if unknown:
+                raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            if action.get("player") not in {"P0", "P1"}:
+                raise ValueError(f"{context}.player must be P0 or P1")
+            decision = action.get("decision")
+            if decision not in {"accept", "decline"}:
+                raise ValueError(f"{context}.decision must be accept or decline")
+            if "new_targets" in action:
+                if decision != "accept":
+                    raise ValueError(
+                        f"{context}.new_targets is only valid when accepting the copy"
+                    )
+                new_targets = action["new_targets"]
+                if new_targets != "keep":
+                    if isinstance(new_targets, list) and new_targets:
+                        if any(
+                            not isinstance(label, str) or not label
+                            for label in new_targets
+                        ):
+                            raise TypeError(
+                                f"{context}.new_targets entries must be non-empty labels"
+                            )
+                        for label in new_targets:
+                            if label not in labels:
+                                raise ValueError(
+                                    f"{context}.new_targets contains unknown setup label {label}"
+                                )
+                    else:
+                        raise ValueError(
+                            f"{context}.new_targets must be keep or a non-empty label array"
+                        )
         if action.get("action") == "unless_choices":
             context = f"{name}: script[{index}].unless_choices"
             unknown = action.keys() - {"action", "player", "choices"}
