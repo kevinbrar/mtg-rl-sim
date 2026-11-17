@@ -2412,7 +2412,21 @@ fn label_permanent(
             "multiple matching {card} permanents for {player:?}; cannot assign {label}"
         ));
     }
+    ensure_permanent_unlabeled(labels, object, label)?;
     labels.insert(object, label.to_string());
+    Ok(())
+}
+
+fn ensure_permanent_unlabeled(
+    labels: &HashMap<ObjectId, String>,
+    object: ObjectId,
+    label: &str,
+) -> Result<(), String> {
+    if let Some(old_label) = labels.get(&object) {
+        return Err(format!(
+            "permanent already labeled {old_label}; cannot assign {label}"
+        ));
+    }
     Ok(())
 }
 
@@ -3629,6 +3643,18 @@ mod tests {
         assert!(resolve_label(&labels, "unknown")
             .unwrap_err()
             .contains("unknown setup label"));
+    }
+
+    #[test]
+    fn permanent_cannot_be_labeled_twice() {
+        let id = ObjectId(17);
+        let labels = HashMap::from([(id, "old".to_string())]);
+
+        assert_eq!(
+            ensure_permanent_unlabeled(&labels, id, "new"),
+            Err("permanent already labeled old; cannot assign new".to_string())
+        );
+        assert!(ensure_permanent_unlabeled(&labels, ObjectId(18), "new").is_ok());
     }
 
     #[test]

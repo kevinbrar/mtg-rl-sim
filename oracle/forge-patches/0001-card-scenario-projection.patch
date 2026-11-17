@@ -90,10 +90,10 @@ index 086d1e1a..ddc7a785 100644
      private static final Map<String, LongAdder> SITES = new ConcurrentHashMap<>();
 diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
 new file mode 100644
-index 00000000..3ae596f6
+index 00000000..799866e8
 --- /dev/null
 +++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
-@@ -0,0 +1,1449 @@
+@@ -0,0 +1,1486 @@
 +package forge.ai;
 +
 +import com.google.gson.Gson;
@@ -266,6 +266,33 @@ index 00000000..3ae596f6
 +        assertEquals(projectedName("Jace Token", false), "Jace Token");
 +        assertEquals(projectedName("Jace", true), "Jace");
 +        assertEquals(projectedName("Jace Token Token", true), "Jace Token");
++    }
++
++    @Test
++    public void permanentCannotBeLabeledTwice() {
++        Game game = initAndCreateGame();
++        Player player = game.getPlayers().get(0);
++        addCardToZone("Jace Beleren", player, ZoneType.Battlefield);
++        Map<String, Card> labels = new java.util.LinkedHashMap<>();
++
++        JsonObject first = new JsonObject();
++        first.addProperty("player", "P0");
++        first.addProperty("card", "Jace Beleren");
++        first.addProperty("label", "old");
++        first.addProperty("token", false);
++        labelPermanent(first, game, labels);
++
++        JsonObject second = new JsonObject();
++        second.addProperty("player", "P0");
++        second.addProperty("card", "Jace Beleren");
++        second.addProperty("label", "new");
++        second.addProperty("token", false);
++        try {
++            labelPermanent(second, game, labels);
++            throw new AssertionError("relabeling a permanent did not fail");
++        } catch (IllegalArgumentException expected) {
++            assertEquals(expected.getMessage(), "permanent already labeled old; cannot assign new");
++        }
 +    }
 +
 +    @Test
@@ -786,7 +813,17 @@ index 00000000..3ae596f6
 +                    "expected one matching " + cardName + " permanent for " + player.getName()
 +                            + ", found " + matches.size());
 +        }
-+        labels.put(label, matches.get(0));
++        Card permanent = matches.get(0);
++        String oldLabel = labels.entrySet().stream()
++                .filter(entry -> entry.getValue() == permanent)
++                .map(Map.Entry::getKey)
++                .findFirst()
++                .orElse(null);
++        if (oldLabel != null) {
++            throw new IllegalArgumentException(
++                    "permanent already labeled " + oldLabel + "; cannot assign " + label);
++        }
++        labels.put(label, permanent);
 +    }
 +
 +    private void activate(JsonObject action, Game game, Map<String, Card> labels) {
