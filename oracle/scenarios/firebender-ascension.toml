@@ -166,3 +166,33 @@ all = [
   { player = "P0", zone = "battlefield", card = "Firebender Ascension", counters = { quest = 3 }, count = 1 },
   { player = "P0", zone = "exile", card = "Mountain", count = 1 },
 ]
+
+[[scenarios]]
+name = "F8 copy targets stay with the copy when scripted before original targets"
+active_player = 0
+script = [
+  { action = "copy_choice", player = "P0", decision = "accept", new_targets = ["defender-b"] },
+  { action = "trigger_targets", targets = ["defender-a"] },
+  { action = "attack", attackers = ["spring"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "ascension", card = "Firebender Ascension", counters = { quest = 3 } },
+  { label = "spring", card = "Spring Splasher" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "defender-a", card = "Centaur Courser" },
+  { label = "defender-b", card = "Grizzly Bears" },
+]
+
+[scenarios.reach]
+all = [
+  { player = "P0", zone = "battlefield", card = "Firebender Ascension", counters = { quest = 4 }, count = 1 },
+  { player = "P1", zone = "battlefield", card = "Centaur Courser", power = 0, toughness = 3, count = 1 },
+  { player = "P1", zone = "battlefield", card = "Grizzly Bears", power = -1, toughness = 2, count = 1 },
+]
+
