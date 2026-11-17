@@ -192,3 +192,33 @@ battlefield = [{ label = "p1-land", card = "Swamp" }]
 zone = "battlefield"
 player = "P1"
 card = "Swamp"
+
+[[scenarios]]
+name = "R7 four Swamps pay after sacrificing two Memnites"
+active_player = 0
+script = [
+  { action = "cast", card = "Rottenmouth Viper", sacrifice = ["fodder-1", "fodder-2"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "swamp-1", card = "Swamp" },
+  { label = "swamp-2", card = "Swamp" },
+  { label = "swamp-3", card = "Swamp" },
+  { label = "swamp-4", card = "Swamp" },
+  { label = "fodder-1", card = "Memnite" },
+  { label = "fodder-2", card = "Memnite" },
+]
+hand = ["Rottenmouth Viper"]
+
+[scenarios.setup.P1]
+life = 20
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Rottenmouth Viper", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Memnite", count = 2 },
+  { zone = "battlefield", player = "P0", card = "Swamp", tapped = true, count = 4 },
+]
