@@ -197,6 +197,23 @@ all = [
 ]
 
 [[scenarios]]
+name = "F9 next turn pass reaches P1 post-draw main phase"
+active_player = 0
+script = [
+  { action = "next_turn" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P1]
+library_top = ["Mountain"]
+
+[scenarios.reach]
+player = "P1"
+zone = "hand"
+card = "Mountain"
+count = 1
+
+[[scenarios]]
 name = "F10 a P1 start advances to P0 before attackers are declared"
 active_player = 1
 script = [

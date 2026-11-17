@@ -348,7 +348,7 @@ index 0000000000000000000000000000000000000000..9ce07a2d6edf3e833885b6ee99f8a1da
 +    }
 +}
 diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-index d72488250f69793bb4a30a34c1ea087ba57f76fd..ba82f1509e8631c8d750c4cf4c592ff823271388 100644
+index d72488250f69793bb4a30a34c1ea087ba57f76fd..d40360f3ed938d6aeec5e8cecb86701cfc052e2d 100644
 --- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 +++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 @@ -26,6 +26,7 @@ import mage.target.Target;
@@ -489,18 +489,23 @@ index d72488250f69793bb4a30a34c1ea087ba57f76fd..ba82f1509e8631c8d750c4cf4c592ff8
                  case "choose_cards" -> {
                      if (!action.has("cards") || !action.get("cards").isJsonArray()) {
                          throw new IllegalArgumentException("choose_cards needs cards");
-@@ -475,8 +555,8 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -475,8 +555,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
                      lastStep = step;
                  }
                  case "pass_until_resolved" -> {
 -                    waitStackResolved(turn, step, actingPlayer);
 -                    lastStep = step;
-+                    waitStackResolved(turn, lastStep, actingPlayer);
++                    if (attackNeedsResolution) {
++                        waitStackResolved(turn, lastStep, actingPlayer);
++                    } else {
++                        waitStackResolved(turn, step, actingPlayer);
++                        lastStep = step;
++                    }
 +                    attackNeedsResolution = false;
                  }
                  case "end_turn", "next_turn" -> {
                      turn++;
-@@ -486,6 +566,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -486,6 +571,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
                  default -> throw new IllegalArgumentException("unsupported action " + kind);
              }
          }
@@ -510,7 +515,7 @@ index d72488250f69793bb4a30a34c1ea087ba57f76fd..ba82f1509e8631c8d750c4cf4c592ff8
          return turn;
      }
  
-@@ -515,13 +598,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -515,13 +603,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
                      playerName
              );
              addBattlefield(playerName, player, array(playerSetup, "battlefield"));
@@ -527,7 +532,7 @@ index d72488250f69793bb4a30a34c1ea087ba57f76fd..ba82f1509e8631c8d750c4cf4c592ff8
          }
      }
  
-@@ -552,6 +635,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -552,6 +640,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
              labels.put(label, objectId);
              labelCards.put(label, card);
              labelZones.put(label, Zone.BATTLEFIELD);
@@ -535,7 +540,7 @@ index d72488250f69793bb4a30a34c1ea087ba57f76fd..ba82f1509e8631c8d750c4cf4c592ff8
              JsonObject cardCounters = object(item, "counters");
              if (!cardCounters.entrySet().isEmpty()) {
                  Map<String, Integer> parsed = new LinkedHashMap<>();
-@@ -567,13 +651,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -567,13 +656,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
          }
      }
  
@@ -552,7 +557,7 @@ index d72488250f69793bb4a30a34c1ea087ba57f76fd..ba82f1509e8631c8d750c4cf4c592ff8
          String card = cardName(item);
          if (item.isJsonObject() && item.getAsJsonObject().has("label")) {
              String label = requiredString(item.getAsJsonObject(), "label");
-@@ -591,6 +675,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -591,6 +680,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
              labels.put(label, objectId);
              labelCards.put(label, card);
              labelZones.put(label, zone);
@@ -560,7 +565,7 @@ index d72488250f69793bb4a30a34c1ea087ba57f76fd..ba82f1509e8631c8d750c4cf4c592ff8
          } else {
              addCard(zone, player, card);
          }
-@@ -808,6 +893,10 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -808,6 +898,10 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
              throw new IllegalArgumentException("reach player must be P0 or P1");
          }
          TestPlayer player = player(playerName.equals("P0") ? 0 : 1);
@@ -571,7 +576,7 @@ index d72488250f69793bb4a30a34c1ea087ba57f76fd..ba82f1509e8631c8d750c4cf4c592ff8
          String zone = string(reach, "zone", "graveyard");
          if (reach.has("solved") && !zone.equals("battlefield")) {
              throw new IllegalArgumentException("reach.solved is only valid for battlefield Cases");
-@@ -817,6 +906,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -817,6 +911,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
              case "hand" -> names(player.getHand().getCards(currentGame));
              case "library" -> names(player.getLibrary().getCards(currentGame));
              case "graveyard" -> names(player.getGraveyard().getCards(currentGame));
