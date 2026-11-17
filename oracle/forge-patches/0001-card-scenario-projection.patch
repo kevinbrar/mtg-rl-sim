@@ -1,9 +1,9 @@
 diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
 new file mode 100644
-index 00000000..0355bdca
+index 00000000..8c6043cc
 --- /dev/null
 +++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
-@@ -0,0 +1,822 @@
+@@ -0,0 +1,839 @@
 +package forge.ai;
 +
 +import com.google.gson.Gson;
@@ -77,6 +77,23 @@ index 00000000..0355bdca
 +        assertEquals(controller1.consumeScriptedOpponent(p1), p0);
 +        assertEquals(controller0.consumeScriptedOpponent(p0), p1);
 +        assertTrue(choices.isEmpty());
++    }
++
++    @Test
++    public void projectLibraryPreservesTopToBottomOrder() {
++        Game game = initAndCreateGame();
++        Player p0 = game.getPlayers().get(0);
++        addCardToZone("Opt", p0, ZoneType.Library);
++        addCardToZone("Island", p0, ZoneType.Library);
++        addCardToZone("Mountain", p0, ZoneType.Library);
++
++        List<String> expected = p0.getZone(ZoneType.Library).getCards().stream()
++                .map(Card::getName)
++                .toList();
++        JsonObject projection = projection(game, Map.of(), true);
++        JsonArray projected = projection.getAsJsonObject("players")
++                .getAsJsonObject("P0").getAsJsonArray("library");
++        assertEquals(projected, GSON.toJsonTree(expected).getAsJsonArray());
 +    }
 +
 +    @Test
@@ -358,10 +375,10 @@ index 00000000..0355bdca
 +    }
 +
 +    private JsonArray names(Player player, ZoneType zone) {
-+        List<String> names = player.getZone(zone).getCards().stream()
++        List<String> names = new ArrayList<>(player.getZone(zone).getCards().stream()
 +                .map(Card::getName)
-+                .sorted()
-+                .toList();
++                .toList());
++        if (zone != ZoneType.Library) names.sort(Comparator.naturalOrder());
 +        JsonArray result = new JsonArray();
 +        names.forEach(result::add);
 +        return result;
