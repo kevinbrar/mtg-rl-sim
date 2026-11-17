@@ -2093,13 +2093,21 @@ fn validate_setup(scenario: &Value) -> Result<(), String> {
                 "graveyard",
                 "sideboard",
                 "mana_pool",
+                "exile",
             ]
             .contains(&field.as_str())
             {
                 return Err(format!("setup.{player}.{field} is unsupported"));
             }
         }
-        for field in ["hand", "library_top", "graveyard", "sideboard"] {
+        if let Some(value) = player_setup.get("life") {
+            let life = value
+                .as_i64()
+                .ok_or_else(|| format!("setup.{player}.life must be a 32-bit integer"))?;
+            i32::try_from(life)
+                .map_err(|_| format!("setup.{player}.life must be a 32-bit integer"))?;
+        }
+        for field in ["hand", "library_top", "graveyard", "sideboard", "exile"] {
             let Some(value) = player_setup.get(field) else {
                 continue;
             };
@@ -2596,6 +2604,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
             ("hand", Zone::Hand),
             ("library_top", Zone::Library),
             ("graveyard", Zone::Graveyard),
+            ("exile", Zone::Exile),
         ] {
             let Some(items) = setup[field].as_array() else {
                 continue;
@@ -3389,17 +3398,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_setup_fields_the_runners_cannot_express() {
+    fn accepts_exile_setup() {
         let scenario = json!({
-            "name": "unsupported setup",
+            "name": "exile setup",
             "setup": {
                 "P0": {"exile": ["Walking Corpse"]}
             }
         });
 
-        let error = validate_setup(&scenario).unwrap_err();
-
-        assert!(error.contains("setup.P0.exile is unsupported"));
+        assert!(validate_setup(&scenario).is_ok());
     }
 
     #[test]
@@ -4814,6 +4821,7 @@ mod tests {
 mod outside_game_choice_tests {
     use super::*;
     use engine::types::game_state::OutsideGameChoiceEntry;
+    use engine::types::CardFace;
     use serde_json::json;
 
     #[test]

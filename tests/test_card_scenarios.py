@@ -827,6 +827,23 @@ library_top = [{ label = "same", card = "Grizzly Bears" }]
         load_specs([spec])
 
 
+def test_load_specs_accepts_exile_setup(tmp_path: Path) -> None:
+    spec = tmp_path / "exile.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "exile setup"
+
+[scenarios.setup.P0]
+exile = ["Walking Corpse"]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+    assert loaded["scenarios"][0]["setup"]["P0"]["exile"] == ["Walking Corpse"]
+
+
 def test_load_specs_rejects_unrepresentable_setup_fields(tmp_path: Path) -> None:
     spec = tmp_path / "unsupported.toml"
     spec.write_text(
@@ -835,11 +852,28 @@ def test_load_specs_rejects_unrepresentable_setup_fields(tmp_path: Path) -> None
 name = "unsupported setup"
 
 [scenarios.setup.P0]
-exile = ["Walking Corpse"]
+command = ["Walking Corpse"]
 """,
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="setup.P0.exile is unsupported"):
+    with pytest.raises(ValueError, match="setup.P0.command is unsupported"):
+        load_specs([spec])
+
+
+def test_load_specs_rejects_non_integer_setup_life(tmp_path: Path) -> None:
+    spec = tmp_path / "invalid-life.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "invalid life"
+
+[scenarios.setup.P0]
+life = 20.5
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="setup.P0.life must be a 32-bit integer"):
         load_specs([spec])
 
 

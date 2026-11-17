@@ -1,9 +1,9 @@
 diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
 new file mode 100644
-index 00000000..8c6043cc
+index 00000000..44057a55
 --- /dev/null
 +++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
-@@ -0,0 +1,839 @@
+@@ -0,0 +1,1051 @@
 +package forge.ai;
 +
 +import com.google.gson.Gson;
@@ -19,6 +19,7 @@ index 00000000..8c6043cc
 +import forge.game.card.Card;
 +import forge.game.card.CardCollection;
 +import forge.game.card.CardCollectionView;
++import forge.game.card.CounterEnumType;
 +import forge.game.card.CounterType;
 +import forge.game.mana.Mana;
 +import forge.game.phase.PhaseType;
@@ -189,19 +190,194 @@ index 00000000..8c6043cc
 +
 +    private void validateSetup(JsonObject setup) {
 +        if (setup == null) throw new IllegalArgumentException("scenario setup is required");
++        java.util.Set<String> playerFields = java.util.Set.of(
++                "life", "battlefield", "hand", "library_top", "graveyard", "sideboard",
++                "mana_pool", "exile");
++        java.util.Set<String> cardFields = java.util.Set.of("card", "label");
++        java.util.Set<String> permanentFields = java.util.Set.of("label", "card", "tapped", "counters");
++        java.util.Set<String> manaFields = java.util.Set.of("color", "source");
++        java.util.Set<String> labels = new java.util.LinkedHashSet<>();
 +        for (String player : setup.keySet()) {
 +            if (!"P0".equals(player) && !"P1".equals(player)) {
 +                throw new IllegalArgumentException("unsupported Forge setup player " + player);
 +            }
++            if (!setup.get(player).isJsonObject()) {
++                throw new IllegalArgumentException("setup." + player + " must be an object");
++            }
 +            JsonObject playerSetup = setup.getAsJsonObject(player);
-+            for (String zone : playerSetup.keySet()) {
-+                if (!List.of(
-+                        "hand", "library_top", "graveyard", "sideboard", "battlefield", "mana_pool")
-+                        .contains(zone)) {
-+                    throw new IllegalArgumentException("unsupported Forge setup field " + zone);
++            for (String field : playerSetup.keySet()) {
++                if (!playerFields.contains(field)) {
++                    throw new IllegalArgumentException(
++                            "unsupported Forge setup field setup." + player + "." + field);
++                }
++            }
++            if (playerSetup.has("life")) {
++                exactInteger(playerSetup.get("life"), "setup." + player + ".life");
++            }
++            for (String zone : List.of("hand", "library_top", "graveyard", "sideboard", "exile")) {
++                if (!playerSetup.has(zone)) continue;
++                JsonElement values = playerSetup.get(zone);
++                if (!values.isJsonArray()) {
++                    throw new IllegalArgumentException("setup." + player + "." + zone + " must be an array");
++                }
++                JsonArray cards = values.getAsJsonArray();
++                for (int index = 0; index < cards.size(); index++) {
++                    JsonElement value = cards.get(index);
++                    String context = "setup." + player + "." + zone + "[" + index + "]";
++                    if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isString()) {
++                        requiredStringValue(value, context);
++                        continue;
++                    }
++                    if (!value.isJsonObject()) {
++                        throw new IllegalArgumentException(context + " must name a card");
++                    }
++                    JsonObject item = value.getAsJsonObject();
++                    rejectUnknownKeys(item, cardFields, context);
++                    requiredString(item, "card");
++                    if (item.has("label")) addSetupLabel(labels, requiredString(item, "label"));
++                }
++            }
++            java.util.Set<String> battlefieldLabels = new java.util.LinkedHashSet<>();
++            if (playerSetup.has("battlefield")) {
++                JsonElement values = playerSetup.get("battlefield");
++                if (!values.isJsonArray()) {
++                    throw new IllegalArgumentException("setup." + player + ".battlefield must be an array");
++                }
++                JsonArray battlefield = values.getAsJsonArray();
++                for (int index = 0; index < battlefield.size(); index++) {
++                    JsonElement value = battlefield.get(index);
++                    String context = "setup." + player + ".battlefield[" + index + "]";
++                    if (!value.isJsonObject()) {
++                        throw new IllegalArgumentException(context + " must be an object");
++                    }
++                    JsonObject permanent = value.getAsJsonObject();
++                    rejectUnknownKeys(permanent, permanentFields, context);
++                    requiredString(permanent, "card");
++                    String label = requiredString(permanent, "label");
++                    addSetupLabel(labels, label);
++                    battlefieldLabels.add(label);
++                    if (permanent.has("tapped")
++                            && (!permanent.get("tapped").isJsonPrimitive()
++                                    || !permanent.getAsJsonPrimitive("tapped").isBoolean())) {
++                        throw new IllegalArgumentException(context + ".tapped must be a boolean");
++                    }
++                    if (permanent.has("counters")) {
++                        JsonElement countersValue = permanent.get("counters");
++                        if (!countersValue.isJsonObject()) {
++                            throw new IllegalArgumentException(context + ".counters must be an object");
++                        }
++                        for (Map.Entry<String, JsonElement> counter
++                                : countersValue.getAsJsonObject().entrySet()) {
++                            String counterName = counter.getKey();
++                            if (counterName.isBlank()) {
++                                throw new IllegalArgumentException(context + ".counters needs counter names");
++                            }
++                            if (exactInteger(counter.getValue(), context + ".counters." + counterName) < 0) {
++                                throw new IllegalArgumentException(
++                                        context + ".counters." + counterName + " must be non-negative");
++                            }
++                            if (CounterType.getType(counterName) == null) {
++                                throw new IllegalArgumentException(
++                                        context + ".counters." + counterName + " is unsupported");
++                            }
++                        }
++                    }
++                }
++            }
++            if (playerSetup.has("mana_pool")) {
++                JsonElement values = playerSetup.get("mana_pool");
++                if (!values.isJsonArray()) {
++                    throw new IllegalArgumentException("setup." + player + ".mana_pool must be an array");
++                }
++                JsonArray manaPool = values.getAsJsonArray();
++                for (int index = 0; index < manaPool.size(); index++) {
++                    JsonElement value = manaPool.get(index);
++                    String context = "setup." + player + ".mana_pool[" + index + "]";
++                    if (!value.isJsonObject()) {
++                        throw new IllegalArgumentException(context + " needs color and source");
++                    }
++                    JsonObject unit = value.getAsJsonObject();
++                    rejectUnknownKeys(unit, manaFields, context);
++                    if (unit.size() != 2) {
++                        throw new IllegalArgumentException(context + " needs color and source");
++                    }
++                    String color = requiredString(unit, "color");
++                    if (!java.util.Set.of("W", "U", "B", "R", "G", "C").contains(color)) {
++                        throw new IllegalArgumentException(context + ".color is unsupported");
++                    }
++                    String source = requiredString(unit, "source");
++                    if (!battlefieldLabels.contains(source)) {
++                        throw new IllegalArgumentException(
++                                context + ".source must name a card on " + player + "'s battlefield");
++                    }
 +                }
 +            }
 +        }
++    }
++
++    private static void rejectUnknownKeys(
++            JsonObject object, java.util.Set<String> allowed, String context) {
++        for (String key : object.keySet()) {
++            if (!allowed.contains(key)) {
++                throw new IllegalArgumentException(context + "." + key + " is unsupported");
++            }
++        }
++    }
++
++    private static void addSetupLabel(java.util.Set<String> labels, String label) {
++        if (label.startsWith("@")) {
++            throw new IllegalArgumentException("setup label " + label + " uses reserved @ prefix");
++        }
++        if (!labels.add(label)) {
++            throw new IllegalArgumentException("duplicate or empty setup label " + label);
++        }
++    }
++
++    private static String requiredStringValue(JsonElement value, String context) {
++        String card = value.getAsString();
++        if (card.isBlank()) throw new IllegalArgumentException(context + " needs a card");
++        return card;
++    }
++
++    private static int exactInteger(JsonElement value, String context) {
++        if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
++            throw new IllegalArgumentException(context + " must be an integer");
++        }
++        try {
++            return value.getAsBigDecimal().intValueExact();
++        } catch (ArithmeticException | NumberFormatException error) {
++            throw new IllegalArgumentException(context + " must be a 32-bit integer", error);
++        }
++    }
++
++    @Test
++    public void setupValidationRejectsUnknownFields() {
++        JsonObject unknownPlayerField = new JsonObject();
++        JsonObject playerSetup = new JsonObject();
++        playerSetup.add("unknown", new JsonArray());
++        unknownPlayerField.add("P0", playerSetup);
++        assertSetupRejected(unknownPlayerField);
++
++        JsonObject unknownFixtureField = new JsonObject();
++        JsonObject permanent = new JsonObject();
++        permanent.addProperty("label", "bear");
++        permanent.addProperty("card", "Runeclaw Bear");
++        permanent.addProperty("unknown", true);
++        JsonArray battlefield = new JsonArray();
++        battlefield.add(permanent);
++        JsonObject fixtureSetup = new JsonObject();
++        fixtureSetup.add("battlefield", battlefield);
++        unknownFixtureField.add("P0", fixtureSetup);
++        assertSetupRejected(unknownFixtureField);
++    }
++
++    private void assertSetupRejected(JsonObject setup) {
++        try {
++            validateSetup(setup);
++        } catch (IllegalArgumentException expected) {
++            return;
++        }
++        throw new AssertionError("unknown setup fields must be rejected");
 +    }
 +
 +    private void addSetup(Game game, JsonObject scenario, Map<String, Card> labels) {
@@ -210,11 +386,16 @@ index 00000000..8c6043cc
 +            Player player = game.getPlayers().get(index);
 +            JsonObject playerSetup = setup.getAsJsonObject("P" + index);
 +            if (playerSetup == null) continue;
++            if (playerSetup.has("life")) {
++                player.setStartingLife(exactInteger(
++                        playerSetup.get("life"), "setup.P" + index + ".life"));
++            }
 +            addCards(player, playerSetup.getAsJsonArray("hand"), ZoneType.Hand, labels);
 +            addCards(player, playerSetup.getAsJsonArray("library_top"), ZoneType.Library, labels);
 +            addCards(player, playerSetup.getAsJsonArray("graveyard"), ZoneType.Graveyard, labels);
 +            addCards(player, playerSetup.getAsJsonArray("sideboard"), ZoneType.Sideboard, labels);
 +            addCards(player, playerSetup.getAsJsonArray("battlefield"), ZoneType.Battlefield, labels);
++            addCards(player, playerSetup.getAsJsonArray("exile"), ZoneType.Exile, labels);
 +            addMana(player, playerSetup.getAsJsonArray("mana_pool"), labels);
 +        }
 +    }
@@ -228,8 +409,18 @@ index 00000000..8c6043cc
 +            if (item != null && item.has("label")) {
 +                labels.put(requiredString(item, "label"), card);
 +            }
-+            if (item != null && item.has("tapped")) {
-+                card.setTapped(item.get("tapped").getAsBoolean());
++            if (item != null && zone == ZoneType.Battlefield) {
++                if (item.has("tapped")) {
++                    card.setTapped(item.get("tapped").getAsBoolean());
++                }
++                if (item.has("counters")) {
++                    for (Map.Entry<String, JsonElement> counter
++                            : item.getAsJsonObject("counters").entrySet()) {
++                        card.setCounters(
++                                CounterType.getType(counter.getKey()),
++                                exactInteger(counter.getValue(), "battlefield counter"));
++                    }
++                }
 +            }
 +        }
 +    }
@@ -368,7 +559,14 @@ index 00000000..8c6043cc
 +        JsonObject projection = new JsonObject();
 +        projection.add("players", players);
 +        projection.add("battlefield", battlefield(game, labels));
-+        projection.add("exile", new JsonArray());
++        List<String> exile = new ArrayList<>();
++        for (Player player : game.getPlayers()) {
++            exile.addAll(player.getZone(ZoneType.Exile).getCards().stream()
++                    .map(Card::getName)
++                    .toList());
++        }
++        exile.sort(Comparator.naturalOrder());
++        projection.add("exile", sortedStrings(exile));
 +        projection.add("legal_targets", com.google.gson.JsonNull.INSTANCE);
 +        projection.addProperty("reach", reached);
 +        return projection;
@@ -402,7 +600,12 @@ index 00000000..8c6043cc
 +                permanent.add("subtypes", sortedStrings(card.getType().getSubtypes()));
 +                permanent.add("colors", colors(card));
 +                permanent.addProperty("damage", card.getDamage());
-+                permanent.add("counters", new JsonObject());
++                JsonObject counters = new JsonObject();
++                card.getCounters().entrySet().stream()
++                        .sorted(Comparator.comparing(entry -> projectedCounterName(entry.getElement())))
++                        .forEach(entry -> counters.addProperty(
++                                projectedCounterName(entry.getElement()), entry.getCount()));
++                permanent.add("counters", counters);
 +                permanent.add(
 +                        "power",
 +                        card.isCreature()
@@ -413,7 +616,9 @@ index 00000000..8c6043cc
 +                        card.isCreature()
 +                                ? new com.google.gson.JsonPrimitive(card.getNetToughness())
 +                                : com.google.gson.JsonNull.INSTANCE);
-+                permanent.add("loyalty", com.google.gson.JsonNull.INSTANCE);
++                int loyalty = card.getCounters(CounterEnumType.LOYALTY);
++                if (loyalty == 0) permanent.add("loyalty", com.google.gson.JsonNull.INSTANCE);
++                else permanent.addProperty("loyalty", loyalty);
 +                permanents.add(permanent);
 +            }
 +        }
@@ -450,6 +655,13 @@ index 00000000..8c6043cc
 +        if (card.getColor().hasRed()) colors.add("R");
 +        if (card.getColor().hasGreen()) colors.add("G");
 +        return sortedStrings(colors);
++    }
++
++    private static String projectedCounterName(CounterType counterType) {
++        if (counterType.is(CounterEnumType.P1P1)) return "P1P1";
++        if (counterType.is(CounterEnumType.M1M1)) return "M1M1";
++        if (counterType.is(CounterEnumType.LOYALTY)) return "loyalty";
++        return counterType.getName().toLowerCase(java.util.Locale.ROOT);
 +    }
 +
 +    private boolean checkReach(JsonObject scenario, Game game) {

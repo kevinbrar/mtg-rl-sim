@@ -35,6 +35,7 @@ PLAYER_SETUP_FIELDS = {
     "graveyard",
     "sideboard",
     "mana_pool",
+    "exile",
 }
 PERMANENT_SETUP_FIELDS = {"label", "card", "tapped", "counters"}
 REACH_FIELDS = {
@@ -781,7 +782,13 @@ def _validate_setup(scenario: dict) -> None:
         unknown = player_setup.keys() - PLAYER_SETUP_FIELDS
         if unknown:
             raise ValueError(f"{name}: setup.{player}.{min(unknown)} is unsupported")
-        for field in ("hand", "library_top", "graveyard", "sideboard"):
+        if "life" in player_setup and (
+            isinstance(player_setup["life"], bool)
+            or not isinstance(player_setup["life"], int)
+            or not -(2**31) <= player_setup["life"] < 2**31
+        ):
+            raise ValueError(f"{name}: setup.{player}.life must be a 32-bit integer")
+        for field in ("hand", "library_top", "graveyard", "sideboard", "exile"):
             cards = player_setup.get(field, [])
             if not isinstance(cards, list):
                 raise TypeError(f"{name}: setup.{player}.{field} must be an array")

@@ -329,3 +329,25 @@ all = [
   { zone = "sideboard", player = "P0", card = "Giant Growth", count = 1 },
   { zone = "graveyard", player = "P0", card = "Extrapolate the Impossible", count = 1 },
 ]
+
+[[scenarios]]
+name = "projection-self-check"
+active_player = 0
+step = "precombat_main"
+script = []
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "projection.bear", card = "Runeclaw Bear", counters = { p1p1 = 1, stun = 1 } },
+  { label = "projection.jace", card = "Jace Beleren", counters = { loyalty = 3 } },
+]
+exile = ["Divination"]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Runeclaw Bear", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Jace Beleren", count = 1 },
+  { zone = "exile", player = "P0", card = "Divination", count = 1 },
+]
