@@ -4,6 +4,13 @@ Date: Mon, 16 Nov 2026 20:42:23 +0000
 Subject: [PATCH] Fix optional sacrifice cost affordability
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/casting.rs             |  24 +-
+ crates/engine/src/game/casting_costs.rs       | 277 ++++++++++----
+ ...e_2415_rottenmouth_viper_sacrifice_cost.rs | 340 +++++++++++++++++-
+ crates/phase-ast/src/types/ability.rs         |   8 +
+ crates/phase-parser/src/parser/oracle_cost.rs |   9 +-
+ 5 files changed, 568 insertions(+), 90 deletions(-)
 
 diff --git a/crates/engine/src/game/casting.rs b/crates/engine/src/game/casting.rs
 index 6f6b08ce1..a848177ee 100644
@@ -866,3 +873,468 @@ index 426da6d32..142b1523a 100644
 -- 
 2.56.0
 
+diff --git a/crates/engine/tests/integration/issue_2415_rottenmouth_viper_sacrifice_cost.rs b/crates/engine/tests/integration/issue_2415_rottenmouth_viper_sacrifice_cost.rs
+index 69758e1b21e8dc316599fcd328e7eddc03c9ce38..69a9db411f35389ae905e85cc3ae2fb227e699bd 100644
+--- a/crates/engine/tests/integration/issue_2415_rottenmouth_viper_sacrifice_cost.rs
++++ b/crates/engine/tests/integration/issue_2415_rottenmouth_viper_sacrifice_cost.rs
+@@ -5,7 +5,7 @@
+ //! https://github.com/phase-rs/phase/issues/2415
+ 
+ use engine::game::effects::token::predefined_token_abilities;
+-use engine::game::scenario::{GameScenario, P0};
++use engine::game::scenario::{GameScenario, P0, P1};
+ use engine::game::zones::create_object;
+ use engine::parser::oracle::parse_oracle_text;
+ use engine::types::ability::{
+@@ -14,11 +14,12 @@ use engine::types::ability::{
+ };
+ use engine::types::actions::GameAction;
+ use engine::types::card_type::CoreType;
+-use engine::types::game_state::{CastPaymentMode, PayCostKind, WaitingFor};
++use engine::types::game_state::{CastPaymentMode, CostResume, PayCostKind, WaitingFor};
+ use engine::types::identifiers::CardId;
+ use engine::types::mana::{ManaColor, ManaCost, ManaCostShard};
+ use engine::types::phase::Phase;
+-use engine::types::statics::{CostModifyMode, StaticMode};
++use engine::types::statics::{CostModifyMode, CostReductionReach, StaticMode};
++use engine::types::StaticDefinition;
+ 
+ const ROTTENMOUTH_ORACLE: &str = concat!(
+     "As an additional cost to cast this spell, you may sacrifice any number of nonland permanents. ",
+@@ -160,6 +161,16 @@ fn tapped_land_count(
+         .count()
+ }
+ 
++fn three_mana_floor() -> StaticDefinition {
++    StaticDefinition::new(StaticMode::ModifyCost {
++        mode: CostModifyMode::Minimum,
++        amount: ManaCost::generic(3),
++        spell_filter: None,
++        dynamic_count: None,
++        reach: CostReductionReach::SpillsToGeneric,
++    })
++}
++
+ #[test]
+ fn rottenmouth_viper_parses_sacrifice_additional_cost_and_reduction() {
+     let parsed = parse_oracle_text(
+@@ -522,3 +533,419 @@ fn march_of_otherworldly_light_is_castable_with_its_exile_reduction() {
+         "March's exile-this-way reduction must make its X=0 cast appear in legal actions"
+     );
+ }
++
++#[test]
++fn direct_cast_rejects_unpayable_optional_sacrifice_without_prompt() {
++    for (lands, should_cast) in [(3, false), (4, true)] {
++        let (mut runner, viper, _, _, _) = build_scenario_with_counts(lands, 2, 0, 0);
++        let card_id = runner.state().objects[&viper].card_id;
++        let result = runner.act(GameAction::CastSpell {
++            object_id: viper,
++            card_id,
++            targets: vec![],
++            payment_mode: CastPaymentMode::Auto,
++        });
++        if should_cast {
++            result.expect("four Swamps can pay after sacrificing both Memnites");
++            assert!(matches!(
++                runner.state().waiting_for,
++                WaitingFor::OptionalCostChoice { .. }
++            ));
++        } else {
++            let error = result.expect_err("three Swamps cannot pay the reduced cost");
++            assert!(error.to_string().contains("Cannot pay mana cost"));
++            assert!(!matches!(
++                runner.state().waiting_for,
++                WaitingFor::OptionalCostChoice { .. }
++            ));
++        }
++    }
++}
++
++#[test]
++fn generic_optional_cost_still_recomputes_paid_cost_modifiers() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let lands: Vec<_> = (0..4)
++        .map(|_| scenario.add_basic_land(P0, ManaColor::Green))
++        .collect();
++    let reduce_static = StaticDefinition::new(StaticMode::ModifyCost {
++        mode: CostModifyMode::Reduce,
++        amount: ManaCost::generic(2),
++        spell_filter: None,
++        dynamic_count: None,
++        reach: CostReductionReach::SpillsToGeneric,
++    })
++    .affected(TargetFilter::SelfRef)
++    .condition(StaticCondition::AdditionalCostPaid)
++    .active_zones(vec![
++        engine::types::zones::Zone::Hand,
++        engine::types::zones::Zone::Stack,
++    ]);
++    let spell = scenario
++        .add_creature_to_hand(P0, "Bargain Beast", 3, 3)
++        .with_mana_cost(ManaCost::generic(4))
++        .with_additional_cost(AdditionalCost::Optional {
++            cost: AbilityCost::PayLife {
++                amount: engine::types::ability::QuantityExpr::Fixed { value: 1 },
++            },
++            repeatability: AdditionalCostRepeatability::Once,
++        })
++        .with_static_definition(reduce_static)
++        .id();
++    let mut runner = scenario.build();
++    let card_id = runner.state().objects[&spell].card_id;
++    runner
++        .act(GameAction::CastSpell {
++            object_id: spell,
++            card_id,
++            targets: vec![],
++            payment_mode: CastPaymentMode::Auto,
++        })
++        .expect("begin spell with optional life payment");
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::OptionalCostChoice { .. }
++    ));
++    runner
++        .act(GameAction::DecideOptionalCost { pay: true })
++        .expect("pay the optional life cost");
++
++    assert_eq!(tapped_land_count(&runner, &lands), 2);
++    assert!(
++        runner.state().stack.iter().any(|entry| entry.id == spell),
++        "paying a non-exile optional cost must apply its AdditionalCostPaid reduction"
++    );
++}
++
++#[test]
++fn optional_sacrifice_reduction_respects_trinisphere_floor() {
++    for (lands, castable) in [(2, false), (3, true)] {
++        let mut scenario = GameScenario::new();
++        scenario.at_phase(Phase::PreCombatMain);
++        for _ in 0..lands {
++            scenario.add_basic_land(P0, ManaColor::Black);
++        }
++        let parsed = parse_oracle_text(
++            ROTTENMOUTH_ORACLE,
++            "Rottenmouth Viper",
++            &[],
++            &["Creature".to_string()],
++            &[],
++        );
++        let viper = scenario
++            .add_creature_to_hand(P0, "Rottenmouth Viper", 5, 5)
++            .with_mana_cost(ManaCost::Cost {
++                shards: vec![ManaCostShard::Black],
++                generic: 5,
++            })
++            .with_additional_cost(parsed.additional_cost.unwrap())
++            .with_static_definition(
++                parsed
++                    .statics
++                    .into_iter()
++                    .find(|static_def| matches!(static_def.mode, StaticMode::ModifyCost { .. }))
++                    .unwrap(),
++            )
++            .id();
++        for _ in 0..5 {
++            scenario.add_creature(P0, "Memnite", 1, 1);
++        }
++        scenario
++            .add_creature(P1, "Trinisphere", 0, 3)
++            .with_static_definition(three_mana_floor());
++        let runner = scenario.build();
++        assert_eq!(
++            engine::ai_support::legal_actions(runner.state())
++                .iter()
++                .any(|action| matches!(action, GameAction::CastSpell { object_id, .. } if *object_id == viper)),
++            castable
++        );
++    }
++}
++
++#[test]
++fn gorex_exile_reduction_respects_trinisphere_floor() {
++    const GOREX: &str = "As an additional cost to cast this spell, you may exile any number of creature cards from your graveyard. This spell costs {2} less to cast for each card exiled this way.\nDeathtouch";
++    for (lands, castable) in [(2, false), (3, true)] {
++        let mut scenario = GameScenario::new();
++        scenario.at_phase(Phase::PreCombatMain);
++        for _ in 0..lands {
++            scenario.add_basic_land(P0, ManaColor::Black);
++        }
++        let gorex = scenario
++            .add_creature_to_hand_from_oracle(P0, "Gorex, the Tombshell", 4, 4, GOREX)
++            .with_mana_cost(ManaCost::Cost {
++                shards: vec![ManaCostShard::Black, ManaCostShard::Black],
++                generic: 4,
++            })
++            .id();
++        for _ in 0..2 {
++            scenario.add_creature_to_graveyard(P0, "Fodder", 1, 1);
++        }
++        scenario
++            .add_creature(P1, "Trinisphere", 0, 3)
++            .with_static_definition(three_mana_floor());
++        let mut runner = scenario.build();
++        assert_eq!(
++            engine::ai_support::legal_actions(runner.state())
++                .iter()
++                .any(|action| matches!(action, GameAction::CastSpell { object_id, .. } if *object_id == gorex)),
++            castable
++        );
++        let card_id = runner.state().objects[&gorex].card_id;
++        let result = runner.act(GameAction::CastSpell {
++            object_id: gorex,
++            card_id,
++            targets: vec![],
++            payment_mode: CastPaymentMode::Auto,
++        });
++        if castable {
++            result.expect("three Swamps pay the reduced, floored Gorex cost");
++            assert!(matches!(
++                runner.state().waiting_for,
++                WaitingFor::OptionalCostChoice { .. }
++            ));
++        } else {
++            let error = result.expect_err("two Swamps cannot pay the three-mana floor");
++            assert!(error.to_string().contains("Cannot pay mana cost"));
++            assert!(!matches!(
++                runner.state().waiting_for,
++                WaitingFor::OptionalCostChoice { .. }
++            ));
++        }
++    }
++}
++
++#[test]
++fn fixed_count_optional_sacrifice_reduction_uses_its_parsed_count() {
++    fn castable(requirement: &str, candidate_count: usize, land_count: usize, expected: bool) {
++        let oracle = format!(
++            "As an additional cost to cast this spell, you may sacrifice {requirement}. This spell costs {{1}} less to cast for each permanent sacrificed this way."
++        );
++        let mut scenario = GameScenario::new();
++        scenario.at_phase(Phase::PreCombatMain);
++        for _ in 0..land_count {
++            scenario.add_basic_land(P0, ManaColor::Black);
++        }
++        let spell = scenario
++            .add_spell_to_hand_from_oracle(P0, "Fixed Count Spell", true, &oracle)
++            .with_mana_cost(ManaCost::Cost {
++                shards: vec![ManaCostShard::Black],
++                generic: if requirement.starts_with("two") { 2 } else { 1 },
++            })
++            .id();
++        for _ in 0..candidate_count {
++            scenario.add_creature(P0, "Memnite", 1, 1);
++        }
++        let runner = scenario.build();
++        let object = &runner.state().objects[&spell];
++        assert!(
++            matches!(
++                &object.additional_cost,
++                Some(AdditionalCost::Optional {
++                    cost: AbilityCost::Sacrifice(cost),
++                    ..
++                }) if cost.requirement.fixed_count() == Some(if requirement.starts_with("two") { 2 } else { 1 })
++            ),
++            "parser must preserve the fixed sacrifice count: {:?}",
++            object.additional_cost
++        );
++        assert!(
++            object.static_definitions.iter_all().any(|definition| {
++                definition.condition == Some(StaticCondition::AdditionalCostPaid)
++                    && matches!(
++                        definition.mode,
++                        StaticMode::ModifyCost {
++                            mode: CostModifyMode::Reduce,
++                            ..
++                        }
++                    )
++                    && format!("{:?}", definition.mode).contains("Sacrificed")
++            }),
++            "parser must produce an additional-cost-conditioned ModifyCost reduction"
++        );
++        assert_eq!(
++            engine::ai_support::legal_actions(runner.state())
++                .iter()
++                .any(|action| matches!(action, GameAction::CastSpell { object_id, .. } if *object_id == spell)),
++            expected
++        );
++    }
++
++    castable("a nonland permanent", 0, 1, false);
++    castable("a nonland permanent", 1, 1, true);
++    castable("two nonland permanents", 1, 2, false);
++}
++
++#[test]
++fn fixed_count_optional_sacrifice_does_not_offer_a_partial_count() {
++    let oracle = "As an additional cost to cast this spell, you may sacrifice two nonland permanents. This spell costs {1} less to cast for each permanent sacrificed this way.";
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    scenario.add_basic_land(P0, ManaColor::Black);
++    let spell = scenario
++        .add_spell_to_hand_from_oracle(P0, "Fixed Count Spell", true, oracle)
++        .with_mana_cost(ManaCost::Cost {
++            shards: vec![ManaCostShard::Black],
++            generic: 3,
++        })
++        .id();
++    scenario.add_creature(P0, "Memnite", 1, 1);
++    scenario.add_artifact_from_oracle(P0, "Sol Ring", "{T}: Add {C}{C}.");
++    let mut runner = scenario.build();
++    assert!(matches!(
++        &runner.state().objects[&spell].additional_cost,
++        Some(AdditionalCost::Optional {
++            cost: AbilityCost::Sacrifice(cost),
++            ..
++        }) if cost.requirement.fixed_count() == Some(2)
++    ));
++
++    assert!(
++        !engine::ai_support::legal_actions(runner.state())
++            .iter()
++            .any(|action| matches!(action, GameAction::CastSpell { object_id, .. } if *object_id == spell)),
++        "the required two-permanent sacrifice removes the two-mana source"
++    );
++    let card_id = runner.state().objects[&spell].card_id;
++    let error = runner
++        .act(GameAction::CastSpell {
++            object_id: spell,
++            card_id,
++            targets: vec![],
++            payment_mode: CastPaymentMode::Auto,
++        })
++        .expect_err("one eligible sacrifice cannot stand in for the fixed count of two");
++    assert!(error.to_string().contains("Cannot pay mana cost"));
++    assert!(!matches!(
++        runner.state().waiting_for,
++        WaitingFor::OptionalCostChoice { .. }
++    ));
++}
++
++#[test]
++fn march_exile_reduction_pins_maximum_x() {
++    const ORACLE: &str = "As an additional cost to cast this spell, you may exile any number of white cards from your hand. This spell costs {2} less to cast for each card exiled this way.\nExile target artifact, creature, or enchantment with mana value X or less.";
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let march = scenario
++        .add_spell_to_hand_from_oracle(P0, "March of Otherworldly Light", true, ORACLE)
++        .with_mana_cost(ManaCost::Cost {
++            shards: vec![ManaCostShard::X, ManaCostShard::White],
++            generic: 0,
++        })
++        .id();
++    let prior_exiled_white_card = scenario
++        .add_spell_to_exile(P0, "Prior white exile", true)
++        .with_mana_cost(ManaCost::Cost {
++            shards: vec![ManaCostShard::White],
++            generic: 0,
++        })
++        .id();
++    let white_cards: Vec<_> = (0..2)
++        .map(|_| {
++            scenario
++                .add_spell_to_hand_from_oracle(P0, "White card", true, "")
++                .with_mana_cost(ManaCost::Cost {
++                    shards: vec![ManaCostShard::White],
++                    generic: 0,
++                })
++                .id()
++        })
++        .collect();
++    let white_lands: Vec<_> = (0..3)
++        .map(|_| scenario.add_basic_land(P0, ManaColor::White))
++        .collect();
++    scenario.add_creature(P1, "Memnite", 1, 1);
++    let mut runner = scenario.build();
++    let prior_tracked_set_id = engine::types::identifiers::TrackedSetId(
++        runner
++            .state()
++            .tracked_object_sets
++            .keys()
++            .map(|id| id.0)
++            .max()
++            .unwrap_or_default()
++            .max(runner.state().next_tracked_set_id)
++            + 1,
++    );
++    {
++        let state = runner.state_mut();
++        state
++            .tracked_object_sets
++            .insert(prior_tracked_set_id, vec![prior_exiled_white_card]);
++        state.tracked_set_member_causes.insert(
++            prior_tracked_set_id,
++            [(
++                prior_exiled_white_card,
++                engine::types::ability::ThisWayCause::Exiled,
++            )]
++            .into_iter()
++            .collect(),
++        );
++        state.chain_tracked_set_id = Some(prior_tracked_set_id);
++        state.next_tracked_set_id = prior_tracked_set_id.0 + 1;
++    }
++    let card_id = runner.state().objects[&march].card_id;
++    runner
++        .act(GameAction::CastSpell {
++            object_id: march,
++            card_id,
++            targets: vec![],
++            payment_mode: CastPaymentMode::Auto,
++        })
++        .expect("March should begin casting");
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::ChooseXValue { max: 6, .. }
++    ));
++    runner
++        .act(GameAction::ChooseX { value: 2 })
++        .expect("announce a payable X after accounting for the exile reduction");
++    let cost_before_selecting_exiles = match &runner.state().waiting_for {
++        WaitingFor::OptionalCostChoice { pending_cast, .. } => pending_cast.cost.clone(),
++        other => panic!("expected optional cost choice, got {other:?}"),
++    };
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::OptionalCostChoice { .. }
++    ));
++    runner
++        .act(GameAction::DecideOptionalCost { pay: true })
++        .expect("accept the optional exile cost");
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::PayCost {
++            kind: PayCostKind::ExileFromZone { .. },
++            ..
++        }
++    ));
++    let cost_before_new_exile_set_is_published = match &runner.state().waiting_for {
++        WaitingFor::PayCost {
++            resume:
++                CostResume::SpellCost {
++                    spell: pending_cast,
++                    ..
++                },
++            ..
++        } => pending_cast.cost.clone(),
++        other => panic!("expected exile cost choice, got {other:?}"),
++    };
++    assert_eq!(
++        cost_before_new_exile_set_is_published, cost_before_selecting_exiles,
++        "an unrelated prior exile set must not discount the cast before this cost's selection"
++    );
++    runner
++        .act(GameAction::SelectCards { cards: white_cards })
++        .expect("exile both eligible white cards");
++    assert_eq!(
++        tapped_land_count(&runner, &white_lands),
++        1,
++        "the two exiled cards reduce X=2 March's generic cost to {{W}}"
++    );
++    assert!(
++        runner.state().stack.iter().any(|entry| entry.id == march),
++        "March must reach the stack after the exile cost and reduced mana payment"
++    );
++}

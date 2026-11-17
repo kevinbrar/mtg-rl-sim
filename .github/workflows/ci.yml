@@ -602,11 +602,17 @@ jobs:
             echo "INFO No engine changes to mutate; skipping mutation analysis."
             exit 0
           fi
+          if ! target_source_files="$(python "$GITHUB_WORKSPACE/ci/mutants_test_targets.py" "$HEAD_TREE" --target-source-files)"; then
+            exit 1
+          fi
           test_filter=()
           changed_files="$(git diff --name-only --diff-filter=AM --no-renames "$BASE_PATCHED" "$HEAD_PATCHED" -- crates/engine/tests/integration)"
           changed_modules=()
           while IFS= read -r path; do
             [[ "$path" == *.rs ]] || continue
+            if [[ $'\n'"$target_source_files"$'\n' == *$'\n'"$path"$'\n'* ]]; then
+              continue
+            fi
             module="${path##*/}"
             module="${module%.rs}"
             if [[ "$module" =~ ^[a-zA-Z0-9_]+$ && "$module" != main ]]; then
@@ -616,21 +622,30 @@ jobs:
           if ((${#changed_modules[@]} > 0)); then
             mapfile -t test_filter < <(printf '%s\n' "${changed_modules[@]}" | sort -u)
           fi
+          cargo_test_target_args=()
           cargo_test_args=()
           if ((${#test_filter[@]} > 0)); then
             cargo_test_args+=(--cargo-test-arg=--)
+            if ! target_names="$(python "$GITHUB_WORKSPACE/ci/mutants_test_targets.py" "$HEAD_TREE" "${test_filter[@]}")"; then
+              exit 1
+            fi
+            mapfile -t test_targets <<< "$target_names"
+            for target in "${test_targets[@]}"; do
+              cargo_test_target_args+=(--cargo-arg=--test --cargo-arg="$target")
+            done
+          else
+            cargo_test_target_args+=(--cargo-arg=--test --cargo-arg=integration)
           fi
           set +e
           cargo mutants \
             --colors=never \
             --in-diff "$RUNNER_TEMP/engine-changes.diff" \
             -p phase-engine \
-            --cargo-arg=--test \
-            --cargo-arg=integration \
             --jobs 2 \
             --timeout 60 \
             --build-timeout 1200 \
             --output "$RUNNER_TEMP/mutants.out" \
+            "${cargo_test_target_args[@]}" \
             "${cargo_test_args[@]}" \
             -- "${test_filter[@]}" \
             2>&1 | tee "$RUNNER_TEMP/mutants.log"
