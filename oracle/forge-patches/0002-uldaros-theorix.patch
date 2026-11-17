@@ -90,10 +90,10 @@ index 086d1e1a..ddc7a785 100644
      private static final Map<String, LongAdder> SITES = new ConcurrentHashMap<>();
 diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
 new file mode 100644
-index 00000000..67379270
+index 00000000..618fe67d
 --- /dev/null
 +++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
-@@ -0,0 +1,2192 @@
+@@ -0,0 +1,2224 @@
 +package forge.ai;
 +
 +import com.google.gson.Gson;
@@ -210,6 +210,38 @@ index 00000000..67379270
 +        } catch (IllegalStateException expected) {
 +            assertTrue(expected.getMessage().contains("target choice requested for different player"));
 +        }
++    }
++
++    @Test
++    public void emptyGraveyardTargetChoiceDoesNotConsumeLaterTriggerTargets() {
++        Game game = initAndCreateGame();
++        Player p0 = game.getPlayers().get(0);
++        Player p1 = game.getPlayers().get(1);
++        Card source = addCardToZone("Uldaros Theorix", p0, ZoneType.Battlefield);
++        Card laterTarget = addCardToZone("Grizzly Bears", p1, ZoneType.Battlefield);
++        ScriptedController controller = new ScriptedController(
++                game, p0, p0.getLobbyPlayer(), Map.of("later.target", laterTarget),
++                new IdentityHashMap<>());
++
++        SpellAbility emptyTargetPrompt = new SpellAbility.EmptySa(source, p0);
++        emptyTargetPrompt.setTargetRestrictions(new TargetRestrictions(Map.of(
++                "ValidTgts", "Creature",
++                "TargetMin", "0",
++                "TargetMax", "1",
++                "TgtZone", "Battlefield")));
++        controller.addGraveyardTargetChoice(List.of());
++        assertTrue(controller.chooseTargetsFor(emptyTargetPrompt));
++
++        SpellAbility laterPrompt = new SpellAbility.EmptySa(source, p0);
++        laterPrompt.setTargetRestrictions(new TargetRestrictions(Map.of(
++                "ValidTgts", "Creature",
++                "TargetMin", "1",
++                "TargetMax", "1",
++                "TgtZone", "Battlefield")));
++        controller.addTriggerTargetChoice(p0, List.of("later.target"));
++        assertTrue(controller.chooseTargetsFor(laterPrompt));
++        assertEquals(laterPrompt.getTargets().size(), 1);
++        controller.assertConsumed();
 +    }
 +
 +    @Test
@@ -1808,7 +1840,7 @@ index 00000000..67379270
 +            if (!ability.isTargetNumberValid()) {
 +                throw failClosed("scripted graveyard target count is invalid");
 +            }
-+            activeGraveyardTargetLabels = remaining;
++            activeGraveyardTargetLabels = remaining.isEmpty() ? null : remaining;
 +            return true;
 +        }
 +
