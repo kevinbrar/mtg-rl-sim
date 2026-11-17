@@ -1414,10 +1414,43 @@ def test_missing_oracle_results_are_reported_without_assuming_xmage() -> None:
 
     assert any(
         failure["scenario"] == "<oracle>"
-        and failure["reason"]
-        == "oracle scenario names or order differ from the requested suites"
+        and "results are missing or unexpected" in failure["reason"]
         for failure in report["failed"]
     )
+
+
+def test_mixed_oracle_results_pair_by_suite_and_scenario_not_order() -> None:
+    forge = _projection_result("F1", {"life": 20})
+    xmage = _projection_result("X1", {"life": 20})
+
+    report = evaluate_known_diffs(
+        {"forge-suite": ["F1"], "xmage-suite": ["X1"]},
+        [forge, xmage],
+        [xmage, forge],
+        [],
+        suite_oracles={"forge-suite": "forge", "xmage-suite": "xmage"},
+    )
+
+    assert report["counts"] == {"matched": 2, "triaged": 0, "failed": 0}
+
+
+def test_mixed_oracle_results_reject_duplicate_and_missing_pairs() -> None:
+    forge = _projection_result("F1", {"life": 20})
+    xmage = _projection_result("X1", {"life": 20})
+
+    report = evaluate_known_diffs(
+        {"forge-suite": ["F1"], "xmage-suite": ["X1"]},
+        [forge, xmage],
+        [xmage, xmage],
+        [],
+        suite_oracles={"forge-suite": "forge", "xmage-suite": "xmage"},
+    )
+
+    assert any(
+        "duplicate scenario X1 in suite xmage-suite" in failure["reason"]
+        for failure in report["failed"]
+    )
+    assert any(failure["scenario"] == "<oracle>" for failure in report["failed"])
 
 
 def test_load_specs_accepts_mana_pool_with_a_labeled_battlefield_source(

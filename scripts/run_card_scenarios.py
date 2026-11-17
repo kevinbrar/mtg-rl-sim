@@ -465,6 +465,29 @@ def _results_by_name(
     return mapped, errors
 
 
+def _results_by_suite_scenario(
+    results: list[dict], engine: str, suite_by_scenario: dict[str, str]
+) -> tuple[dict[tuple[str, str], dict], list[str]]:
+    mapped = {}
+    errors = []
+    for index, result in enumerate(results, start=1):
+        if not isinstance(result, dict) or not isinstance(result.get("scenario"), str):
+            errors.append(f"{engine} result {index} has no scenario name")
+            continue
+        name = result["scenario"]
+        suite = suite_by_scenario.get(name)
+        if suite is None:
+            errors.append(f"{engine} returned unexpected scenario {name}")
+            continue
+        key = (suite, name)
+        if key in mapped:
+            errors.append(
+                f"{engine} returned duplicate scenario {name} in suite {suite}"
+            )
+        mapped[key] = result
+    return mapped, errors
+
+
 def evaluate_known_diffs(
     suite_scenarios: dict[str, list[str]],
     phase_results: list[dict],
@@ -474,11 +497,20 @@ def evaluate_known_diffs(
     forge_prompt_failures: list[dict] | None = None,
     suite_oracles: dict[str, str] | None = None,
 ) -> dict:
-    expected_names = [
-        name for scenario_names in suite_scenarios.values() for name in scenario_names
+    expected_keys = [
+        (suite, name)
+        for suite, scenario_names in suite_scenarios.items()
+        for name in scenario_names
     ]
-    phase, phase_errors = _results_by_name(phase_results, "Phase")
-    oracle, oracle_errors = _results_by_name(oracle_results, "oracle")
+    suite_by_scenario = {
+        name: suite for suite, names in suite_scenarios.items() for name in names
+    }
+    phase, phase_errors = _results_by_suite_scenario(
+        phase_results, "Phase", suite_by_scenario
+    )
+    oracle, oracle_errors = _results_by_suite_scenario(
+        oracle_results, "oracle", suite_by_scenario
+    )
     prompt_failures = {
         event["scenario"]: event for event in (forge_prompt_failures or [])
     }
@@ -494,9 +526,6 @@ def evaluate_known_diffs(
                 "reason": "duplicate Forge prompt failure events",
             }
         )
-    suite_by_scenario = {
-        name: suite for suite, names in suite_scenarios.items() for name in names
-    }
     for name in prompt_failures:
         suite = suite_by_scenario.get(name)
         if suite is None or (suite_oracles or {}).get(suite) != "forge":
@@ -507,23 +536,23 @@ def evaluate_known_diffs(
                     "reason": "Forge prompt failure event is outside a Forge-backed suite",
                 }
             )
-    if list(phase) != expected_names:
+    if set(phase) != set(expected_keys):
         failed.append(
             {
                 "suite": "<runner>",
                 "scenario": "<Phase>",
-                "reason": "Phase scenario names or order differ from the requested suites",
+                "reason": "Phase (suite, scenario) results are missing or unexpected",
             }
         )
-    expected_oracle_names = [
-        name for name in expected_names if name not in prompt_failures
+    expected_oracle_keys = [
+        key for key in expected_keys if key[1] not in prompt_failures
     ]
-    if list(oracle) != expected_oracle_names:
+    if set(oracle) != set(expected_oracle_keys):
         failed.append(
             {
                 "suite": "<runner>",
                 "scenario": "<oracle>",
-                "reason": "oracle scenario names or order differ from the requested suites",
+                "reason": "oracle (suite, scenario) results are missing or unexpected",
             }
         )
 
@@ -565,8 +594,8 @@ def evaluate_known_diffs(
             matching = entries_by_key.get(key, [])
             if key in duplicate_keys:
                 continue
-            phase_result = phase.get(name)
-            oracle_result = oracle.get(name)
+            phase_result = phase.get(key)
+            oracle_result = oracle.get(key)
             differences = compare(
                 {name: phase_result} if phase_result is not None else {},
                 {name: oracle_result} if oracle_result is not None else {},
