@@ -90,10 +90,10 @@ index 086d1e1a..ddc7a785 100644
      private static final Map<String, LongAdder> SITES = new ConcurrentHashMap<>();
 diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
 new file mode 100644
-index 00000000..799866e8
+index 00000000..243a2c4b
 --- /dev/null
 +++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
-@@ -0,0 +1,1486 @@
+@@ -0,0 +1,1820 @@
 +package forge.ai;
 +
 +import com.google.gson.Gson;
@@ -185,6 +185,32 @@ index 00000000..799866e8
 +            throw new AssertionError("unconsumed single-entity choice did not fail");
 +        } catch (AssertionError expected) {
 +            assertTrue(expected.getMessage().contains("unconsumed single-entity card choices"));
++        }
++    }
++
++    @Test
++    public void swallowedControllerFailureIsReportedAtScenarioEnd() {
++        Game game = initAndCreateGame();
++        Player player = game.getPlayers().get(0);
++        List<String> failures = new ArrayList<>();
++        ScriptedController controller = new ScriptedController(
++                game, player, player.getLobbyPlayer(), Map.of(), new IdentityHashMap<>(),
++                new ArrayDeque<>(), failures);
++
++        try {
++            controller.chooseCardsForEffect(
++                    new CardCollection(), null, "swallowed failure", 1, 1, false, Map.of());
++            throw new AssertionError("missing card choice did not fail");
++        } catch (IllegalStateException expected) {
++            assertTrue(expected.getMessage().contains("unscripted card choice"));
++        }
++
++        assertEquals(failures.size(), 1);
++        try {
++            assertNoScriptedControllerFailures(failures);
++            throw new AssertionError("swallowed controller failure was not reported");
++        } catch (AssertionError expected) {
++            assertTrue(expected.getMessage().contains("swallowed scripted controller failure"));
 +        }
 +    }
 +
@@ -296,6 +322,87 @@ index 00000000..799866e8
 +    }
 +
 +    @Test
++    public void discardChoicesFailClosedForMissingExtraAndWrongPlayer() {
++        Game game = initAndCreateGame();
++        Player p0 = game.getPlayers().get(0);
++        Player p1 = game.getPlayers().get(1);
++        Card first = addCardToZone("Opt", p0, ZoneType.Hand);
++        Card second = addCardToZone("Island", p0, ZoneType.Hand);
++        Map<String, Card> labels = new java.util.LinkedHashMap<>();
++        labels.put("first", first);
++        labels.put("second", second);
++        ScriptedController controller = new ScriptedController(
++                game, p0, p0.getLobbyPlayer(), labels, new IdentityHashMap<>());
++        CardCollection validCards = new CardCollection();
++        validCards.add(first);
++        validCards.add(second);
++
++        try {
++            controller.chooseCardsToDiscardFrom(p0, null, validCards, 2, 2, null);
++            throw new AssertionError("missing discard choice did not fail");
++        } catch (IllegalStateException expected) {
++            assertTrue(expected.getMessage().contains("unscripted discard choice"));
++        }
++
++        controller.addDiscardChoice(List.of("first", "second"));
++        CardCollection selected =
++                controller.chooseCardsToDiscardFrom(p0, null, validCards, 2, 2, null);
++        assertEquals(selected.size(), 2);
++        assertTrue(selected.contains(first));
++        assertTrue(selected.contains(second));
++
++        controller.addDiscardChoice(List.of("first"));
++        try {
++            controller.assertConsumed();
++            throw new AssertionError("unconsumed discard choice did not fail");
++        } catch (AssertionError expected) {
++            assertTrue(expected.getMessage().contains("unconsumed discard choices"));
++        }
++
++        ScriptedController wrongPlayer = new ScriptedController(
++                game, p1, p1.getLobbyPlayer(), labels, new IdentityHashMap<>());
++        try {
++            wrongPlayer.chooseCardsToDiscardFrom(p0, null, validCards, 1, 1, null);
++            throw new AssertionError("wrong-player discard choice did not fail");
++        } catch (IllegalStateException expected) {
++            assertTrue(expected.getMessage().contains("wrong player"));
++        }
++    }
++
++    @Test
++    public void discardOrderUsesSelectionOrderAndFailsClosedWhenUnprompted() {
++        Game game = initAndCreateGame();
++        Player p0 = game.getPlayers().get(0);
++        Card first = addCardToZone("Opt", p0, ZoneType.Hand);
++        Card second = addCardToZone("Island", p0, ZoneType.Hand);
++        Map<String, Card> labels = new java.util.LinkedHashMap<>();
++        labels.put("first", first);
++        labels.put("second", second);
++        ScriptedController controller = new ScriptedController(
++                game, p0, p0.getLobbyPlayer(), labels, new IdentityHashMap<>());
++        CardCollection validCards = new CardCollection();
++        validCards.add(first);
++        validCards.add(second);
++
++        controller.addDiscardChoice(List.of("second", "first"));
++        CardCollection discarded =
++                controller.chooseCardsToDiscardFrom(p0, null, validCards, 2, 2, null);
++        CardCollectionView ordered =
++                controller.orderMoveToZoneList(discarded, ZoneType.Graveyard, null);
++        List<Card> actualOrder = new ArrayList<>();
++        for (Card card : ordered) actualOrder.add(card);
++        assertEquals(actualOrder, List.of(second, first));
++        controller.assertConsumed();
++
++        try {
++            controller.orderMoveToZoneList(discarded, ZoneType.Graveyard, null);
++            throw new AssertionError("unscripted zone-move order did not fail");
++        } catch (IllegalStateException expected) {
++            assertTrue(expected.getMessage().contains("unscripted zone-move order"));
++        }
++    }
++
++    @Test
 +    public void projectScenarios() throws IOException {
 +        String specPath = System.getProperty("oracleScenarioSpec");
 +        if (specPath == null || specPath.isBlank()) {
@@ -357,10 +464,16 @@ index 00000000..799866e8
 +        Map<String, Card> labels = new java.util.LinkedHashMap<>();
 +        addSetup(game, scenario, labels);
 +        Map<Player, Deque<Player>> opponentChoices = new IdentityHashMap<>();
++        Deque<List<String>> triggerTargetChoices = new ArrayDeque<>();
++        List<String> scriptedFailures = new ArrayList<>();
 +        ScriptedController controller0 =
-+                new ScriptedController(game, p0, p0.getLobbyPlayer(), labels, opponentChoices);
++                new ScriptedController(
++                        game, p0, p0.getLobbyPlayer(), labels, opponentChoices, triggerTargetChoices,
++                        scriptedFailures);
 +        ScriptedController controller1 =
-+                new ScriptedController(game, p1, p1.getLobbyPlayer(), labels, opponentChoices);
++                new ScriptedController(
++                        game, p1, p1.getLobbyPlayer(), labels, opponentChoices, triggerTargetChoices,
++                        scriptedFailures);
 +        p0.dangerouslySetController(controller0);
 +        p1.dangerouslySetController(controller1);
 +        loadScript(scenario, labels, controller0, controller1, game.getPlayers().get(activePlayer));
@@ -374,7 +487,8 @@ index 00000000..799866e8
 +                            : game.getPlayers().get(activePlayer);
 +                    cast(caster, requiredString(action, "card"), labels);
 +                }
-+                case "choose_outside_game", "choose_mana", "choose_surveil", "choose_replacement", "choose_entity" -> { }
++                case "choose_outside_game", "choose_mana", "choose_surveil", "choose_discard",
++                        "trigger_targets", "choose_replacement", "choose_entity" -> { }
 +                case "pass_priority" -> passPriority(action, game);
 +                case "label_permanent" -> labelPermanent(action, game, labels);
 +                case "activate" -> activate(action, game, labels);
@@ -390,9 +504,10 @@ index 00000000..799866e8
 +            }
 +        }
 +
++        assertNoScriptedControllerFailures(scriptedFailures);
 +        controller0.assertConsumed();
 +        controller1.assertConsumed();
-+        boolean reached = checkReach(scenario, game);
++        boolean reached = checkReach(scenario, game, labels);
 +        JsonObject projection = projection(game, labels, reached);
 +        JsonObject result = new JsonObject();
 +        result.addProperty("scenario", requiredString(scenario, "name"));
@@ -735,6 +850,46 @@ index 00000000..799866e8
 +                    graveyardLabels.add(label);
 +                }
 +                chooser.addSurveilChoice(graveyardLabels);
++            } else if ("choose_discard".equals(actionName)) {
++                ScriptedController chooser = controllerFor(action, controller0, controller1);
++                List<String> discardLabels = new ArrayList<>();
++                Set<String> uniqueLabels = new LinkedHashSet<>();
++                for (JsonElement card : action.getAsJsonArray("cards")) {
++                    String label = card.getAsString();
++                    Card selected = labels.get(label);
++                    if (selected == null || selected.getOwner() != chooser.getPlayer()) {
++                        throw new IllegalArgumentException(
++                                "choose_discard label must name the chooser's card: " + label);
++                    }
++                    if (!uniqueLabels.add(label)) {
++                        throw new IllegalArgumentException("choose_discard.cards cannot repeat labels");
++                    }
++                    discardLabels.add(label);
++                }
++                chooser.addDiscardChoice(discardLabels);
++            } else if ("trigger_targets".equals(actionName)) {
++                if (!action.has("targets") || !action.get("targets").isJsonArray()) {
++                    throw new IllegalArgumentException("trigger_targets.targets must be an array");
++                }
++                List<String> targetLabels = new ArrayList<>();
++                Set<String> uniqueLabels = new LinkedHashSet<>();
++                for (JsonElement target : action.getAsJsonArray("targets")) {
++                    if (!target.isJsonPrimitive() || !target.getAsJsonPrimitive().isString()) {
++                        throw new IllegalArgumentException("trigger_targets labels must be strings");
++                    }
++                    String label = target.getAsString();
++                    if (!uniqueLabels.add(label)) {
++                        throw new IllegalArgumentException("trigger_targets labels cannot repeat");
++                    }
++                    if (!labels.containsKey(label)) {
++                        throw new IllegalArgumentException("unknown trigger target label " + label);
++                    }
++                    targetLabels.add(label);
++                }
++                if (targetLabels.isEmpty()) {
++                    throw new IllegalArgumentException("trigger_targets requires at least one label");
++                }
++                controller0.addTriggerTargetChoice(targetLabels);
 +            } else if ("choose_replacement".equals(actionName)) {
 +                ScriptedController chooser = controllerFor(action, controller0, controller1);
 +                chooser.addReplacementChoice(requiredString(action, "description"));
@@ -830,31 +985,46 @@ index 00000000..799866e8
 +        Player player = game.getPhaseHandler().getPriorityPlayer();
 +        String sourceLabel = requiredString(action, "source");
 +        Card source = labels.get(sourceLabel);
-+        if (source == null || source.getZone().getZoneType() != ZoneType.Battlefield) {
-+            throw new IllegalArgumentException("activate source is not on the battlefield: " + sourceLabel);
++        if (source == null || source.getZone() == null
++                || source.getZone().getZoneType() != ZoneType.Battlefield
++                        && source.getZone().getZoneType() != ZoneType.Graveyard) {
++            throw new IllegalArgumentException(
++                    "activate source is not on the battlefield or in the graveyard: " + sourceLabel);
 +        }
-+        if (source.getController() != player) {
++        Player sourcePlayer = source.getZone().getZoneType() == ZoneType.Graveyard
++                ? source.getOwner() : source.getController();
++        if (sourcePlayer != player) {
 +            throw new IllegalStateException("activate source is not controlled by the player with priority");
 +        }
-+        String requested = normalizeAbilityLabel(requiredString(action, "ability"));
-+        List<SpellAbility> matches = source.getSpellAbilities().stream()
++        String requested = normalizeAbilityLabel(requiredString(action, "ability"), source);
++        List<SpellAbility> candidates = source.getSpellAbilities().stream()
 +                .filter(SpellAbility::isActivatedAbility)
++                .toList();
++        List<SpellAbility> matches = candidates.stream()
 +                .filter(ability -> {
 +                    String description = ability.getDescription();
 +                    return (description != null
-+                            && normalizeAbilityLabel(description).equals(requested))
++                            && normalizeAbilityLabel(description, source).equals(requested))
 +                            || requested.equals(loyaltyCostLabel(ability));
 +                })
 +                .toList();
 +        if (matches.size() != 1) {
 +            throw new IllegalStateException(
 +                    "expected one activated ability labeled " + action.get("ability").getAsString()
-+                            + " on " + source.getName() + ", found " + matches.size());
++                            + " on " + source.getName() + ", found " + matches.size()
++                            + "; source zone=" + source.getZone().getZoneType()
++                            + "; candidates=" + candidates.stream()
++                                    .map(ability -> String.valueOf(ability.getDescription())
++                                            + " [canPlay=" + ability.canPlay() + "]")
++                                    .toList());
 +        }
 +        SpellAbility ability = matches.get(0);
 +        assertTrue(ability.canPlay(), "scripted activation should be legal: " + ability.getDescription());
 +        ScriptedController controller = (ScriptedController) player.getController();
++        Map<Integer, Integer> manaBefore = controller.hasManaChoices()
++                ? controller.manaSourceCounts() : null;
 +        assertTrue(PlaySpellAbility.playSpellAbility(controller, player, ability));
++        if (manaBefore != null) controller.verifyManaSourcesSpent(manaBefore);
 +    }
 +
 +    private static String loyaltyCostLabel(SpellAbility ability) {
@@ -873,9 +1043,17 @@ index 00000000..799866e8
 +        return labels.size() == 1 ? labels.get(0) : null;
 +    }
 +
-+    private static String normalizeAbilityLabel(String label) {
++    private static String normalizeAbilityLabel(String label, Card host) {
++        String hostName = host.getName();
++        if (hostName != null && !hostName.isBlank()) {
++            label = label.replaceAll(
++                    "(?i)\\b" + java.util.regex.Pattern.quote(hostName) + "\\b", "this");
++        }
 +        return label.toLowerCase(java.util.Locale.ROOT)
 +                .replace('\u2212', '-')
++                .replace("cardname", "this")
++                .replace("{this}", "this")
++                .replace("this card", "this")
 +                .replaceAll("\\s+", " ")
 +                .replaceFirst("\\.$", "")
 +                .trim();
@@ -1030,7 +1208,7 @@ index 00000000..799866e8
 +        return name;
 +    }
 +
-+    private boolean checkReach(JsonObject scenario, Game game) {
++    private boolean checkReach(JsonObject scenario, Game game, Map<String, Card> labels) {
 +        JsonObject reach = scenario.getAsJsonObject("reach");
 +        if (reach == null) return true;
 +        if (reach.has("life")) {
@@ -1063,8 +1241,19 @@ index 00000000..799866e8
 +                default -> throw new IllegalArgumentException("unsupported Forge reach zone " + zoneName);
 +            };
 +            String cardName = requiredString(assertion, "card");
++            String expectedLabel = assertion.has("label")
++                    ? requiredString(assertion, "label") : null;
++            if (expectedLabel != null && zone != ZoneType.Battlefield) {
++                throw new IllegalArgumentException(
++                        "reach.label is only valid for battlefield permanents");
++            }
++            if (expectedLabel != null && !labels.containsKey(expectedLabel)) {
++                throw new IllegalArgumentException("unknown battlefield label " + expectedLabel);
++            }
 +            long count = game.getPlayers().get(playerIndex).getZone(zone).getCards().stream()
 +                    .filter(card -> projectedName(card).equals(cardName))
++                    .filter(card -> expectedLabel == null
++                            || expectedLabel.equals(labelForCard(card, labels)))
 +                    .filter(card -> zone != ZoneType.Battlefield
 +                            || matchesReachCharacteristics(card, assertion))
 +                    .count();
@@ -1092,6 +1281,13 @@ index 00000000..799866e8
 +                        .equals(sortedJsonStrings(assertion.getAsJsonArray("subtypes")))) return false;
 +        if (assertion.has("colors")
 +                && !colors(card).equals(sortedJsonStrings(assertion.getAsJsonArray("colors")))) return false;
++        if (assertion.has("tapped")) {
++            if (!assertion.get("tapped").isJsonPrimitive()
++                    || !assertion.getAsJsonPrimitive("tapped").isBoolean()) {
++                throw new IllegalArgumentException("reach.tapped must be a boolean");
++            }
++            if (card.isTapped() != assertion.get("tapped").getAsBoolean()) return false;
++        }
 +        if (assertion.has("counters")) {
 +            JsonObject expectedCounters = assertion.getAsJsonObject("counters");
 +            for (Map.Entry<String, JsonElement> entry : expectedCounters.entrySet()) {
@@ -1126,14 +1322,24 @@ index 00000000..799866e8
 +        return value.get(key).getAsString();
 +    }
 +
++    private static void assertNoScriptedControllerFailures(List<String> failures) {
++        assertTrue(
++                failures.isEmpty(),
++                "swallowed scripted controller failure(s): " + failures);
++    }
++
 +    private static final class ScriptedController extends PlayerControllerForTests {
 +        private final Deque<OutsideGameChoice> outsideGameChoices = new ArrayDeque<>();
 +        private final Deque<ManaScriptPayment> manaChoices = new ArrayDeque<>();
 +        private final Deque<List<String>> surveilChoices = new ArrayDeque<>();
++        private final Deque<List<String>> discardChoices = new ArrayDeque<>();
++        private final Deque<List<Card>> discardZoneOrders = new ArrayDeque<>();
++        private final Deque<List<String>> triggerTargetChoices;
 +        private final Deque<String> replacementChoices = new ArrayDeque<>();
 +        private final Deque<String> singleEntityCardChoices = new ArrayDeque<>();
 +        private final Map<String, Card> labels;
 +        private final Map<Player, Deque<Player>> opponentChoicesByChooser;
++        private final List<String> scriptedFailures;
 +        private boolean noOutsideGameChoiceExpected;
 +        private boolean outsideGameChoiceObserved;
 +        private boolean pendingOutsideGameCancellation;
@@ -1142,9 +1348,32 @@ index 00000000..799866e8
 +        private ScriptedController(
 +                Game game, Player player, LobbyPlayer lobbyPlayer, Map<String, Card> labels,
 +                Map<Player, Deque<Player>> opponentChoicesByChooser) {
++            this(game, player, lobbyPlayer, labels, opponentChoicesByChooser, new ArrayDeque<>(),
++                    new ArrayList<>());
++        }
++
++        private ScriptedController(
++                Game game, Player player, LobbyPlayer lobbyPlayer, Map<String, Card> labels,
++                Map<Player, Deque<Player>> opponentChoicesByChooser,
++                Deque<List<String>> triggerTargetChoices) {
++            this(game, player, lobbyPlayer, labels, opponentChoicesByChooser, triggerTargetChoices,
++                    new ArrayList<>());
++        }
++
++        private ScriptedController(
++                Game game, Player player, LobbyPlayer lobbyPlayer, Map<String, Card> labels,
++                Map<Player, Deque<Player>> opponentChoicesByChooser,
++                Deque<List<String>> triggerTargetChoices, List<String> scriptedFailures) {
 +            super(game, player, lobbyPlayer);
 +            this.labels = labels;
 +            this.opponentChoicesByChooser = opponentChoicesByChooser;
++            this.triggerTargetChoices = triggerTargetChoices;
++            this.scriptedFailures = scriptedFailures;
++        }
++
++        private IllegalStateException failClosed(String message) {
++            scriptedFailures.add(message);
++            return new IllegalStateException(message);
 +        }
 +
 +        private static final class ManaScriptPayment {
@@ -1172,15 +1401,15 @@ index 00000000..799866e8
 +
 +        private Player consumeScriptedOpponent(Player chooser) {
 +            if (chooser.getOpponents().size() != 1) {
-+                throw new IllegalStateException("ambiguous scripted opponent");
++                throw failClosed("ambiguous scripted opponent");
 +            }
 +            Player opponent = chooser.getOpponents().get(0);
 +            Deque<Player> choices = opponentChoicesByChooser.get(chooser);
 +            if (choices == null || choices.isEmpty()) {
-+                throw new IllegalStateException("unscripted opponent selection");
++                throw failClosed("unscripted opponent selection");
 +            }
 +            if (choices.peekFirst() != opponent) {
-+                throw new IllegalStateException("scripted opponent does not match the caster's opponent");
++                throw failClosed("scripted opponent does not match the caster's opponent");
 +            }
 +            choices.removeFirst();
 +            if (choices.isEmpty()) opponentChoicesByChooser.remove(chooser);
@@ -1189,7 +1418,7 @@ index 00000000..799866e8
 +
 +        private void expectNoOutsideGameChoice() {
 +            if (noOutsideGameChoiceExpected) {
-+                throw new IllegalStateException("duplicate no-outside-game-choice expectation");
++                throw failClosed("duplicate no-outside-game-choice expectation");
 +            }
 +            noOutsideGameChoiceExpected = true;
 +        }
@@ -1200,6 +1429,14 @@ index 00000000..799866e8
 +
 +        private void addSurveilChoice(List<String> graveyardLabels) {
 +            surveilChoices.addLast(List.copyOf(graveyardLabels));
++        }
++
++        private void addDiscardChoice(List<String> discardLabels) {
++            discardChoices.addLast(List.copyOf(discardLabels));
++        }
++
++        private void addTriggerTargetChoice(List<String> targetLabels) {
++            triggerTargetChoices.addLast(List.copyOf(targetLabels));
 +        }
 +
 +        private void addReplacementChoice(String description) {
@@ -1213,7 +1450,7 @@ index 00000000..799866e8
 +        private String consumeSingleEntityCardChoice(String title) {
 +            String expected = singleEntityCardChoices.pollFirst();
 +            if (expected == null) {
-+                throw new IllegalStateException("unscripted single-entity card choice: " + title);
++                throw failClosed("unscripted single-entity card choice: " + title);
 +            }
 +            return expected;
 +        }
@@ -1226,7 +1463,7 @@ index 00000000..799866e8
 +            Map<Integer, Integer> counts = new java.util.HashMap<>();
 +            for (Mana mana : player.getManaPool()) {
 +                Card source = mana.getSourceCard();
-+                if (source == null) throw new IllegalStateException("mana source is not a card");
++                if (source == null) throw failClosed("mana source is not a card");
 +                counts.merge(source.getId(), 1, Integer::sum);
 +            }
 +            return counts;
@@ -1242,7 +1479,7 @@ index 00000000..799866e8
 +                        .filter(candidate -> candidate.getValue().getId() == entry.getKey())
 +                        .map(Map.Entry::getKey)
 +                        .findFirst()
-+                        .orElseThrow(() -> new IllegalStateException("spent mana source is not labeled"));
++                        .orElseThrow(() -> failClosed("spent mana source is not labeled"));
 +                spent.add(label);
 +            }
 +            assertEquals(
@@ -1264,6 +1501,16 @@ index 00000000..799866e8
 +                    surveilChoices.isEmpty(),
 +                    "unconsumed surveil choices for " + player.getName() + ": " + surveilChoices);
 +            assertTrue(
++                    discardChoices.isEmpty(),
++                    "unconsumed discard choices for " + player.getName() + ": " + discardChoices);
++            assertTrue(
++                    discardZoneOrders.isEmpty(),
++                    "unconsumed discard zone orders for " + player.getName() + ": " + discardZoneOrders);
++            assertTrue(
++                    triggerTargetChoices.isEmpty(),
++                    "unconsumed trigger target choices for " + player.getName() + ": "
++                            + triggerTargetChoices);
++            assertTrue(
 +                    replacementChoices.isEmpty(),
 +                    "unconsumed replacement choices for " + player.getName() + ": " + replacementChoices);
 +            assertTrue(
@@ -1284,24 +1531,52 @@ index 00000000..799866e8
 +        @Override
 +        public SpellAbility getAbilityToPlay(Card host, List<SpellAbility> abilities, ITriggerEvent triggerEvent) {
 +            if (abilities.size() == 1) return abilities.get(0);
-+            throw new IllegalStateException("unscripted getAbilityToPlay: " + host.getName());
++            throw failClosed("unscripted getAbilityToPlay: " + host.getName());
 +        }
 +
 +        @Override
 +        public List<SpellAbility> chooseSpellAbilityToPlay() {
-+            if (!passingPriority) throw new IllegalStateException("unscripted priority choice");
++            if (!passingPriority) throw failClosed("unscripted priority choice");
 +            return null;
 +        }
 +
 +        @Override
 +        public boolean chooseTargetsFor(SpellAbility ability) {
-+            throw new IllegalStateException("unscripted targets: " + ability.getHostCard().getName());
++            List<String> targetLabels = triggerTargetChoices.pollFirst();
++            if (targetLabels == null) {
++                throw failClosed("unscripted targets: " + ability.getHostCard().getName());
++            }
++            if (ability.getActivatingPlayer() != null && ability.getActivatingPlayer() != player) {
++                throw failClosed("target choice requested for wrong player");
++            }
++            int min = ability.getMinTargets();
++            int max = ability.getMaxTargets();
++            if (targetLabels.size() < min || targetLabels.size() > max) {
++                throw failClosed(
++                        "scripted target count " + targetLabels.size() + " outside " + min + ".." + max);
++            }
++            for (String label : targetLabels) {
++                Card target = labels.get(label);
++                if (target == null) {
++                    throw failClosed("unknown scripted target label " + label);
++                }
++                if (!ability.canTarget(target)) {
++                    throw failClosed("scripted target is not legal: " + label);
++                }
++                if (!ability.getTargets().add(target)) {
++                    throw failClosed("could not add scripted target: " + label);
++                }
++            }
++            if (!ability.isTargetNumberValid()) {
++                throw failClosed("scripted target count is invalid");
++            }
++            return true;
 +        }
 +
 +        @Override
 +        public List<SpellAbility> orderSimultaneousSa(List<SpellAbility> abilities) {
 +            if (abilities.size() != 1) {
-+                throw new IllegalStateException("unscripted simultaneous trigger order");
++                throw failClosed("unscripted simultaneous trigger order");
 +            }
 +            return abilities;
 +        }
@@ -1335,7 +1610,7 @@ index 00000000..799866e8
 +                ZoneType destination, List<ZoneType> origin, SpellAbility ability, CardCollection choices,
 +                DelayedReveal reveal, String selectPrompt, boolean optional, Player decider) {
 +            if (selectPrompt == null || selectPrompt.isBlank()) {
-+                throw new IllegalStateException("single-card zone choice needs a prompt");
++                throw failClosed("single-card zone choice needs a prompt");
 +            }
 +            String prompt = selectPrompt.toLowerCase(java.util.Locale.ROOT);
 +            boolean outsideGamePrompt = origin.contains(ZoneType.Sideboard)
@@ -1343,33 +1618,33 @@ index 00000000..799866e8
 +                            || prompt.contains("outside the game")
 +                            || prompt.contains("card to put into that player's hand"));
 +            if (!outsideGamePrompt) {
-+                throw new IllegalStateException("unscripted single-card zone choice: " + selectPrompt);
++                throw failClosed("unscripted single-card zone choice: " + selectPrompt);
 +            }
 +            if (choices.isEmpty()) return null;
 +            outsideGameChoiceObserved = true;
 +            if (noOutsideGameChoiceExpected) {
-+                throw new IllegalStateException("unexpected outside-game card-choice prompt");
++                throw failClosed("unexpected outside-game card-choice prompt");
 +            }
 +            if (outsideGameChoices.isEmpty()) {
-+                throw new IllegalStateException("unscripted outside-game card choice: " + selectPrompt);
++                throw failClosed("unscripted outside-game card choice: " + selectPrompt);
 +            }
 +            OutsideGameChoice group = outsideGameChoices.peekFirst();
 +            if (!group.accept()) {
-+                if (!optional) throw new IllegalStateException("empty choice for mandatory prompt");
++                if (!optional) throw failClosed("empty choice for mandatory prompt");
 +                if (pendingOutsideGameCancellation) {
-+                    throw new IllegalStateException("duplicate pending outside-game cancellation");
++                    throw failClosed("duplicate pending outside-game cancellation");
 +                }
 +                pendingOutsideGameCancellation = true;
 +                return null;
 +            }
 +            if (group.cards().isEmpty()) {
-+                throw new IllegalStateException("accepted outside-game prompt has no scripted card");
++                throw failClosed("accepted outside-game prompt has no scripted card");
 +            }
 +            String expected = group.cards().remove(0);
 +            Card selected = choices.stream()
 +                    .filter(card -> card.getName().equals(expected))
 +                    .findFirst()
-+                    .orElseThrow(() -> new IllegalStateException("scripted card not offered: " + expected));
++                    .orElseThrow(() -> failClosed("scripted card not offered: " + expected));
 +            if (group.cards().isEmpty()) outsideGameChoices.removeFirst();
 +            return selected;
 +        }
@@ -1378,29 +1653,78 @@ index 00000000..799866e8
 +        public CardCollection chooseCardsToDiscardFrom(
 +                Player discarder, SpellAbility ability, CardCollection validCards,
 +                int min, int max, CardCollectionView visibleToChooser) {
-+            throw new IllegalStateException("unscripted discard choice");
++            if (discarder != player) {
++                throw failClosed("discard choice requested for wrong player");
++            }
++            if (min < 0 || max < min) {
++                throw failClosed("invalid discard choice bounds");
++            }
++            List<String> scripted = discardChoices.pollFirst();
++            if (scripted == null) {
++                throw failClosed("unscripted discard choice");
++            }
++            if (scripted.size() < min || scripted.size() > max) {
++                throw failClosed(
++                        "scripted discard count " + scripted.size() + " is outside " + min + ".." + max);
++            }
++            CardCollection selected = new CardCollection();
++            Set<Card> uniqueCards = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
++            for (String label : scripted) {
++                Card card = labels.get(label);
++                if (card == null || !validCards.contains(card)) {
++                    throw failClosed("scripted discard card not offered: " + label);
++                }
++                if (!uniqueCards.add(card)) {
++                    throw failClosed("scripted discard cards cannot repeat: " + label);
++                }
++                selected.add(card);
++            }
++            if (selected.size() > 1) discardZoneOrders.addLast(List.copyOf(selected));
++            return selected;
 +        }
 +
 +        @Override
 +        public CardCollectionView orderMoveToZoneList(
 +                CardCollectionView cards, ZoneType destination, SpellAbility source) {
-+            throw new IllegalStateException("unscripted zone-move order");
++            if (destination != ZoneType.Graveyard) {
++                throw failClosed("unsupported zone-move order destination: " + destination);
++            }
++            List<Card> scripted = discardZoneOrders.pollFirst();
++            if (scripted == null) {
++                throw failClosed("unscripted zone-move order");
++            }
++            if (scripted.size() != cards.size()) {
++                throw failClosed("scripted discard order does not match the zone-move list");
++            }
++            Set<Card> remaining = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
++            for (Card card : cards) remaining.add(card);
++            CardCollection ordered = new CardCollection();
++            for (Card card : scripted) {
++                if (!remaining.remove(card)) {
++                    throw failClosed("scripted discard order contains an unoffered card");
++                }
++                ordered.add(card);
++            }
++            if (!remaining.isEmpty()) {
++                throw failClosed("scripted discard order omitted zone-move cards");
++            }
++            return ordered;
 +        }
 +
 +        @Override
 +        public ImmutablePair<CardCollection, CardCollection> arrangeForSurveil(CardCollection topN) {
 +            List<String> scripted = surveilChoices.pollFirst();
 +            if (scripted == null) {
-+                throw new IllegalStateException("unscripted surveil choice");
++                throw failClosed("unscripted surveil choice");
 +            }
 +            Set<Card> toGraveyard = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
 +            for (String label : scripted) {
 +                Card card = labels.get(label);
 +                if (card == null || !topN.contains(card)) {
-+                    throw new IllegalStateException("scripted surveil card not offered: " + label);
++                    throw failClosed("scripted surveil card not offered: " + label);
 +                }
 +                if (!toGraveyard.add(card)) {
-+                    throw new IllegalStateException("duplicate scripted surveil card: " + label);
++                    throw failClosed("duplicate scripted surveil card: " + label);
 +                }
 +            }
 +            CardCollection toTop = new CardCollection();
@@ -1419,27 +1743,27 @@ index 00000000..799866e8
 +        public CardCollectionView chooseCardsForEffect(
 +                CardCollectionView choices, SpellAbility ability, String title,
 +                int min, int max, boolean optional, Map<String, Object> params) {
-+            throw new IllegalStateException("unscripted card choice: " + title);
++            throw failClosed("unscripted card choice: " + title);
 +        }
 +
 +        @Override
 +        public List<Card> chooseCardsForZoneChange(
 +                ZoneType destination, List<ZoneType> origin, SpellAbility ability, CardCollection choices,
 +                int min, int max, DelayedReveal reveal, String selectPrompt, Player decider) {
-+            throw new IllegalStateException("unscripted multi-card zone choice: " + selectPrompt);
++            throw failClosed("unscripted multi-card zone choice: " + selectPrompt);
 +        }
 +
 +        @Override
 +        public ReplacementEffect chooseSingleReplacementEffect(List<ReplacementEffect> choices) {
 +            String expected = replacementChoices.pollFirst();
 +            if (expected == null) {
-+                throw new IllegalStateException("unscripted replacement selection: " + choices);
++                throw failClosed("unscripted replacement selection: " + choices);
 +            }
 +            List<ReplacementEffect> matching = choices.stream()
 +                    .filter(choice -> expected.equals(choice.getDescription()))
 +                    .toList();
 +            if (matching.size() != 1) {
-+                throw new IllegalStateException(
++                throw failClosed(
 +                        "scripted replacement description did not identify one choice: "
 +                                + expected + " in " + choices);
 +            }
@@ -1449,20 +1773,30 @@ index 00000000..799866e8
 +        @Override
 +        public CounterType chooseCounterType(
 +                List<CounterType> choices, SpellAbility ability, String title, Map<String, Object> params) {
-+            throw new IllegalStateException("unscripted counter selection: " + title);
++            if (choices != null && choices.size() == 1
++                    && ability != null && ability.hasParam("CounterType")) {
++                try {
++                    CounterType scriptedType = CounterType.getType(ability.getParam("CounterType"));
++                    if (scriptedType == choices.get(0)) return scriptedType;
++                } catch (RuntimeException error) {
++                    throw failClosed(
++                            "invalid scripted CounterType: " + ability.getParam("CounterType"));
++                }
++            }
++            throw failClosed("unscripted counter selection: " + title);
 +        }
 +
 +        @Override
 +        public List<SpellAbility> chooseSpellAbilitiesForEffect(
 +                List<SpellAbility> choices, SpellAbility ability, String title, int num,
 +                Map<String, Object> params) {
-+            throw new IllegalStateException("unscripted spell-ability choice: " + title);
++            throw failClosed("unscripted spell-ability choice: " + title);
 +        }
 +
 +        @Override
 +        public Mana chooseManaFromPool(List<Mana> choices) {
 +            if (manaChoices.isEmpty()) {
-+                throw new IllegalStateException("unscripted mana choice");
++                throw failClosed("unscripted mana choice");
 +            }
 +            ManaScriptPayment payment = manaChoices.peekFirst();
 +            List<String> offeredSources = choices.stream()
@@ -1476,18 +1810,18 @@ index 00000000..799866e8
 +                    + (wholeSetOffered ? "whole-set" : "partial-set")
 +                    + " scripted=" + payment.sourceOrder + " offered=" + offeredSources);
 +            if (payment.nextSource >= payment.sourceOrder.size()) {
-+                throw new IllegalStateException("unscripted mana choice after scripted sources were used");
++                throw failClosed("unscripted mana choice after scripted sources were used");
 +            }
 +            String sourceLabel = payment.sourceOrder.get(payment.nextSource);
 +            Card source = labels.get(sourceLabel);
 +            if (source == null) {
-+                throw new IllegalStateException("unknown mana source label: " + sourceLabel);
++                throw failClosed("unknown mana source label: " + sourceLabel);
 +            }
 +            Mana selected = choices.stream()
 +                    .filter(mana -> mana.getSourceCard() != null
 +                            && source.getId() == mana.getSourceCard().getId())
 +                    .findFirst()
-+                    .orElseThrow(() -> new IllegalStateException(
++                    .orElseThrow(() -> failClosed(
 +                            "scripted mana source was not offered: " + sourceLabel));
 +            payment.nextSource++;
 +            return selected;
@@ -1499,15 +1833,15 @@ index 00000000..799866e8
 +                boolean optional, Player relatedPlayer, Map<String, Object> params) {
 +            Player caster = ability == null ? null : ability.getActivatingPlayer();
 +            if (caster == null || choices.isEmpty()) {
-+                throw new IllegalStateException("unscripted or empty single-entity selection: " + title);
++                throw failClosed("unscripted or empty single-entity selection: " + title);
 +            }
 +            if (choices.get(0) instanceof Player) {
 +                if (caster.getOpponents().size() != 1 || choices.size() != 1) {
-+                    throw new IllegalStateException("unscripted or ambiguous opponent selection: " + title);
++                    throw failClosed("unscripted or ambiguous opponent selection: " + title);
 +                }
 +                Player opponent = consumeScriptedOpponent(caster);
 +                if (choices.get(0) != opponent) {
-+                    throw new IllegalStateException("opponent selection is not the caster's opponent: " + title);
++                    throw failClosed("opponent selection is not the caster's opponent: " + title);
 +                }
 +                return choices.get(0);
 +            }
@@ -1517,13 +1851,13 @@ index 00000000..799866e8
 +                        .filter(choice -> expected.equals(((Card) choice).getName()))
 +                        .toList();
 +                if (matching.size() != 1) {
-+                    throw new IllegalStateException(
++                    throw failClosed(
 +                            "scripted single-entity card choice did not identify one candidate: "
 +                                    + expected + " in " + choices);
 +                }
 +                return matching.get(0);
 +            }
-+            throw new IllegalStateException("unscripted single-entity selection: " + title + " in " + choices);
++            throw failClosed("unscripted single-entity selection: " + title + " in " + choices);
 +        }
 +
 +        private String labelForSource(Card source) {
@@ -1539,7 +1873,7 @@ index 00000000..799866e8
 +        public <T extends GameEntity> List<T> chooseEntitiesForEffect(
 +                FCollectionView<T> choices, int min, int max, DelayedReveal reveal, SpellAbility ability,
 +                String title, Player relatedPlayer, Map<String, Object> params) {
-+            throw new IllegalStateException("unscripted entity list choice: " + title);
++            throw failClosed("unscripted entity list choice: " + title);
 +        }
 +
 +        @Override
@@ -1552,29 +1886,29 @@ index 00000000..799866e8
 +                    && message.startsWith("Cancel Search?")) {
 +                OutsideGameChoice choice = outsideGameChoices.peekFirst();
 +                if (choice == null || choice.accept() || !choice.cards().isEmpty()) {
-+                    throw new IllegalStateException("invalid scripted outside-game cancellation");
++                    throw failClosed("invalid scripted outside-game cancellation");
 +                }
 +                outsideGameChoices.removeFirst();
 +                pendingOutsideGameCancellation = false;
 +                return true;
 +            }
-+            throw new IllegalStateException("unscripted confirmation: " + message);
++            throw failClosed("unscripted confirmation: " + message);
 +        }
 +
 +        @Override
 +        public boolean confirmTrigger(WrappedAbility ability) {
-+            throw new IllegalStateException("unscripted trigger confirmation: " + ability.getHostCard().getName());
++            throw failClosed("unscripted trigger confirmation: " + ability.getHostCard().getName());
 +        }
 +
 +        @Override
 +        public boolean confirmReplacementEffect(
 +                ReplacementEffect replacement, SpellAbility ability, GameEntity affected, String question) {
-+            throw new IllegalStateException("unscripted replacement choice: " + question);
++            throw failClosed("unscripted replacement choice: " + question);
 +        }
 +
 +        @Override
 +        public boolean playSaFromPlayEffect(SpellAbility ability) {
-+            throw new IllegalStateException("unscripted play-from-effect choice");
++            throw failClosed("unscripted play-from-effect choice");
 +        }
 +    }
 +

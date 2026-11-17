@@ -1,0 +1,58 @@
+From c6a11ad9d4eda001c36088a4df9f6bb0a7ecdd70 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Tue, 17 Nov 2026 18:05:54 +0000
+Subject: [PATCH] Expose scenario resolution events for harnesses
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/scenario.rs | 19 +++++++++++++------
+ 1 file changed, 13 insertions(+), 6 deletions(-)
+
+diff --git a/crates/engine/src/game/scenario.rs b/crates/engine/src/game/scenario.rs
+index fdb684f30..55aa5a1c7 100644
+--- a/crates/engine/src/game/scenario.rs
++++ b/crates/engine/src/game/scenario.rs
+@@ -1907,6 +1907,12 @@ impl GameRunner {
+ 
+     /// Pass priority until the stack is empty, or stop if the engine no longer advances.
+     pub fn advance_until_stack_empty(&mut self) {
++        let _ = self.advance_until_stack_empty_with_events();
++    }
++
++    /// Pass priority until the stack is empty, returning the events emitted while advancing.
++    pub fn advance_until_stack_empty_with_events(&mut self) -> Vec<GameEvent> {
++        let mut events = Vec::new();
+         for _ in 0..40 {
+             // CR 603.3b (#531): drain the per-controller ordering prompt with identity
+             // before checking stack emptiness — the prompt can surface mid-resolution
+@@ -1938,20 +1944,21 @@ impl GameRunner {
+                 if chosen.len() != *count {
+                     break;
+                 }
+-                if apply_as_current(&mut self.state, GameAction::SelectCards { cards: chosen })
+-                    .is_err()
+-                {
+-                    break;
++                match apply_as_current(&mut self.state, GameAction::SelectCards { cards: chosen }) {
++                    Ok(result) => events.extend(result.events),
++                    Err(_) => break,
+                 }
+                 continue;
+             }
+             if self.state.stack.is_empty() {
+                 break;
+             }
+-            if apply_as_current(&mut self.state, GameAction::PassPriority).is_err() {
+-                break;
++            match apply_as_current(&mut self.state, GameAction::PassPriority) {
++                Ok(result) => events.extend(result.events),
++                Err(_) => break,
+             }
+         }
++        events
+     }
+ 
+     /// Choose the first legal target for the current targeting-style waiting state.
+-- 
+2.56.0
+

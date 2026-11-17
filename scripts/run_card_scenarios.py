@@ -44,6 +44,7 @@ REACH_FIELDS = {
     "life",
     "zone",
     "card",
+    "label",
     "count",
     "tapped_labels",
     "types",
@@ -77,7 +78,9 @@ KNOWN_DIFF_DIGEST_FIELDS = {
 KNOWN_DIFF_CATEGORIES = {"engine-bug", "xmage-bug", "forge-bug", "unsupported"}
 
 
-def _validate_reach_fields(name: str, reach: object, path: str = "reach") -> None:
+def _validate_reach_fields(
+    name: str, reach: object, path: str = "reach", oracle: str = "xmage"
+) -> None:
     if not isinstance(reach, dict):
         raise TypeError(f"{name}: {path} must be a table")
     unknown = reach.keys() - REACH_FIELDS
@@ -87,6 +90,18 @@ def _validate_reach_fields(name: str, reach: object, path: str = "reach") -> Non
         raise TypeError(f"{name}: {path}.token must be a boolean")
     if "token" in reach and reach.get("zone", "graveyard") != "battlefield":
         raise ValueError(f"{name}: {path}.token is only valid for battlefield cards")
+    if "label" in reach:
+        if oracle == "xmage":
+            raise ValueError(
+                f"{name}: {path}.label is unsupported for oracle = 'xmage'; "
+                "label-based reach assertions require oracle = 'forge'"
+            )
+        if not isinstance(reach["label"], str) or not reach["label"]:
+            raise TypeError(f"{name}: {path}.label must be a battlefield label")
+        if reach.get("zone", "graveyard") != "battlefield":
+            raise ValueError(
+                f"{name}: {path}.label is only valid for battlefield permanents"
+            )
     if "solved" in reach:
         if not isinstance(reach["solved"], bool):
             raise TypeError(f"{name}: {path}.solved must be a boolean")
@@ -110,7 +125,7 @@ def _validate_reach_fields(name: str, reach: object, path: str = "reach") -> Non
         if not checks:
             raise ValueError(f"{name}: reach.all must contain at least one assertion")
         for index, check in enumerate(checks):
-            _validate_reach_fields(name, check, f"{path}.all[{index}]")
+            _validate_reach_fields(name, check, f"{path}.all[{index}]", oracle)
 
 
 def _card_names(cards: str) -> list[str]:
@@ -769,7 +784,7 @@ def format_known_diff_report(report: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _validate_setup(scenario: dict) -> None:
+def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
     name = scenario.get("name", "<unnamed>")
     for field in ("active_player", "priority_player"):
         if field in scenario and (
@@ -777,7 +792,7 @@ def _validate_setup(scenario: dict) -> None:
         ):
             raise ValueError(f"{name}: {field} must be 0 or 1")
     if "reach" in scenario:
-        _validate_reach_fields(name, scenario["reach"])
+        _validate_reach_fields(name, scenario["reach"], oracle=oracle)
     setup = scenario.get("setup")
     if not isinstance(setup, dict):
         raise TypeError(f"{name}: setup must be a table")
@@ -1222,7 +1237,7 @@ def load_specs(paths: list[Path]) -> dict:
                 or not scenario["name"].strip()
             ):
                 raise ValueError(f"{path}: scenario {index} is missing a name")
-            _validate_setup(scenario)
+            _validate_setup(scenario, oracle)
             scenarios.append(scenario)
     names = [scenario["name"] for scenario in scenarios]
     if len(names) != len(set(names)):

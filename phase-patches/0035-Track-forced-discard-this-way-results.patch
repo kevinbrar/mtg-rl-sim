@@ -1,0 +1,322 @@
+From 9c8a9b9e97bed68a1683e0edca269b7dfb95af67 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Tue, 17 Nov 2026 17:32:52 +0000
+Subject: [PATCH] Fix forced discard this-way bookkeeping
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/effects/discard.rs     | 18 +++++-
+ crates/engine/src/game/effects/mod.rs         | 20 ++++---
+ .../src/game/engine_resolution_choices.rs     |  8 +--
+ crates/engine/src/types/game_state.rs         |  9 +--
+ .../tests/integration/chain_of_smog_copy.rs   |  4 +-
+ .../tests/integration/seasoned_cryomancer.rs  | 55 ++++++++++---------
+ 6 files changed, 69 insertions(+), 45 deletions(-)
+
+diff --git a/crates/engine/src/game/effects/discard.rs b/crates/engine/src/game/effects/discard.rs
+index 1f5991318..f0447f31e 100644
+--- a/crates/engine/src/game/effects/discard.rs
++++ b/crates/engine/src/game/effects/discard.rs
+@@ -585,6 +585,16 @@ pub fn resolve(
+         } else if !up_to && hand_cards.len() <= count {
+             // Forced discard — no choice needed, discard all eligible cards.
+             // When up_to=true, always present the choice (player may discard fewer).
++            // CR 701.9b + CR 603.12: these discards still happen during this
++            // resolution and must feed its "this way" reflexive triggers.
++            let completion =
++                crate::types::game_state::PendingDiscardBatchCompletion::DiscardedCards {
++                    chosen: hand_cards
++                        .iter()
++                        .filter_map(|id| state.objects.get(id))
++                        .map(ObjectIncarnationRef::from_object)
++                        .collect(),
++                };
+             for (i, obj_id) in hand_cards.iter().enumerate() {
+                 if let DiscardOutcome::NeedsReplacementChoice(player) =
+                     discard_caused_by_effect_with_source_and_frame(
+@@ -617,11 +627,17 @@ pub fn resolve(
+                         discard_frame,
+                         events,
+                         events_before_self,
+-                        crate::types::game_state::PendingDiscardBatchCompletion::Standard,
++                        completion,
+                     );
+                     return Ok(());
+                 }
+             }
++            super::finalize_discard_completion(
++                state,
++                &completion,
++                discard_frame,
++                &events[events_before_self..],
++            );
+         } else if count > 0 || up_to {
+             // CR 701.9b: Player chooses — present interactive selection.
+             state.waiting_for = crate::types::game_state::WaitingFor::DiscardChoice {
+diff --git a/crates/engine/src/game/effects/mod.rs b/crates/engine/src/game/effects/mod.rs
+index f708bad42..243a8a616 100644
+--- a/crates/engine/src/game/effects/mod.rs
++++ b/crates/engine/src/game/effects/mod.rs
+@@ -19884,7 +19884,7 @@ fn perform_player_scope_sacrifices(
+     // completion seam the resumed choice runs through, so the flag must be
+     // stamped onto the stashed continuation frame the same way
+     // `resolve_optional_effect_decision` (accepted "you may") and
+-    // `finalize_discard_choice_completion` (an answered discard choice) do.
++    // `finalize_discard_completion` (a completed discard instruction) do.
+     //
+     // Guarded on the completion LEDGER, not on the fact that the seam ran: a
+     // declined / empty selection sacrifices nothing, and CR 118.12 makes the
+@@ -20755,11 +20755,11 @@ pub(crate) fn drain_pending_discard_batch(
+ 
+     if matches!(
+         &batch.completion,
+-        PendingDiscardBatchCompletion::DiscardChoice { .. }
++        PendingDiscardBatchCompletion::DiscardedCards { .. }
+     ) {
+         let mut window = batch.preceding_events.clone();
+         window.extend_from_slice(events);
+-        finalize_discard_choice_completion(state, &batch.completion, batch.discard_frame, &window);
++        finalize_discard_completion(state, &batch.completion, batch.discard_frame, &window);
+     }
+ 
+     // CR 608.2c: the terminal marker the pre-pause action could not emit,
+@@ -20870,7 +20870,7 @@ pub(crate) fn drain_pending_discard_batch(
+     );
+     if !matches!(
+         &batch.completion,
+-        PendingDiscardBatchCompletion::DiscardChoice { .. }
++        PendingDiscardBatchCompletion::DiscardedCards { .. }
+     ) {
+         state.last_zone_changed_ids = window
+             .iter()
+@@ -20883,18 +20883,20 @@ pub(crate) fn drain_pending_discard_batch(
+     Ok(PendingDiscardBatchOutcome::Completed)
+ }
+ 
+-/// Finish the choice-specific bookkeeping that must precede a discard effect's
+-/// terminal marker, whether the selected cards settled synchronously or after
+-/// one or more replacement choices.
+-pub(crate) fn finalize_discard_choice_completion(
++/// Finish shared bookkeeping before a discard effect's terminal marker,
++/// whether cards were chosen interactively, forced, or settled after a
++/// replacement choice.
++pub(crate) fn finalize_discard_completion(
+     state: &mut GameState,
+     completion: &PendingDiscardBatchCompletion,
+     discard_frame: Option<crate::types::identifiers::DiscardFrameId>,
+     events: &[GameEvent],
+ ) {
+-    let PendingDiscardBatchCompletion::DiscardChoice { chosen } = completion else {
++    let PendingDiscardBatchCompletion::DiscardedCards { chosen } = completion else {
+         return;
+     };
++    // CR 701.9b + CR 603.12: discard results feed "this way" reflexive
++    // triggers whether a prompt was needed or the required cards were forced.
+     // CR 701.9a + CR 702.35a: a chosen card a replacement redirects on its way
+     // out of the hand (Rest in Peace, Leyline of the Void, madness → exile) is
+     // still discarded, so this completion — the single authority for what the
+diff --git a/crates/engine/src/game/engine_resolution_choices.rs b/crates/engine/src/game/engine_resolution_choices.rs
+index 8eb35b5ff..3d5b9b736 100644
+--- a/crates/engine/src/game/engine_resolution_choices.rs
++++ b/crates/engine/src/game/engine_resolution_choices.rs
+@@ -6673,7 +6673,7 @@ pub(super) fn handle_resolution_choice(
+                                 remaining: chosen_refs[index + 1..].to_vec(),
+                             },
+                             completion:
+-                                crate::types::game_state::PendingDiscardBatchCompletion::DiscardChoice {
++                                crate::types::game_state::PendingDiscardBatchCompletion::DiscardedCards {
+                                     chosen: chosen_refs,
+                                 },
+                             source_id,
+@@ -6694,10 +6694,10 @@ pub(super) fn handle_resolution_choice(
+             let events_after_move = events.len();
+ 
+             let completion =
+-                crate::types::game_state::PendingDiscardBatchCompletion::DiscardChoice {
++                crate::types::game_state::PendingDiscardBatchCompletion::DiscardedCards {
+                     chosen: chosen_refs,
+                 };
+-            effects::finalize_discard_choice_completion(
++            effects::finalize_discard_completion(
+                 state,
+                 &completion,
+                 discard_frame,
+@@ -8393,7 +8393,7 @@ pub(super) fn handle_resolution_choice(
+             // its negated twin ("If you didn't put a card onto the battlefield
+             // this way", Rulik Mons) would fire unconditionally. The sibling
+             // interactive paths already republish here — `DiscardChoice` in
+-            // `finalize_discard_choice_completion`, surveil in
++            // `finalize_discard_completion`, surveil in
+             // `BatchCompletion::SurveilKeepOnTop`, dig in `RevealRestPile`.
+             //
+             // Unconditional, exactly like that synchronous publish: `Sacrifice`
+diff --git a/crates/engine/src/types/game_state.rs b/crates/engine/src/types/game_state.rs
+index ce95d8949..032c10c5a 100644
+--- a/crates/engine/src/types/game_state.rs
++++ b/crates/engine/src/types/game_state.rs
+@@ -5909,10 +5909,11 @@ pub enum DiscardBatchCursor {
+ pub enum PendingDiscardBatchCompletion {
+     #[default]
+     Standard,
+-    /// A player already selected these cards through `WaitingFor::DiscardChoice`.
+-    /// Keep their incarnation references so neither an id-reused object nor a
+-    /// later hand card can satisfy the original selection after a pause.
+-    DiscardChoice { chosen: Vec<ObjectIncarnationRef> },
++    /// These are the cards completed by the discard instruction, whether
++    /// selected through `WaitingFor::DiscardChoice` or forced by the required
++    /// count. Keep their incarnation references across a replacement pause.
++    #[serde(rename = "DiscardChoice")]
++    DiscardedCards { chosen: Vec<ObjectIncarnationRef> },
+ }
+ 
+ /// The remainder of a `player_scope` discard clause whose fan-out was
+diff --git a/crates/engine/tests/integration/chain_of_smog_copy.rs b/crates/engine/tests/integration/chain_of_smog_copy.rs
+index 7c1e4af86..2aa35b69a 100644
+--- a/crates/engine/tests/integration/chain_of_smog_copy.rs
++++ b/crates/engine/tests/integration/chain_of_smog_copy.rs
+@@ -339,7 +339,7 @@ fn chain_of_smog_discard_choice_resumes_selected_tail_after_library_of_leng() {
+     assert!(matches!(
+         runner.state().pending_discard_batch.as_deref(),
+         Some(engine::types::game_state::PendingDiscardBatch {
+-            completion: engine::types::game_state::PendingDiscardBatchCompletion::DiscardChoice { chosen },
++            completion: engine::types::game_state::PendingDiscardBatchCompletion::DiscardedCards { chosen },
+             ..
+         }) if chosen.len() == 2
+     ));
+@@ -354,7 +354,7 @@ fn chain_of_smog_discard_choice_resumes_selected_tail_after_library_of_leng() {
+     assert!(matches!(
+         restored.pending_discard_batch.as_deref(),
+         Some(engine::types::game_state::PendingDiscardBatch {
+-            completion: engine::types::game_state::PendingDiscardBatchCompletion::DiscardChoice { chosen },
++            completion: engine::types::game_state::PendingDiscardBatchCompletion::DiscardedCards { chosen },
+             ..
+         }) if chosen.len() == 2
+     ));
+diff --git a/crates/engine/tests/integration/seasoned_cryomancer.rs b/crates/engine/tests/integration/seasoned_cryomancer.rs
+index f82276261..a17946161 100644
+--- a/crates/engine/tests/integration/seasoned_cryomancer.rs
++++ b/crates/engine/tests/integration/seasoned_cryomancer.rs
+@@ -25,12 +25,10 @@ fn resolve_cryomancer(
+     expected_target_slots: Option<usize>,
+ ) {
+     let mut cast = runner.cast(source).commit();
+-    let mut saw_discard = false;
+     let mut saw_target_prompt = false;
+ 
+     for _ in 0..32 {
+-        if saw_discard
+-            && cast.state().stack.is_empty()
++        if cast.state().stack.is_empty()
+             && matches!(cast.state().waiting_for, WaitingFor::Priority { .. })
+         {
+             break;
+@@ -44,12 +42,10 @@ fn resolve_cryomancer(
+             WaitingFor::DiscardChoice { player, count, .. } => {
+                 assert_eq!(player, P0);
+                 assert_eq!(count, 2);
+-                assert!(!saw_discard, "the ETB ability should discard only once");
+                 cast.act(GameAction::SelectCards {
+                     cards: discards.to_vec(),
+                 })
+                 .expect("choosing the two discarded cards must succeed");
+-                saw_discard = true;
+             }
+             WaitingFor::TriggerTargetSelection {
+                 player,
+@@ -79,10 +75,6 @@ fn resolve_cryomancer(
+         }
+     }
+ 
+-    assert!(
+-        saw_discard,
+-        "the ETB ability must reach its discard instruction"
+-    );
+     assert_eq!(saw_target_prompt, expected_target_slots.is_some());
+     assert!(
+         cast.state().stack.is_empty(),
+@@ -110,11 +102,8 @@ fn seasoned_cryomancer_targets_up_to_the_number_of_nonland_cards_discarded() {
+     let source = scenario
+         .add_creature_to_hand_from_oracle(P0, "Seasoned Cryomancer", 2, 3, ORACLE)
+         .id();
+-    let first_nonland = scenario.add_card_to_hand(P0, "Discarded nonland one");
+-    let second_nonland = scenario.add_card_to_hand(P0, "Discarded nonland two");
+-    let land = scenario.add_land_to_hand(P0, "Undiscarded land").id();
+-    scenario.add_card_to_library_top(P0, "Drawn card one");
+-    scenario.add_card_to_library_top(P0, "Drawn card two");
++    let first_nonland = scenario.add_card_to_library_top(P0, "Drawn nonland one");
++    let second_nonland = scenario.add_card_to_library_top(P0, "Drawn nonland two");
+     let own_creature = scenario.add_creature(P0, "Own target", 2, 2).id();
+     let opponent_creature = scenario.add_creature(P1, "Opponent target", 2, 2).id();
+     let untouched_creature = scenario.add_creature(P1, "Untouched creature", 2, 2).id();
+@@ -137,8 +126,12 @@ fn seasoned_cryomancer_targets_up_to_the_number_of_nonland_cards_discarded() {
+         engine::types::zones::Zone::Graveyard
+     );
+     assert_eq!(
+-        runner.state().objects[&land].zone,
+-        engine::types::zones::Zone::Hand
++        runner.state().objects[&first_nonland].zone,
++        engine::types::zones::Zone::Graveyard
++    );
++    assert_eq!(
++        runner.state().objects[&second_nonland].zone,
++        engine::types::zones::Zone::Graveyard
+     );
+     for target in [own_creature, opponent_creature] {
+         assert!(runner.state().objects[&target].tapped);
+@@ -153,16 +146,22 @@ fn seasoned_cryomancer_targets_up_to_the_number_of_nonland_cards_discarded() {
+     let source = scenario
+         .add_creature_to_hand_from_oracle(P0, "Seasoned Cryomancer", 2, 3, ORACLE)
+         .id();
+-    let nonland = scenario.add_card_to_hand(P0, "Discarded nonland");
+-    let land = scenario.add_land_to_hand(P0, "Discarded land").id();
+-    scenario.add_card_to_library_top(P0, "Drawn card one");
+-    scenario.add_card_to_library_top(P0, "Drawn card two");
+-    let target = scenario.add_creature(P0, "Only target", 2, 2).id();
++    let nonland = scenario.add_card_to_library_top(P0, "Drawn nonland");
++    let land = scenario.add_land_to_library_top(P0, "Drawn land").id();
++    let target = scenario.add_creature(P1, "Target", 2, 2).id();
+     let untouched_creature = scenario.add_creature(P1, "Untouched creature", 2, 2).id();
+     add_mana(&mut scenario);
+     let mut runner = scenario.build();
+ 
+     resolve_cryomancer(&mut runner, source, &[nonland, land], &[target], Some(1));
++    assert_eq!(
++        runner.state().objects[&nonland].zone,
++        engine::types::zones::Zone::Graveyard
++    );
++    assert_eq!(
++        runner.state().objects[&land].zone,
++        engine::types::zones::Zone::Graveyard
++    );
+     assert!(runner.state().objects[&target].tapped);
+     assert_eq!(stun_count(&runner, target), 1);
+     assert!(!runner.state().objects[&untouched_creature].tapped);
+@@ -175,15 +174,21 @@ fn seasoned_cryomancer_targets_up_to_the_number_of_nonland_cards_discarded() {
+     let source = scenario
+         .add_creature_to_hand_from_oracle(P0, "Seasoned Cryomancer", 2, 3, ORACLE)
+         .id();
+-    let first_land = scenario.add_land_to_hand(P0, "Discarded land one").id();
+-    let second_land = scenario.add_land_to_hand(P0, "Discarded land two").id();
+-    scenario.add_card_to_library_top(P0, "Drawn card one");
+-    scenario.add_card_to_library_top(P0, "Drawn card two");
++    let first_land = scenario.add_land_to_library_top(P0, "Drawn land one").id();
++    let second_land = scenario.add_land_to_library_top(P0, "Drawn land two").id();
+     let untouched_creature = scenario.add_creature(P1, "Untouched creature", 2, 2).id();
+     add_mana(&mut scenario);
+     let mut runner = scenario.build();
+ 
+     resolve_cryomancer(&mut runner, source, &[first_land, second_land], &[], None);
++    assert_eq!(
++        runner.state().objects[&first_land].zone,
++        engine::types::zones::Zone::Graveyard
++    );
++    assert_eq!(
++        runner.state().objects[&second_land].zone,
++        engine::types::zones::Zone::Graveyard
++    );
+     assert!(!runner.state().objects[&untouched_creature].tapped);
+     assert_eq!(stun_count(&runner, untouched_creature), 0);
+ }
+-- 
+2.56.0
+
