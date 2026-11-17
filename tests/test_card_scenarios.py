@@ -428,6 +428,8 @@ def test_load_specs_accepts_labeled_permanent_reach(tmp_path: Path) -> None:
     spec = tmp_path / "labeled-permanent-reach.toml"
     spec.write_text(
         """
+oracle = "forge"
+
 [[scenarios]]
 name = "labeled permanent reach"
 
@@ -448,6 +450,34 @@ counters = { stun = 1 }
     )
 
     assert load_specs([spec])
+
+
+def test_load_specs_rejects_labeled_permanent_reach_for_xmage(
+    tmp_path: Path,
+) -> None:
+    spec = tmp_path / "xmage-labeled-permanent-reach.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "xmage labeled permanent reach"
+
+[scenarios.setup.P0]
+battlefield = [{ label = "bear.1", card = "Grizzly Bears" }]
+
+[scenarios.reach]
+zone = "battlefield"
+player = "P0"
+card = "Grizzly Bears"
+label = "bear.1"
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"reach\.label is unsupported for oracle = 'xmage'",
+    ):
+        load_specs([spec])
 
 
 def test_load_specs_accepts_case_solved_reach_and_graveyard_cast(
