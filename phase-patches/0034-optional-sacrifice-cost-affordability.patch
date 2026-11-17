@@ -873,6 +873,128 @@ index 426da6d32..142b1523a 100644
 -- 
 2.56.0
 
+diff --git a/crates/engine/src/game/casting_costs.rs b/crates/engine/src/game/casting_costs.rs
+index 87d20bef983ffd8df21c483ce58534137d740433..0ac8bdfcbddeaecb4e04e1fcd75fdc55fe5e886d 100644
+--- a/crates/engine/src/game/casting_costs.rs
++++ b/crates/engine/src/game/casting_costs.rs
+@@ -1,4 +1,5 @@
+ use std::collections::HashSet;
++use std::num::NonZeroUsize;
+ 
+ use crate::game::cost_payability::AbilityCostPayability;
+ use crate::game::functioning_abilities::static_kind_present;
+@@ -11920,14 +11921,20 @@ pub(crate) fn is_exile_any_number_effect_cost(cost: &AbilityCost) -> bool {
+ #[derive(Clone, Copy)]
+ enum AnyNumberThisWayCostMovement {
+     Exiled(ExileCostSourceZone),
+-    Sacrificed,
++    Sacrificed(SacrificeCountRange),
++}
++
++#[derive(Clone, Copy)]
++enum SacrificeCountRange {
++    AnyNumber,
++    Exactly(NonZeroUsize),
+ }
+ 
+ impl AnyNumberThisWayCostMovement {
+     fn cause(self) -> ThisWayCause {
+         match self {
+             Self::Exiled(_) => ThisWayCause::Exiled,
+-            Self::Sacrificed => ThisWayCause::Sacrificed,
++            Self::Sacrificed(_) => ThisWayCause::Sacrificed,
+         }
+     }
+ }
+@@ -11951,8 +11958,25 @@ fn any_number_this_way_cost_parts(
+                 target,
+             ))
+         }
+-        AbilityCost::Sacrifice(cost) if cost.requirement.fixed_count().is_some() => {
+-            Some((AnyNumberThisWayCostMovement::Sacrificed, &cost.target))
++        AbilityCost::Sacrifice(cost) => {
++            let count_range = match &cost.requirement {
++                SacrificeRequirement::Count { count } => {
++                    if cost.requirement == SacrificeRequirement::any_number() {
++                        SacrificeCountRange::AnyNumber
++                    } else {
++                        SacrificeCountRange::Exactly(NonZeroUsize::new(
++                            usize::try_from(*count).ok()?,
++                        )?)
++                    }
++                }
++                SacrificeRequirement::Aggregate { .. } | SacrificeRequirement::All => {
++                    return None;
++                }
++            };
++            Some((
++                AnyNumberThisWayCostMovement::Sacrificed(count_range),
++                &cost.target,
++            ))
+         }
+         _ => None,
+     }
+@@ -12997,7 +13021,7 @@ fn any_number_this_way_cost_candidates(
+                 Some(cost_filter),
+             )
+         }
+-        AnyNumberThisWayCostMovement::Sacrificed => {
++        AnyNumberThisWayCostMovement::Sacrificed(_) => {
+             super::casting::find_eligible_sacrifice_targets(
+                 state,
+                 player,
+@@ -13024,15 +13048,18 @@ fn any_number_this_way_cost_makes_payable(
+     };
+     let mut candidates =
+         any_number_this_way_cost_candidates(state, player, spell_id, movement, cost_filter);
+-    if matches!(movement, AnyNumberThisWayCostMovement::Exiled(_)) {
+-        let capacity =
+-            any_number_this_way_cost_reduction_capacity(state, spell_id, movement, &candidates);
+-        let mut reduced = total.reduced_by_generic(capacity);
+-        if !cost_has_x(&reduced) {
+-            super::casting::apply_cost_floor(state, player, spell_id, &mut reduced);
++    let sacrifice_count_range = match movement {
++        AnyNumberThisWayCostMovement::Exiled(_) => {
++            let capacity =
++                any_number_this_way_cost_reduction_capacity(state, spell_id, movement, &candidates);
++            let mut reduced = total.reduced_by_generic(capacity);
++            if !cost_has_x(&reduced) {
++                super::casting::apply_cost_floor(state, player, spell_id, &mut reduced);
++            }
++            return can_pay(state, &reduced);
+         }
+-        return can_pay(state, &reduced);
+-    }
++        AnyNumberThisWayCostMovement::Sacrificed(count_range) => count_range,
++    };
+ 
+     // CR 601.2g + CR 601.2h: Prefer choices absent from auto-tap's live source
+     // collection, then remove chosen permanents before feasibility so they cannot
+@@ -13043,18 +13070,12 @@ fn any_number_this_way_cost_makes_payable(
+             .map(|source| source.object_id)
+             .collect();
+     candidates.sort_by_key(|id| mana_source_ids.contains(id));
+-    let sacrifice_counts: Vec<usize> = match cost {
+-        AbilityCost::Sacrifice(cost) if cost.requirement.is_any_number() => {
+-            (1..=candidates.len()).collect()
+-        }
+-        AbilityCost::Sacrifice(cost) => cost
+-            .requirement
+-            .fixed_count()
+-            .and_then(|count| usize::try_from(count).ok())
+-            .filter(|&count| count > 0 && count <= candidates.len())
+-            .into_iter()
+-            .collect(),
+-        _ => Vec::new(),
++    let sacrifice_counts: Vec<usize> = match sacrifice_count_range {
++        SacrificeCountRange::AnyNumber => (1..=candidates.len()).collect(),
++        SacrificeCountRange::Exactly(count) if count.get() <= candidates.len() => {
++            vec![count.get()]
++        }
++        SacrificeCountRange::Exactly(_) => Vec::new(),
+     };
+     for count in sacrifice_counts {
+         let chosen = &candidates[..count];
 diff --git a/crates/engine/tests/integration/issue_2415_rottenmouth_viper_sacrifice_cost.rs b/crates/engine/tests/integration/issue_2415_rottenmouth_viper_sacrifice_cost.rs
 index 69758e1b21e8dc316599fcd328e7eddc03c9ce38..69a9db411f35389ae905e85cc3ae2fb227e699bd 100644
 --- a/crates/engine/tests/integration/issue_2415_rottenmouth_viper_sacrifice_cost.rs
