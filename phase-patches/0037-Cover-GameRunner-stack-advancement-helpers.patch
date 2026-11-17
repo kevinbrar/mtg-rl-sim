@@ -1,0 +1,88 @@
+From 0b983f99a8779d3afe9fa3eb867c63c7df1114fb Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Tue, 17 Nov 2026 20:58:37 +0000
+Subject: [PATCH] Cover GameRunner stack advancement helpers
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../tests/integration/seasoned_cryomancer.rs  | 60 ++++++++++++++++++-
+ 1 file changed, 59 insertions(+), 1 deletion(-)
+
+diff --git a/crates/engine/tests/integration/seasoned_cryomancer.rs b/crates/engine/tests/integration/seasoned_cryomancer.rs
+index a17946161..0de0de554 100644
+--- a/crates/engine/tests/integration/seasoned_cryomancer.rs
++++ b/crates/engine/tests/integration/seasoned_cryomancer.rs
+@@ -4,7 +4,7 @@ use engine::types::actions::GameAction;
+ use engine::types::counter::CounterType;
+ use engine::types::game_state::WaitingFor;
+ use engine::types::identifiers::ObjectId;
+-use engine::types::mana::{ManaType, ManaUnit};
++use engine::types::mana::{ManaCost, ManaType, ManaUnit};
+ use engine::types::phase::Phase;
+ 
+ const ORACLE: &str = "When this creature enters, draw two cards, then discard two cards. When you discard one or more nonland cards this way, tap up to that many target creatures and put a stun counter on each of them.\n\
+@@ -192,3 +192,61 @@ fn seasoned_cryomancer_targets_up_to_the_number_of_nonland_cards_discarded() {
+     assert!(!runner.state().objects[&untouched_creature].tapped);
+     assert_eq!(stun_count(&runner, untouched_creature), 0);
+ }
++
++fn forced_discard_fixture() -> (GameRunner, ObjectId, ObjectId, ObjectId) {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let spell = scenario
++        .add_spell_to_hand_from_oracle(
++            P0,
++            "Forced discard",
++            true,
++            "Target player discards two cards.",
++        )
++        .with_mana_cost(ManaCost::zero())
++        .id();
++    let first = scenario.add_card_to_hand(P1, "First discarded card");
++    let second = scenario.add_card_to_hand(P1, "Second discarded card");
++    let mut runner = scenario.build();
++    runner.cast(spell).target_players(&[P1]).commit();
++    (runner, spell, first, second)
++}
++
++#[test]
++fn advance_until_stack_empty_resolves_forced_discard() {
++    let (mut runner, spell, first, second) = forced_discard_fixture();
++
++    runner.advance_until_stack_empty();
++
++    assert!(runner.state().stack.is_empty());
++    for card in [first, second] {
++        assert_eq!(
++            runner.state().objects[&card].zone,
++            engine::types::zones::Zone::Graveyard
++        );
++    }
++    assert_eq!(
++        runner.state().objects[&spell].zone,
++        engine::types::zones::Zone::Graveyard
++    );
++}
++
++#[test]
++fn advance_until_stack_empty_with_events_returns_forced_discards() {
++    let (mut runner, spell, first, second) = forced_discard_fixture();
++
++    let events = runner.advance_until_stack_empty_with_events();
++
++    for card in [first, second] {
++        assert!(events.iter().any(|event| matches!(
++            event,
++            engine::types::events::GameEvent::Discarded { object_id, .. }
++                if *object_id == card
++        )));
++    }
++    assert!(events.iter().any(|event| matches!(
++        event,
++        engine::types::events::GameEvent::StackResolved { object_id } if *object_id == spell
++    )));
++    assert!(runner.state().stack.is_empty());
++}
+-- 
+2.56.0
+
