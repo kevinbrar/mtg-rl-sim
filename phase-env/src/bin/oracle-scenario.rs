@@ -648,12 +648,33 @@ fn loyalty_ability_label(cost: &AbilityCost) -> Option<String> {
     }
 }
 
+fn parse_loyalty_cost_selector(selector: &str) -> Option<String> {
+    let normalized = selector
+        .to_lowercase()
+        .replace('−', "-")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let normalized = normalized.strip_suffix('.').unwrap_or(&normalized);
+    if normalized == "0" {
+        return Some(normalized.to_string());
+    }
+    let amount = normalized
+        .strip_prefix('+')
+        .or_else(|| normalized.strip_prefix('-'))?;
+    if amount.is_empty() || !amount.bytes().all(|digit| digit.is_ascii_digit()) {
+        return None;
+    }
+    Some(normalized.to_string())
+}
+
 fn select_activation_ability(
     candidates: impl IntoIterator<Item = (usize, AbilityKind, bool, Option<String>)>,
-    prefix: &str,
+    selector: &str,
 ) -> Result<usize, String> {
-    let prefix = normalize_ability_text(prefix);
-    if prefix.is_empty() {
+    let cost_selector = parse_loyalty_cost_selector(selector);
+    let description_prefix = normalize_ability_text(&selector.replace('−', "-"));
+    if selector.trim().is_empty() {
         return Err("activate needs a non-empty ability cost prefix".to_string());
     }
     let mut matches = Vec::new();
@@ -663,15 +684,20 @@ fn select_activation_ability(
         }
         let description = description
             .ok_or_else(|| format!("activated ability {index} is missing a description"))?;
-        if normalize_ability_text(&description).starts_with(&prefix) {
+        let matches_selector = if let Some(cost_selector) = &cost_selector {
+            parse_loyalty_cost_selector(&description).as_deref() == Some(cost_selector)
+        } else {
+            normalize_ability_text(&description.replace('−', "-")).starts_with(&description_prefix)
+        };
+        if matches_selector {
             matches.push(index);
         }
     }
     match matches.as_slice() {
         [index] => Ok(*index),
-        [] => Err(format!("no activated ability starts with {prefix}")),
+        [] => Err(format!("no activated ability matches {selector}")),
         _ => Err(format!(
-            "multiple activated abilities start with {prefix}: {matches:?}"
+            "multiple activated abilities match {selector}: {matches:?}"
         )),
     }
 }
@@ -3840,17 +3866,39 @@ mod tests {
             .unwrap_err()
             .contains("missing a description"));
 
-        let negative_loyalty = vec![(
-            0,
-            AbilityKind::Activated,
-            false,
-            loyalty_ability_label(&AbilityCost::Loyalty { amount: -3 }),
-        )];
-        assert_eq!(select_activation_ability(negative_loyalty, "-3"), Ok(0));
         assert_eq!(
             loyalty_ability_label(&AbilityCost::Loyalty { amount: 2 }).as_deref(),
             Some("+2")
         );
+    }
+
+    #[test]
+    fn loyalty_cost_selector_matches_exact_normalized_labels() {
+        let candidates = vec![
+            (
+                0,
+                AbilityKind::Activated,
+                false,
+                loyalty_ability_label(&AbilityCost::Loyalty { amount: 2 }),
+            ),
+            (
+                1,
+                AbilityKind::Activated,
+                false,
+                loyalty_ability_label(&AbilityCost::Loyalty { amount: -1 }),
+            ),
+            (
+                2,
+                AbilityKind::Activated,
+                false,
+                loyalty_ability_label(&AbilityCost::Loyalty { amount: -10 }),
+            ),
+        ];
+
+        assert_eq!(select_activation_ability(candidates.clone(), "-1"), Ok(1));
+        assert_eq!(select_activation_ability(candidates.clone(), "−1"), Ok(1));
+        assert_eq!(select_activation_ability(candidates.clone(), "-10"), Ok(2));
+        assert_eq!(select_activation_ability(candidates, "+2"), Ok(0));
     }
 
     #[test]
