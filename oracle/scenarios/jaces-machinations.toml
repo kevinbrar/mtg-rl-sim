@@ -1,0 +1,399 @@
+oracle = "forge"
+
+[[scenarios]]
+name = "J1-no-existing-Jace"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Island", tapped = true },
+  { label = "mana.2", card = "Island", tapped = true },
+  { label = "mana.3", card = "Island", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "U", source = "mana.3" },
+]
+hand = ["Jace's Machinations"]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_entity"
+player = "P0"
+card = "Jace Token"
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Jace's Machinations"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[[scenarios.script]]
+action = "choose_replacement"
+player = "P0"
+description = "Jace Token enters with zero loyalty counters on it."
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Jace", count = 1, token = true, types = ["Planeswalker"], subtypes = ["Jace"], colors = ["U"], counters = { loyalty = 8 } },
+  { zone = "graveyard", player = "P0", card = "Jace's Machinations", count = 1 },
+]
+
+[[scenarios]]
+name = "J2-two-casts-empower-one-token"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Island", tapped = true },
+  { label = "mana.2", card = "Island", tapped = true },
+  { label = "mana.3", card = "Island", tapped = true },
+  { label = "mana.4", card = "Island", tapped = true },
+  { label = "mana.5", card = "Island", tapped = true },
+  { label = "mana.6", card = "Island", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "U", source = "mana.3" },
+  { color = "U", source = "mana.4" },
+  { color = "U", source = "mana.5" },
+  { color = "U", source = "mana.6" },
+]
+hand = ["Jace's Machinations", "Jace's Machinations"]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_entity"
+player = "P0"
+card = "Jace Token"
+
+[[scenarios.script]]
+action = "choose_entity"
+player = "P0"
+card = "Jace Token"
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+phase_sources = ["mana.1", "mana.5", "mana.6"]
+forge_sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Jace's Machinations"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+phase_sources = ["mana.2", "mana.3", "mana.4"]
+forge_sources = ["mana.4", "mana.5", "mana.6"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Jace's Machinations"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[[scenarios.script]]
+action = "choose_replacement"
+player = "P0"
+description = "Jace Token enters with zero loyalty counters on it."
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Jace", count = 1, token = true, types = ["Planeswalker"], subtypes = ["Jace"], colors = ["U"], counters = { loyalty = 16 } },
+  { zone = "graveyard", player = "P0", card = "Jace's Machinations", count = 2 },
+]
+
+[[scenarios]]
+name = "J3-nontoken-Jace-remains"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "beleren", card = "Jace Beleren", counters = { loyalty = 3 } },
+  { label = "mana.1", card = "Island", tapped = true },
+  { label = "mana.2", card = "Island", tapped = true },
+  { label = "mana.3", card = "Island", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "U", source = "mana.3" },
+]
+hand = ["Jace's Machinations"]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_entity"
+player = "P0"
+card = "Jace Token"
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Jace's Machinations"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[[scenarios.script]]
+action = "choose_replacement"
+player = "P0"
+description = "Jace Token enters with zero loyalty counters on it."
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Jace Beleren", count = 1, token = false, types = ["Planeswalker"], subtypes = ["Jace"], counters = { loyalty = 3 } },
+  { zone = "battlefield", player = "P0", card = "Jace", count = 1, token = true, types = ["Planeswalker"], subtypes = ["Jace"], colors = ["U"], counters = { loyalty = 8 } },
+]
+
+[[scenarios]]
+name = "J4-opponent-turn-token-draw"
+active_player = 1
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Island", tapped = true },
+  { label = "mana.2", card = "Island", tapped = true },
+  { label = "mana.3", card = "Island", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "U", source = "mana.3" },
+]
+hand = ["Jace's Machinations"]
+library_top = [{ label = "drawn", card = "Island" }]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_entity"
+player = "P0"
+card = "Jace Token"
+
+[[scenarios.script]]
+action = "pass_priority"
+player = "P1"
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Jace's Machinations"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[[scenarios.script]]
+action = "pass_priority"
+player = "P1"
+
+[[scenarios.script]]
+action = "label_permanent"
+player = "P0"
+card = "Jace"
+label = "jace-token"
+token = true
+
+[[scenarios.script]]
+action = "activate"
+source = "jace-token"
+ability = "-3"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[[scenarios.script]]
+action = "choose_replacement"
+player = "P0"
+description = "Jace Token enters with zero loyalty counters on it."
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Jace", count = 1, token = true, counters = { loyalty = 5 } },
+  { zone = "hand", player = "P0", card = "Island", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Jace's Machinations", count = 1 },
+]
+
+[[scenarios]]
+name = "J5-opponent-turn-surveil-to-graveyard"
+active_player = 1
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Island", tapped = true },
+  { label = "mana.2", card = "Island", tapped = true },
+  { label = "mana.3", card = "Island", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "U", source = "mana.3" },
+]
+hand = ["Jace's Machinations"]
+library_top = [{ label = "surveil-top", card = "Island" }]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_entity"
+player = "P0"
+card = "Jace Token"
+
+[[scenarios.script]]
+action = "pass_priority"
+player = "P1"
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Jace's Machinations"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[[scenarios.script]]
+action = "pass_priority"
+player = "P1"
+
+[[scenarios.script]]
+action = "label_permanent"
+player = "P0"
+card = "Jace"
+label = "jace-token"
+token = true
+
+[[scenarios.script]]
+action = "activate"
+source = "jace-token"
+ability = "-1"
+
+[[scenarios.script]]
+action = "choose_surveil"
+player = "P0"
+cards = ["surveil-top"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[[scenarios.script]]
+action = "choose_replacement"
+player = "P0"
+description = "Jace Token enters with zero loyalty counters on it."
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Jace", count = 1, token = true, counters = { loyalty = 7 } },
+  { zone = "graveyard", player = "P0", card = "Island", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Jace's Machinations", count = 1 },
+]
+
+[[scenarios]]
+name = "J6-opponent-turn-nontoken-Jace"
+active_player = 1
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "beleren", card = "Jace Beleren", counters = { loyalty = 3 } },
+  { label = "mana.1", card = "Island", tapped = true },
+  { label = "mana.2", card = "Island", tapped = true },
+  { label = "mana.3", card = "Island", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "U", source = "mana.3" },
+]
+hand = ["Jace's Machinations"]
+library_top = [{ label = "p0-draw", card = "Island" }]
+
+[scenarios.setup.P1]
+library_top = [{ label = "p1-draw", card = "Island" }]
+
+[[scenarios.script]]
+action = "choose_entity"
+player = "P0"
+card = "Jace Token"
+
+[[scenarios.script]]
+action = "pass_priority"
+player = "P1"
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Jace's Machinations"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[[scenarios.script]]
+action = "pass_priority"
+player = "P1"
+
+[[scenarios.script]]
+action = "activate"
+source = "beleren"
+ability = "+2"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[[scenarios.script]]
+action = "choose_replacement"
+player = "P0"
+description = "Jace Token enters with zero loyalty counters on it."
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Jace Beleren", count = 1, token = false, counters = { loyalty = 5 } },
+  { zone = "battlefield", player = "P0", card = "Jace", count = 1, token = true, counters = { loyalty = 8 } },
+  { zone = "hand", player = "P0", card = "Island", count = 1 },
+  { zone = "hand", player = "P1", card = "Island", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Jace's Machinations", count = 1 },
+]

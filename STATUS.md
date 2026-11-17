@@ -28,6 +28,13 @@
 - CR 609.3 and the card's "exactly two ... different names" instruction make E5/E6 unable to reveal a valid pair. The Forge runner records the prompt-failure event but does not answer it. Fresh-context review is pending.
 - Undo sensitivity: a scratch-only revert of the Extrapolate parser helper and dispatch leaves E1–E3 without the selected card in hand, so they diverge; E4–E6 remain at the baseline Phase result. The reverted export falls back to an `Unimplemented` effect. Evidence: `runs/card-scenarios/forge-extrapolate-1794899174/phase-undo-extrapolate/minimal-revert.diff`, `card-data-reverted-python.json`, `undo-phase-projection.json`, and `undo-comparison.txt`.
 
+# Jace's Machinations
+
+- Status: J1–J6 match Phase/Forge; Extrapolate E1–E4 and the projection self-check also match. E5/E6 remain digest-pinned `forge-bug` triage with unchanged digests. Combined result: 11 matched, 2 triaged, 0 failed. The full XMage known-diffs run matched 69, 0 triaged, 0 failed. Evidence: `runs/card-scenarios/forge-jaces-machinations-1794918240/forge-jace-extrapolate-final10/known-diffs-report.json` and `runs/card-scenarios/forge-jaces-machinations-1794918240/full-xmage-known-diffs-jace-final/known-diffs-report.json`.
+- The 0013 timing-patch undo build, with only patch 0013 excluded and a separate Cargo target, leaves J1–J3 and J6 at the normal Phase result; J4 and J5 diverge because Phase rejects the token loyalty activation on P1's turn. Evidence: `runs/card-scenarios/forge-jaces-machinations-1794918240/phase-undo-0013/undo-phase.log`.
+- Not run: loyalty activation without Machinations on the opponent's turn; the once-per-turn loyalty limit (CR 606.3) still applying. Both require the action-refused capability.
+- Follow-up: Phase names tokens without " Token", contrary to CR 111.4/701.71a. Both oracle projections normalize this away, so the comparison can't detect it. This matters only for name-sensitive effects; to be audited.
+
 # Status
 
 _Updated 2026-11-17._
