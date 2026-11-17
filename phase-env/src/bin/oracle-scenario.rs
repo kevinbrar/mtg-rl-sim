@@ -427,6 +427,9 @@ fn consume_forced_discard_choices(
             continue;
         };
         let actual = &discarded_by_player[index];
+        if actual.is_empty() {
+            continue;
+        }
         let expected: HashSet<_> = expected.cards.iter().copied().collect();
         if &expected != actual {
             let render = |ids: &HashSet<ObjectId>| {
@@ -5198,6 +5201,43 @@ mod tests {
 
         assert!(error.contains("scripted [p0.drawn.land, p0.hand.nonland]"));
         assert!(error.contains("actually discarded P0 [p0.extra, p0.hand.nonland]"));
+    }
+
+    #[test]
+    fn forced_discard_leaves_another_players_script_queued() {
+        let discarded = ObjectId(17);
+        let scripted = ObjectId(18);
+        let labels = HashMap::from([
+            (discarded, "p0.discarded".to_string()),
+            (scripted, "p1.discarded".to_string()),
+        ]);
+        let mut choices = [
+            VecDeque::new(),
+            VecDeque::from([DiscardScriptChoice {
+                cards: vec![scripted],
+            }]),
+        ];
+        let mut pending_events = Vec::new();
+
+        consume_resolved_discard_choices(
+            &mut pending_events,
+            vec![
+                GameEvent::Discarded {
+                    player_id: PlayerId(0),
+                    object_id: discarded,
+                    source_id: None,
+                },
+                GameEvent::StackResolved {
+                    object_id: ObjectId(19),
+                },
+            ],
+            &mut choices,
+            &labels,
+        )
+        .unwrap();
+
+        assert_eq!(choices[1].len(), 1);
+        assert_eq!(choices[1].front().unwrap().cards, vec![scripted]);
     }
 
     #[test]
