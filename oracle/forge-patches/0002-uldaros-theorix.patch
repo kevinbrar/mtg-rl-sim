@@ -90,10 +90,10 @@ index 086d1e1a..ddc7a785 100644
      private static final Map<String, LongAdder> SITES = new ConcurrentHashMap<>();
 diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
 new file mode 100644
-index 00000000..4a4ba259
+index 00000000..67379270
 --- /dev/null
 +++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
-@@ -0,0 +1,2154 @@
+@@ -0,0 +1,2192 @@
 +package forge.ai;
 +
 +import com.google.gson.Gson;
@@ -260,6 +260,44 @@ index 00000000..4a4ba259
 +            throw new AssertionError("unconsumed copy-cast choice did not fail");
 +        } catch (AssertionError expected) {
 +            assertTrue(expected.getMessage().contains("unconsumed choose_copies entries"));
++        }
++    }
++
++    @Test
++    public void copyCastChoicesRejectSameNamedUnexiledCard() {
++        Game game = initAndCreateGame();
++        Player player = game.getPlayers().get(0);
++        Card source = addCardToZone("Uldaros Theorix", player, ZoneType.Hand);
++        Card exiledOriginal = addCardToZone("Grizzly Bears", player, ZoneType.Exile);
++        Card unexiledOriginal = addCardToZone("Grizzly Bears", player, ZoneType.Graveyard);
++        Card copy = addCardToZone("Grizzly Bears", player, ZoneType.Hand);
++        copy.setCopiedPermanent(exiledOriginal);
++        SpellAbility sourceAbility = source.getSpellAbilities().get(0);
++        sourceAbility.setActivatingPlayer(player);
++        assertEquals(copy.getName(), unexiledOriginal.getName());
++
++        ScriptedController spellAbilityController = new ScriptedController(
++                game, player, player.getLobbyPlayer(), Map.of(), new IdentityHashMap<>());
++        spellAbilityController.addCopyCastChoice(source, List.of(unexiledOriginal));
++        try {
++            spellAbilityController.chooseSpellAbilitiesForEffect(
++                    List.of(copy.getSpellAbilities().get(0)), sourceAbility, "copy spells", 1, Map.of());
++            throw new AssertionError("same-named unexiled card was accepted as an offered copy");
++        } catch (IllegalStateException expected) {
++            assertTrue(expected.getMessage().contains("did not identify one offered copy"));
++        }
++
++        ScriptedController cardController = new ScriptedController(
++                game, player, player.getLobbyPlayer(), Map.of(), new IdentityHashMap<>());
++        cardController.addCopyCastChoice(source, List.of(unexiledOriginal));
++        CardCollection offeredCopies = new CardCollection();
++        offeredCopies.add(copy);
++        try {
++            cardController.chooseCopyCastCard(
++                    offeredCopies, sourceAbility, "Select a card to play", false);
++            throw new AssertionError("same-named unexiled card was accepted as an offered card");
++        } catch (IllegalStateException expected) {
++            assertTrue(expected.getMessage().contains("did not identify one offered card"));
 +        }
 +    }
 +
@@ -2018,7 +2056,7 @@ index 00000000..4a4ba259
 +            List<SpellAbility> selected = new ArrayList<>();
 +            for (Card card : choice.cards()) {
 +                List<SpellAbility> matching = choices.stream()
-+                        .filter(candidate -> candidate.getHostCard().getName().equals(card.getName()))
++                        .filter(candidate -> candidate.getHostCard().getCopiedPermanent() == card)
 +                        .toList();
 +                if (matching.size() != 1) {
 +                    throw failClosed(
@@ -2138,7 +2176,7 @@ index 00000000..4a4ba259
 +            Card expected = activeCopyCastChoice.cards().get(nextCopyCastCard);
 +            List<T> matching = choices.stream()
 +                    .filter(choice -> choice instanceof Card card
-+                            && expected.getName().equals(card.getName()))
++                            && card.getCopiedPermanent() == expected)
 +                    .toList();
 +            if (matching.size() != 1) {
 +                throw failClosed(
