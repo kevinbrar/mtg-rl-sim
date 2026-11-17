@@ -4,7 +4,7 @@
 
 Forge is the independent oracle for Standard cards absent from the pinned
 XMage/mage-bench source. The runner currently uses it for Extrapolate the
-Impossible, Jace's Machinations, and Seasoned Cryomancer. The pin is recorded
+Impossible, Jace's Machinations, Seasoned Cryomancer, and Uldaros Theorix. The pin is recorded
 in `oracle/forge.txt`:
 
 - Repository: `https://github.com/Card-Forge/forge`
@@ -57,8 +57,20 @@ assertion to check a specific same-named permanent's state. Forge token
 projections and reach checks strip exactly one trailing ` Token` from token
 names to match XMage's convention; Phase token names are unchanged. Forge also
 supports `choose_replacement` by exact description and `choose_entity` by
-unique exact card name. These scripted choices are FIFO and fail closed when
-absent, ambiguous, ineligible, or unconsumed.
+unique exact card name. A sole legal replacement is selected deterministically;
+if a matching scripted replacement is queued, that entry is consumed. Multiple
+replacement candidates require an exact scripted selection. These scripted
+choices are FIFO and fail closed when absent, ambiguous, ineligible, or
+unconsumed.
+
+Uldaros Theorix scenarios use `graveyard_targets` to choose up to one card for
+each card-type slot, `choose_copies` to select which copies to cast and their
+order, and `copy_targets` to script targets for copied spells. Both runners
+validate these player-scoped choices against the offered prompts and fail
+closed on missing, extra, ineligible, wrong-player, or unconsumed entries.
+Forge's settle point processes state-based actions and waiting triggers, then
+requires an empty stack and simultaneous-entry queue with priority returned to
+the active player before projecting.
 
 Phase can resolve exact-count forced discards without presenting `DiscardChoice`.
 If a discard script is pending, the runner reconciles it against the `Discarded`

@@ -719,6 +719,83 @@ battlefield = [{ label = "defender-a", card = "Centaur Courser" }]
     assert loaded["scenarios"][0]["script"][1]["attackers"] == ["attacker"]
 
 
+def test_load_specs_accepts_uldaros_target_and_copy_scripts(tmp_path: Path) -> None:
+    spec = tmp_path / "uldaros-choices.toml"
+    spec.write_text(
+        """
+oracle = "forge"
+
+[[scenarios]]
+name = "Uldaros copy choices"
+script = [
+  { action = "graveyard_targets", player = "P0", targets = ["grave.divination"] },
+  { action = "choose_copies", player = "P0", source = "uldaros", cards = ["grave.divination"] },
+  { action = "copy_targets", player = "P0", targets = ["target"] },
+  { action = "graveyard_targets", player = "P0", targets = [] },
+  { action = "choose_copies", player = "P0", source = "uldaros", cards = [] }
+]
+
+[scenarios.setup.P0]
+hand = [{ label = "uldaros", card = "Uldaros Theorix" }]
+graveyard = [{ label = "grave.divination", card = "Divination" }]
+
+[scenarios.setup.P1]
+battlefield = [{ label = "target", card = "Grizzly Bears" }]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+
+    assert [action["action"] for action in loaded["scenarios"][0]["script"]] == [
+        "graveyard_targets",
+        "choose_copies",
+        "copy_targets",
+        "graveyard_targets",
+        "choose_copies",
+    ]
+    assert loaded["scenarios"][0]["script"][1]["cards"] == ["grave.divination"]
+    assert loaded["scenarios"][0]["script"][4]["cards"] == []
+
+
+@pytest.mark.parametrize(
+    ("action", "setup", "message"),
+    [
+        (
+            '{ action = "graveyard_targets", player = "P0", targets = ["target"] }',
+            '[scenarios.setup.P0]\nbattlefield = [{ label = "target", card = "Grizzly Bears" }]',
+            "must be in P0's graveyard",
+        ),
+        (
+            '{ action = "graveyard_targets", player = "P0", targets = ["missing"] }',
+            "[scenarios.setup.P0]",
+            "unknown label",
+        ),
+        (
+            '{ action = "choose_copies", player = "P0", source = "spell", cards = [] }',
+            '[scenarios.setup.P0]\ngraveyard = [{ label = "spell", card = "Divination" }]',
+            "source must be in P0's hand",
+        ),
+        (
+            '{ action = "choose_copies", player = "P0", source = "uldaros", cards = ["spell"] }',
+            '[scenarios.setup.P0]\nhand = [{ label = "uldaros", card = "Uldaros Theorix" }]\nbattlefield = [{ label = "spell", card = "Divination" }]',
+            "cards label spell must be in P0's graveyard",
+        ),
+    ],
+)
+def test_load_specs_rejects_invalid_uldaros_choice_scripts(
+    tmp_path: Path, action: str, setup: str, message: str
+) -> None:
+    spec = tmp_path / "invalid-uldaros-choice.toml"
+    spec.write_text(
+        f'oracle = "forge"\n[[scenarios]]\nname = "invalid Uldaros choice"\nscript = [{action}]\n\n{setup}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        load_specs([spec])
+
+
 @pytest.mark.parametrize(
     ("action", "setup", "message"),
     [

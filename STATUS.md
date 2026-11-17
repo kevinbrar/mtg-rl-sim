@@ -1,3 +1,14 @@
+## Uldaros Theorix Forge scenarios (U1–U5)
+
+- Status: U1–U5 match Phase and pinned Forge (5 matched, 0 triaged, 0 failed); the combined Extrapolate/Jace/Cryomancer/Uldaros Forge run reports 23 matched, 2 digest-pinned Forge-bug triaged (E5/E6), 0 failed. E5/E6 digests are unchanged.
+- Oracle behavior: U1 casts Divination and Grizzly Bears copies within the six-mana-value limit, drawing two and creating a Bears token; U2 casts only Air Elemental, creating a token without drawing; U3 targets nothing; U4 targets Lava Coil only, leaving Divination in P0's graveyard and the killed P1 Bears in exile; U5 exiles both originals without casting a copy.
+- Both runners script one graveyard target per card-type slot, selected copies in cast order, and copied-spell targets; missing, extra, ineligible, wrong-player, and unconsumed choices fail closed. Forge projects only after state-based actions and waiting triggers are processed, the stack and simultaneous entries are empty, and priority has returned to the active player.
+- The U4 review probe confirmed that Phase's P1 Grizzly Bears is in exile, not missing. Lava Coil's lethal-damage replacement applies before the settled projection; Forge now projects at that same settled point. A sole legal replacement is chosen deterministically, while a matching scripted replacement entry is consumed.
+- Normal differentials used CI-pinned `card-data-4c37e62b4` (SHA-256 `4c37e62b4a0edf5935d3ed5216f894b84b9f5b41a002a1fdfc286b81182c6bf9`). The full XMage gate reports 69 matched, 0 triaged, 0 failed.
+- Patch-0015 undo is not verified: the scratch pre-0015 Phase runner rejected the CI-pinned card-data schema (`unknown variant DistinctCardTypes`) before producing Phase projections. This is not a Phase/Forge mismatch.
+- Not run: Uldaros entering without being cast (needs a put-onto-the-battlefield effect); refusing an over-6 total (needs action-refused capability); multi-type cards filling either target slot.
+- Evidence: `runs/card-scenarios/forge-uldaros-theorix-1794951674/uldaros-v12/known-diffs-report.json`, `forge-four-suite-final-v3/known-diffs-report.json`, `xmage-69-final-corrected/known-diffs-report.json`, `uldaros-undo-0015-check/phase.log`, and `oracle/forge-patches/0002-uldaros-theorix.patch`.
+
 ## Seasoned Cryomancer Forge scenarios (C1–C7)
 
 - Status: C1–C7 match the pinned Forge oracle; the combined Cryomancer/Jace/Extrapolate run reports 18 matched, 2 digest-pinned Forge-bug triaged, 0 failed. No Cryomancer known-diff was added.
