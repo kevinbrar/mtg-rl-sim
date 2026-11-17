@@ -1,9 +1,9 @@
 diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
 new file mode 100644
-index 00000000..35e23518
+index 00000000..0355bdca
 --- /dev/null
 +++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
-@@ -0,0 +1,751 @@
+@@ -0,0 +1,822 @@
 +package forge.ai;
 +
 +import com.google.gson.Gson;
@@ -43,6 +43,7 @@ index 00000000..35e23518
 +import java.util.ArrayList;
 +import java.util.Comparator;
 +import java.util.Deque;
++import java.util.IdentityHashMap;
 +import java.util.LinkedHashSet;
 +import java.util.List;
 +import java.util.Map;
@@ -56,6 +57,27 @@ index 00000000..35e23518
 +    private static final Gson GSON = new GsonBuilder().serializeNulls().create();
 +    private static final String RESULT_PREFIX = "CARD_SCENARIO_RESULT:";
 +    private static final String PROMPT_FAILURE_PREFIX = "CARD_SCENARIO_PROMPT_FAILURE:";
++
++    @Test
++    public void scriptedOpponentChoicesAreFifoByChooser() {
++        Game game = initAndCreateGame();
++        Player p0 = game.getPlayers().get(0);
++        Player p1 = game.getPlayers().get(1);
++        Map<Player, Deque<Player>> choices = new IdentityHashMap<>();
++        ScriptedController controller0 =
++                new ScriptedController(game, p0, p0.getLobbyPlayer(), Map.of(), choices);
++        ScriptedController controller1 =
++                new ScriptedController(game, p1, p1.getLobbyPlayer(), Map.of(), choices);
++
++        controller0.addOpponentChoice(p0, p1);
++        controller1.addOpponentChoice(p1, p0);
++        controller0.addOpponentChoice(p0, p1);
++
++        assertEquals(controller0.consumeScriptedOpponent(p0), p1);
++        assertEquals(controller1.consumeScriptedOpponent(p1), p0);
++        assertEquals(controller0.consumeScriptedOpponent(p0), p1);
++        assertTrue(choices.isEmpty());
++    }
 +
 +    @Test
 +    public void projectScenarios() throws IOException {
@@ -108,11 +130,14 @@ index 00000000..35e23518
 +
 +        Map<String, Card> labels = new java.util.LinkedHashMap<>();
 +        addSetup(game, scenario, labels);
-+        ScriptedController controller0 = new ScriptedController(game, p0, p0.getLobbyPlayer(), labels);
-+        ScriptedController controller1 = new ScriptedController(game, p1, p1.getLobbyPlayer(), labels);
++        Map<Player, Deque<Player>> opponentChoices = new IdentityHashMap<>();
++        ScriptedController controller0 =
++                new ScriptedController(game, p0, p0.getLobbyPlayer(), labels, opponentChoices);
++        ScriptedController controller1 =
++                new ScriptedController(game, p1, p1.getLobbyPlayer(), labels, opponentChoices);
 +        p0.dangerouslySetController(controller0);
 +        p1.dangerouslySetController(controller1);
-+        loadScript(scenario, labels, controller0, controller1);
++        loadScript(scenario, labels, controller0, controller1, game.getPlayers().get(activePlayer));
 +
 +        for (JsonElement value : scenario.getAsJsonArray("script")) {
 +            JsonObject action = value.getAsJsonObject();
@@ -222,7 +247,21 @@ index 00000000..35e23518
 +            JsonObject scenario,
 +            Map<String, Card> labels,
 +            ScriptedController controller0,
-+            ScriptedController controller1) {
++            ScriptedController controller1,
++            Player castingPlayer) {
++        for (JsonElement value : scenario.getAsJsonArray("script")) {
++            JsonObject action = value.getAsJsonObject();
++            if ("cast".equals(action.get("action").getAsString())
++                    && "Extrapolate the Impossible".equals(action.get("card").getAsString())) {
++                if (castingPlayer.getOpponents().size() != 1) {
++                    throw new IllegalStateException("ambiguous scripted opponent");
++                }
++                ScriptedController castingController = castingPlayer == controller0.getPlayer()
++                        ? controller0 : controller1;
++                castingController.addOpponentChoice(
++                        castingPlayer, castingPlayer.getOpponents().get(0));
++            }
++        }
 +        for (JsonElement value : scenario.getAsJsonArray("script")) {
 +            JsonObject action = value.getAsJsonObject();
 +            String actionName = requiredString(action, "action");
@@ -435,15 +474,18 @@ index 00000000..35e23518
 +        private final Deque<OutsideGameChoice> outsideGameChoices = new ArrayDeque<>();
 +        private final Deque<ManaScriptPayment> manaChoices = new ArrayDeque<>();
 +        private final Map<String, Card> labels;
++        private final Map<Player, Deque<Player>> opponentChoicesByChooser;
 +        private boolean noOutsideGameChoiceExpected;
 +        private boolean outsideGameChoiceObserved;
 +        private boolean pendingOutsideGameCancellation;
 +        private boolean passingPriority;
-+        private boolean opponentChoiceConsumed;
 +
-+        private ScriptedController(Game game, Player player, LobbyPlayer lobbyPlayer, Map<String, Card> labels) {
++        private ScriptedController(
++                Game game, Player player, LobbyPlayer lobbyPlayer, Map<String, Card> labels,
++                Map<Player, Deque<Player>> opponentChoicesByChooser) {
 +            super(game, player, lobbyPlayer);
 +            this.labels = labels;
++            this.opponentChoicesByChooser = opponentChoicesByChooser;
 +        }
 +
 +        private static final class ManaScriptPayment {
@@ -462,6 +504,28 @@ index 00000000..35e23518
 +
 +        private void addOutsideGameChoice(boolean accept, List<String> cards) {
 +            outsideGameChoices.addLast(new OutsideGameChoice(accept, cards));
++        }
++
++        private void addOpponentChoice(Player chooser, Player opponent) {
++            opponentChoicesByChooser.computeIfAbsent(chooser, ignored -> new ArrayDeque<>())
++                    .addLast(opponent);
++        }
++
++        private Player consumeScriptedOpponent(Player chooser) {
++            if (chooser.getOpponents().size() != 1) {
++                throw new IllegalStateException("ambiguous scripted opponent");
++            }
++            Player opponent = chooser.getOpponents().get(0);
++            Deque<Player> choices = opponentChoicesByChooser.get(chooser);
++            if (choices == null || choices.isEmpty()) {
++                throw new IllegalStateException("unscripted opponent selection");
++            }
++            if (choices.peekFirst() != opponent) {
++                throw new IllegalStateException("scripted opponent does not match the caster's opponent");
++            }
++            choices.removeFirst();
++            if (choices.isEmpty()) opponentChoicesByChooser.remove(chooser);
++            return opponent;
 +        }
 +
 +        private void expectNoOutsideGameChoice() {
@@ -514,6 +578,10 @@ index 00000000..35e23518
 +            assertTrue(
 +                    manaChoices.isEmpty(),
 +                    "unconsumed mana payments for " + player.getName() + ": " + manaChoices);
++            Deque<Player> opponentChoices = opponentChoicesByChooser.get(player);
++            assertTrue(
++                    opponentChoices == null || opponentChoices.isEmpty(),
++                    "unconsumed opponent choices for " + player.getName() + ": " + opponentChoices);
 +            assertTrue(!pendingOutsideGameCancellation, "unconsumed outside-game cancellation");
 +            if (noOutsideGameChoiceExpected) {
 +                assertTrue(!outsideGameChoiceObserved, "unexpected outside-game prompt for " + player.getName());
@@ -692,11 +760,14 @@ index 00000000..35e23518
 +        public <T extends GameEntity> T chooseSingleEntityForEffect(
 +                FCollectionView<T> choices, DelayedReveal reveal, SpellAbility ability, String title,
 +                boolean optional, Player relatedPlayer, Map<String, Object> params) {
-+            if (opponentChoiceConsumed || choices.size() != 1
-+                    || choices.get(0) != getGame().getPlayers().get(1)) {
++            Player caster = ability == null ? null : ability.getActivatingPlayer();
++            if (caster == null || caster.getOpponents().size() != 1 || choices.size() != 1) {
 +                throw new IllegalStateException("unscripted or ambiguous opponent selection: " + title);
 +            }
-+            opponentChoiceConsumed = true;
++            Player opponent = consumeScriptedOpponent(caster);
++            if (choices.get(0) != opponent) {
++                throw new IllegalStateException("opponent selection is not the caster's opponent: " + title);
++            }
 +            return choices.get(0);
 +        }
 +
