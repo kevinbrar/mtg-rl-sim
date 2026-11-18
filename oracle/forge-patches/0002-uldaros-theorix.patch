@@ -1,5 +1,5 @@
 diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
-index 243a2c4b..224f302e 100644
+index 243a2c4b..c0f30400 100644
 --- a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
 +++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
 @@ -10,6 +10,7 @@ import forge.LobbyPlayer;
@@ -65,7 +65,7 @@ index 243a2c4b..224f302e 100644
 +                "ValidTgts", "Creature",
 +                "TargetMin", "0",
 +                "TargetMax", "1",
-+                "TgtZone", "Battlefield")));
++                "TgtZone", "Graveyard")));
 +        controller.addGraveyardTargetChoice(List.of());
 +        assertTrue(controller.chooseTargetsFor(emptyTargetPrompt));
 +
@@ -284,7 +284,7 @@ index 243a2c4b..224f302e 100644
          if (oldLabel != null) {
              throw new IllegalArgumentException(
                      "permanent already labeled " + oldLabel + "; cannot assign " + label);
-@@ -972,11 +1163,16 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -972,11 +1163,21 @@ public final class CardScenarioProjectionTest extends AITest {
              } else if (game.getStack().hasSimultaneousStackEntries()) {
                  game.getPhaseHandler().mainLoopStep();
              }
@@ -298,10 +298,15 @@ index 243a2c4b..224f302e 100644
 +                game.getPhaseHandler().getPriorityPlayer(),
 +                game.getPhaseHandler().getPlayerTurn(),
 +                "priority did not return to the active player");
++        for (Player player : game.getPlayers()) {
++            if (player.getController() instanceof ScriptedController controller) {
++                controller.finishGraveyardTargetChoices();
++            }
++        }
      }
  
      private JsonObject projection(Game game, Map<String, Card> labels, boolean reached) {
-@@ -1069,7 +1265,7 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1069,7 +1270,7 @@ public final class CardScenarioProjectionTest extends AITest {
  
      private String labelForCard(Card target, Map<String, Card> labels) {
          return labels.entrySet().stream()
@@ -310,7 +315,7 @@ index 243a2c4b..224f302e 100644
                  .map(Map.Entry::getKey)
                  .findFirst()
                  .orElse(null);
-@@ -1233,12 +1429,16 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1233,12 +1434,16 @@ public final class CardScenarioProjectionTest extends AITest {
      }
  
      private static final class ScriptedController extends PlayerControllerForTests {
@@ -328,7 +333,7 @@ index 243a2c4b..224f302e 100644
          private final Deque<String> replacementChoices = new ArrayDeque<>();
          private final Deque<String> singleEntityCardChoices = new ArrayDeque<>();
          private final Map<String, Card> labels;
-@@ -1248,6 +1448,10 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1248,6 +1453,10 @@ public final class CardScenarioProjectionTest extends AITest {
          private boolean outsideGameChoiceObserved;
          private boolean pendingOutsideGameCancellation;
          private boolean passingPriority;
@@ -339,7 +344,7 @@ index 243a2c4b..224f302e 100644
  
          private ScriptedController(
                  Game game, Player player, LobbyPlayer lobbyPlayer, Map<String, Card> labels,
-@@ -1259,7 +1463,7 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1259,7 +1468,7 @@ public final class CardScenarioProjectionTest extends AITest {
          private ScriptedController(
                  Game game, Player player, LobbyPlayer lobbyPlayer, Map<String, Card> labels,
                  Map<Player, Deque<Player>> opponentChoicesByChooser,
@@ -348,7 +353,7 @@ index 243a2c4b..224f302e 100644
              this(game, player, lobbyPlayer, labels, opponentChoicesByChooser, triggerTargetChoices,
                      new ArrayList<>());
          }
-@@ -1267,7 +1471,7 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1267,7 +1476,7 @@ public final class CardScenarioProjectionTest extends AITest {
          private ScriptedController(
                  Game game, Player player, LobbyPlayer lobbyPlayer, Map<String, Card> labels,
                  Map<Player, Deque<Player>> opponentChoicesByChooser,
@@ -357,7 +362,7 @@ index 243a2c4b..224f302e 100644
              super(game, player, lobbyPlayer);
              this.labels = labels;
              this.opponentChoicesByChooser = opponentChoicesByChooser;
-@@ -1339,8 +1543,17 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1339,8 +1548,17 @@ public final class CardScenarioProjectionTest extends AITest {
              discardChoices.addLast(List.copyOf(discardLabels));
          }
  
@@ -377,17 +382,7 @@ index 243a2c4b..224f302e 100644
          }
  
          private void addReplacementChoice(String description) {
-@@ -1397,6 +1610,9 @@ public final class CardScenarioProjectionTest extends AITest {
-         }
- 
-         private void assertConsumed() {
-+            if (activeGraveyardTargetLabels != null && activeGraveyardTargetLabels.isEmpty()) {
-+                activeGraveyardTargetLabels = null;
-+            }
-             assertTrue(outsideGameChoices.isEmpty(), "unconsumed outside-game choices for " + player.getName());
-             assertTrue(
-                     manaChoices.isEmpty(),
-@@ -1414,6 +1630,18 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1414,6 +1632,18 @@ public final class CardScenarioProjectionTest extends AITest {
                      triggerTargetChoices.isEmpty(),
                      "unconsumed trigger target choices for " + player.getName() + ": "
                              + triggerTargetChoices);
@@ -406,17 +401,21 @@ index 243a2c4b..224f302e 100644
              assertTrue(
                      replacementChoices.isEmpty(),
                      "unconsumed replacement choices for " + player.getName() + ": " + replacementChoices);
-@@ -1446,10 +1674,20 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1446,10 +1676,24 @@ public final class CardScenarioProjectionTest extends AITest {
  
          @Override
          public boolean chooseTargetsFor(SpellAbility ability) {
 -            List<String> targetLabels = triggerTargetChoices.pollFirst();
 -            if (targetLabels == null) {
 +            if (activeGraveyardTargetLabels != null || !graveyardTargetChoices.isEmpty()) {
-+                if (activeGraveyardTargetLabels == null) {
-+                    activeGraveyardTargetLabels = new ArrayList<>(graveyardTargetChoices.removeFirst());
++                if (ability.getTargetRestrictions() != null
++                        && ability.getTargetRestrictions().getZone().contains(ZoneType.Graveyard)) {
++                    if (activeGraveyardTargetLabels == null) {
++                        activeGraveyardTargetLabels = new ArrayList<>(graveyardTargetChoices.removeFirst());
++                    }
++                    return chooseGraveyardTargetsFor(ability);
 +                }
-+                return chooseGraveyardTargetsFor(ability);
++                finishGraveyardTargetChoices();
 +            }
 +            TriggerTargetChoice targetChoice = triggerTargetChoices.pollFirst();
 +            if (targetChoice == null) {
@@ -429,7 +428,7 @@ index 243a2c4b..224f302e 100644
              if (ability.getActivatingPlayer() != null && ability.getActivatingPlayer() != player) {
                  throw failClosed("target choice requested for wrong player");
              }
-@@ -1477,6 +1715,39 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1477,6 +1721,39 @@ public final class CardScenarioProjectionTest extends AITest {
              return true;
          }
  
@@ -462,14 +461,14 @@ index 243a2c4b..224f302e 100644
 +            if (!ability.isTargetNumberValid()) {
 +                throw failClosed("scripted graveyard target count is invalid");
 +            }
-+            activeGraveyardTargetLabels = remaining.isEmpty() ? null : remaining;
++            activeGraveyardTargetLabels = remaining;
 +            return true;
 +        }
 +
          @Override
          public List<SpellAbility> orderSimultaneousSa(List<SpellAbility> abilities) {
              if (abilities.size() != 1) {
-@@ -1659,6 +1930,13 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1659,6 +1936,13 @@ public final class CardScenarioProjectionTest extends AITest {
  
          @Override
          public ReplacementEffect chooseSingleReplacementEffect(List<ReplacementEffect> choices) {
@@ -483,7 +482,7 @@ index 243a2c4b..224f302e 100644
              String expected = replacementChoices.pollFirst();
              if (expected == null) {
                  throw failClosed("unscripted replacement selection: " + choices);
-@@ -1694,7 +1972,48 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1694,7 +1978,48 @@ public final class CardScenarioProjectionTest extends AITest {
          public List<SpellAbility> chooseSpellAbilitiesForEffect(
                  List<SpellAbility> choices, SpellAbility ability, String title, int num,
                  Map<String, Object> params) {
@@ -533,7 +532,7 @@ index 243a2c4b..224f302e 100644
          }
  
          @Override
-@@ -1735,6 +2054,10 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1735,6 +2060,10 @@ public final class CardScenarioProjectionTest extends AITest {
          public <T extends GameEntity> T chooseSingleEntityForEffect(
                  FCollectionView<T> choices, DelayedReveal reveal, SpellAbility ability, String title,
                  boolean optional, Player relatedPlayer, Map<String, Object> params) {
@@ -544,7 +543,7 @@ index 243a2c4b..224f302e 100644
              Player caster = ability == null ? null : ability.getActivatingPlayer();
              if (caster == null || choices.isEmpty()) {
                  throw failClosed("unscripted or empty single-entity selection: " + title);
-@@ -1764,6 +2087,61 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1764,6 +2093,61 @@ public final class CardScenarioProjectionTest extends AITest {
              throw failClosed("unscripted single-entity selection: " + title + " in " + choices);
          }
  
@@ -606,7 +605,7 @@ index 243a2c4b..224f302e 100644
          private String labelForSource(Card source) {
              if (source == null) return null;
              return labels.entrySet().stream()
-@@ -1796,9 +2174,30 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1796,9 +2180,30 @@ public final class CardScenarioProjectionTest extends AITest {
                  pendingOutsideGameCancellation = false;
                  return true;
              }
@@ -637,7 +636,7 @@ index 243a2c4b..224f302e 100644
          @Override
          public boolean confirmTrigger(WrappedAbility ability) {
              throw failClosed("unscripted trigger confirmation: " + ability.getHostCard().getName());
-@@ -1812,9 +2211,23 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1812,9 +2217,23 @@ public final class CardScenarioProjectionTest extends AITest {
  
          @Override
          public boolean playSaFromPlayEffect(SpellAbility ability) {
