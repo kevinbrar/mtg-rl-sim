@@ -1134,7 +1134,9 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
             for label in targets:
                 location = label_locations.get(label)
                 if location is None:
-                    raise ValueError(f"{context}.targets contains unknown label {label}")
+                    raise ValueError(
+                        f"{context}.targets contains unknown label {label}"
+                    )
                 if action_name == "graveyard_targets" and location[:2] != (
                     player,
                     "graveyard",
