@@ -1115,6 +1115,66 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                     raise ValueError(
                         f"{context}.attackers label {label} must be on P0's battlefield"
                     )
+        if action.get("action") in {"graveyard_targets", "copy_targets"}:
+            action_name = action["action"]
+            context = f"{name}: script[{index}].{action_name}"
+            unknown = action.keys() - {"action", "player", "targets"}
+            if unknown:
+                raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            player = action.get("player")
+            if player not in {"P0", "P1"}:
+                raise ValueError(f"{context}.player must be P0 or P1")
+            targets = action.get("targets")
+            if not isinstance(targets, list):
+                raise TypeError(f"{context}.targets must be an array")
+            if any(not isinstance(label, str) or not label for label in targets):
+                raise TypeError(f"{context}.targets entries must be non-empty labels")
+            if len(targets) != len(set(targets)):
+                raise ValueError(f"{context}.targets cannot repeat labels")
+            for label in targets:
+                location = label_locations.get(label)
+                if location is None:
+                    raise ValueError(
+                        f"{context}.targets contains unknown label {label}"
+                    )
+                if action_name == "graveyard_targets" and location[:2] != (
+                    player,
+                    "graveyard",
+                ):
+                    raise ValueError(
+                        f"{context} label {label} must be in {player}'s graveyard"
+                    )
+        if action.get("action") == "choose_copies":
+            context = f"{name}: script[{index}].choose_copies"
+            unknown = action.keys() - {"action", "player", "source", "cards"}
+            if unknown:
+                raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            player = action.get("player")
+            if player not in {"P0", "P1"}:
+                raise ValueError(f"{context}.player must be P0 or P1")
+            source = action.get("source")
+            if not isinstance(source, str) or not source:
+                raise TypeError(f"{context}.source must be a setup label")
+            if label_locations.get(source, (None, None, None))[:2] != (
+                player,
+                "hand",
+            ):
+                raise ValueError(f"{context}.source must be in {player}'s hand")
+            cards = action.get("cards")
+            if not isinstance(cards, list):
+                raise TypeError(f"{context}.cards must be an array")
+            if any(not isinstance(label, str) or not label for label in cards):
+                raise TypeError(f"{context}.cards entries must be non-empty labels")
+            if len(cards) != len(set(cards)):
+                raise ValueError(f"{context}.cards cannot repeat labels")
+            for label in cards:
+                if label_locations.get(label, (None, None, None))[:2] != (
+                    player,
+                    "graveyard",
+                ):
+                    raise ValueError(
+                        f"{context}.cards label {label} must be in {player}'s graveyard"
+                    )
         if action.get("action") == "copy_choice":
             context = f"{name}: script[{index}].copy_choice"
             unknown = action.keys() - {"action", "player", "decision", "new_targets"}

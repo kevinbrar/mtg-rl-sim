@@ -43,6 +43,19 @@ struct SurveilScriptChoice {
     graveyard: Vec<ObjectId>,
 }
 
+#[derive(Clone, Debug)]
+struct CopyCastChoice {
+    player: PlayerId,
+    source: ObjectId,
+    cards: Vec<ObjectId>,
+}
+
+#[derive(Clone, Debug)]
+struct TargetScriptChoice {
+    player: PlayerId,
+    targets: Vec<ObjectId>,
+}
+
 fn card_name(state: &GameState, id: ObjectId) -> String {
     state.objects.get(&id).expect("object exists").name.clone()
 }
@@ -250,6 +263,60 @@ fn resolve_card_choice_labels(
             resolve_label(labels, label).map_err(|_| format!("unknown card label {label}"))
         })
         .collect()
+}
+
+fn script_player(action: &Value, action_name: &str) -> Result<PlayerId, String> {
+    match action.get("player").and_then(Value::as_str) {
+        Some("P0") => Ok(PlayerId(0)),
+        Some("P1") => Ok(PlayerId(1)),
+        _ => Err(format!("{action_name}.player must be P0 or P1")),
+    }
+}
+
+fn parse_copy_cast_choice(
+    action: &Value,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<CopyCastChoice, String> {
+    let player = script_player(action, "choose_copies")?;
+    let source_label = action
+        .get("source")
+        .and_then(Value::as_str)
+        .ok_or("choose_copies needs a source label")?;
+    let source = resolve_label(labels, source_label)?;
+    let cards = resolve_card_choice_labels(action, labels)?;
+    if cards.iter().copied().collect::<HashSet<_>>().len() != cards.len() {
+        return Err("choose_copies.cards cannot repeat labels".to_string());
+    }
+    Ok(CopyCastChoice {
+        player,
+        source,
+        cards,
+    })
+}
+
+fn parse_target_script_choice(
+    action: &Value,
+    labels: &HashMap<ObjectId, String>,
+    action_name: &str,
+) -> Result<TargetScriptChoice, String> {
+    let player = script_player(action, action_name)?;
+    let targets = action
+        .get("targets")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{action_name}.targets must be an array"))?
+        .iter()
+        .map(|value| {
+            let label = value
+                .as_str()
+                .ok_or_else(|| format!("{action_name}.targets entries must be strings"))?;
+            resolve_label(labels, label)
+                .map_err(|_| format!("unknown {action_name} target label {label}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if targets.iter().copied().collect::<HashSet<_>>().len() != targets.len() {
+        return Err(format!("{action_name}.targets cannot repeat labels"));
+    }
+    Ok(TargetScriptChoice { player, targets })
 }
 
 fn parse_outside_game_choice(action: &Value) -> Result<OutsideGameScriptChoice, String> {
@@ -737,6 +804,7 @@ fn apply_card_choice_group(
     runner: &mut GameRunner,
     labels: &HashMap<ObjectId, String>,
     groups: &mut VecDeque<Vec<ObjectId>>,
+    copy_cast_choices: &mut VecDeque<CopyCastChoice>,
     discard_reconciler: &mut DiscardChoiceReconciler,
     discard_choice_groups: &mut [VecDeque<DiscardScriptChoice>; 2],
 ) -> Result<(), String> {
@@ -762,9 +830,26 @@ fn apply_card_choice_group(
             cards,
             count,
             up_to,
+            player,
+            source_id,
             ..
         } => {
-            let group = take_card_choice_group(groups)?;
+            let group = if let Some(choice) = copy_cast_choices.front() {
+                if choice.player != player {
+                    return Err(
+                        "choose_copies prompt was offered to a different player".to_string()
+                    );
+                }
+                if choice.source != source_id {
+                    return Err("choose_copies prompt came from a different source".to_string());
+                }
+                copy_cast_choices
+                    .pop_front()
+                    .expect("front copy-cast choice was present")
+                    .cards
+            } else {
+                take_card_choice_group(groups)?
+            };
             let min_count = if up_to { 0 } else { count };
             validate_card_choice_group(&group, &cards, min_count, count, labels)?;
             discard_reconciler.act(
@@ -803,6 +888,58 @@ fn apply_card_choice_group(
             "cannot apply card choice while waiting for {other:?}"
         )),
     }
+}
+
+fn apply_graveyard_target_choice(
+    runner: &mut GameRunner,
+    choice: TargetScriptChoice,
+    labels: &HashMap<ObjectId, String>,
+    discard_reconciler: &mut DiscardChoiceReconciler,
+    discard_choice_groups: &mut [VecDeque<DiscardScriptChoice>; 2],
+) -> Result<(), String> {
+    let WaitingFor::TriggerTargetSelection { player, .. } = &runner.state().waiting_for else {
+        return Err("graveyard_targets arrived without a trigger target prompt".to_string());
+    };
+    if *player != choice.player {
+        return Err("graveyard_targets prompt was offered to a different player".to_string());
+    }
+    for target in &choice.targets {
+        if !labels.contains_key(target) {
+            return Err("graveyard_targets contains an unlabeled target".to_string());
+        }
+    }
+    discard_reconciler.act(
+        runner,
+        GameAction::SelectTargets {
+            targets: choice.targets.into_iter().map(TargetRef::Object).collect(),
+        },
+        discard_choice_groups,
+        labels,
+    )
+}
+
+fn apply_copied_spell_target_choice(
+    runner: &mut GameRunner,
+    choice: TargetScriptChoice,
+    labels: &HashMap<ObjectId, String>,
+    discard_reconciler: &mut DiscardChoiceReconciler,
+    discard_choice_groups: &mut [VecDeque<DiscardScriptChoice>; 2],
+) -> Result<(), String> {
+    let WaitingFor::TargetSelection { player, .. } = &runner.state().waiting_for else {
+        return Err("copy_targets arrived without a copied-spell target prompt".to_string());
+    };
+    if *player != choice.player {
+        return Err("copy_targets prompt was offered to a different player".to_string());
+    }
+    let mut groups = VecDeque::from([choice.targets]);
+    apply_activation_target_group(
+        runner,
+        labels,
+        &mut groups,
+        discard_reconciler,
+        discard_choice_groups,
+    )?;
+    ensure_activation_target_groups_consumed(&groups)
 }
 
 fn normalize_ability_text(text: &str) -> String {
@@ -1819,6 +1956,29 @@ fn ensure_copy_choices_consumed(choices: &VecDeque<CopyChoice>) -> Result<(), St
     ))
 }
 
+fn ensure_copy_cast_choices_consumed(choices: &VecDeque<CopyCastChoice>) -> Result<(), String> {
+    if choices.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} choose_copies entry(s) were unconsumed when the script ended",
+        choices.len()
+    ))
+}
+
+fn ensure_target_choices_consumed(
+    action: &str,
+    choices: &VecDeque<TargetScriptChoice>,
+) -> Result<(), String> {
+    if choices.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} {action} group(s) were unconsumed when the script ended",
+        choices.len()
+    ))
+}
+
 fn ensure_targeted_cast_has_no_pending_trigger_targets(
     action: &Value,
     trigger_target_groups: &VecDeque<Vec<ObjectId>>,
@@ -1931,13 +2091,21 @@ fn apply_copy_target_choice(
     if prompt_player != player {
         return Err("copy retarget prompt was offered to a different player".to_string());
     }
-    if mode != Some(engine::types::game_state::CopyChoiceMode::Retarget)
-        || announcer_election.is_some()
+    if !matches!(
+        mode,
+        Some(
+            engine::types::game_state::CopyChoiceMode::Retarget
+                | engine::types::game_state::CopyChoiceMode::Announce
+        )
+    ) || announcer_election.is_some()
     {
-        return Err("copy_choice.new_targets arrived for a non-retarget copy prompt".to_string());
+        return Err("copy target choice arrived for an unsupported copy prompt".to_string());
     }
     match choice {
         CopyTargetChoice::Keep => {
+            if mode != Some(engine::types::game_state::CopyChoiceMode::Retarget) {
+                return Err("copy targets cannot be kept while announcing a cast copy".to_string());
+            }
             if !can_keep_rest {
                 return Err("copy_choice.new_targets=keep is not legal for this copy".to_string());
             }
@@ -2014,6 +2182,9 @@ fn pass_until_resolved(
     groups: &mut VecDeque<Vec<ObjectId>>,
     activation_target_groups: &mut VecDeque<Vec<ObjectId>>,
     card_choice_groups: &mut VecDeque<Vec<ObjectId>>,
+    copy_cast_choices: &mut VecDeque<CopyCastChoice>,
+    graveyard_target_choices: &mut VecDeque<TargetScriptChoice>,
+    copy_target_choices: &mut VecDeque<TargetScriptChoice>,
     discard_choice_groups: &mut [VecDeque<DiscardScriptChoice>; 2],
     surveil_choices: &mut VecDeque<SurveilScriptChoice>,
     sideboard_labels: &HashMap<String, (PlayerId, usize, String)>,
@@ -2026,6 +2197,18 @@ fn pass_until_resolved(
     let mut pending_copy_target_choice = None;
     for _ in 0..128 {
         match runner.state().waiting_for.clone() {
+            WaitingFor::TriggerTargetSelection { .. } if !graveyard_target_choices.is_empty() => {
+                let choice = graveyard_target_choices
+                    .pop_front()
+                    .expect("front graveyard target choice was present");
+                apply_graveyard_target_choice(
+                    runner,
+                    choice,
+                    labels,
+                    discard_reconciler,
+                    discard_choice_groups,
+                )?;
+            }
             WaitingFor::TriggerTargetSelection { .. } => {
                 apply_trigger_target_group(
                     runner,
@@ -2035,11 +2218,39 @@ fn pass_until_resolved(
                     discard_choice_groups,
                 )?;
             }
+            WaitingFor::TargetSelection { .. } if !copy_target_choices.is_empty() => {
+                let choice = copy_target_choices
+                    .pop_front()
+                    .expect("front copy target choice was present");
+                apply_copied_spell_target_choice(
+                    runner,
+                    choice,
+                    labels,
+                    discard_reconciler,
+                    discard_choice_groups,
+                )?;
+            }
             WaitingFor::TargetSelection { .. } => {
                 apply_activation_target_group(
                     runner,
                     labels,
                     activation_target_groups,
+                    discard_reconciler,
+                    discard_choice_groups,
+                )?;
+            }
+            WaitingFor::CopyRetarget { player, .. } if !copy_target_choices.is_empty() => {
+                let choice = copy_target_choices
+                    .pop_front()
+                    .expect("front copy target choice was present");
+                if choice.player != player {
+                    return Err("copy_targets prompt was offered to a different player".to_string());
+                }
+                apply_copy_target_choice(
+                    runner,
+                    labels,
+                    player,
+                    CopyTargetChoice::Change(choice.targets),
                     discard_reconciler,
                     discard_choice_groups,
                 )?;
@@ -2181,6 +2392,7 @@ fn pass_until_resolved(
                     runner,
                     labels,
                     card_choice_groups,
+                    copy_cast_choices,
                     discard_reconciler,
                     discard_choice_groups,
                 )?;
@@ -2350,6 +2562,9 @@ fn pass_until_resolved(
                 return Err("unless cost branch was not followed by its choice prompt".to_string());
             }
             ensure_copy_target_choice_consumed(&pending_copy_target_choice)?;
+            ensure_copy_cast_choices_consumed(copy_cast_choices)?;
+            ensure_target_choices_consumed("graveyard_targets", graveyard_target_choices)?;
+            ensure_target_choices_consumed("copy_targets", copy_target_choices)?;
             return Ok(());
         }
     }
@@ -3296,6 +3511,9 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     let mut trigger_target_groups = VecDeque::new();
     let mut activation_target_groups = VecDeque::new();
     let mut card_choice_groups = VecDeque::new();
+    let mut copy_cast_choices = VecDeque::new();
+    let mut graveyard_target_choices = VecDeque::new();
+    let mut copy_target_choices = VecDeque::new();
     let mut discard_choice_groups = [VecDeque::new(), VecDeque::new()];
     let mut surveil_choices = VecDeque::new();
     let mut outside_game_choices = VecDeque::new();
@@ -3487,6 +3705,20 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 }
                 trigger_target_groups.push_back(targets);
             }
+            "graveyard_targets" => {
+                graveyard_target_choices.push_back(parse_target_script_choice(
+                    action,
+                    &labels,
+                    "graveyard_targets",
+                )?);
+            }
+            "copy_targets" => {
+                copy_target_choices.push_back(parse_target_script_choice(
+                    action,
+                    &labels,
+                    "copy_targets",
+                )?);
+            }
             "copy_choice" => {
                 copy_choices.push_back(parse_copy_choice(action, &labels)?);
             }
@@ -3505,6 +3737,9 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
             }
             "choose_cards" => {
                 card_choice_groups.push_back(resolve_card_choice_labels(action, &labels)?);
+            }
+            "choose_copies" => {
+                copy_cast_choices.push_back(parse_copy_cast_choice(action, &labels)?);
             }
             "choose_discard" => {
                 let (player, choice) = parse_discard_choice(action, &labels)?;
@@ -3531,6 +3766,9 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     &mut trigger_target_groups,
                     &mut activation_target_groups,
                     &mut card_choice_groups,
+                    &mut copy_cast_choices,
+                    &mut graveyard_target_choices,
+                    &mut copy_target_choices,
                     &mut discard_choice_groups,
                     &mut surveil_choices,
                     &sideboard_labels,
@@ -3559,6 +3797,9 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     ensure_trigger_target_groups_consumed(&trigger_target_groups)?;
     ensure_activation_target_groups_consumed(&activation_target_groups)?;
     ensure_card_choice_groups_consumed(&card_choice_groups)?;
+    ensure_copy_cast_choices_consumed(&copy_cast_choices)?;
+    ensure_target_choices_consumed("graveyard_targets", &graveyard_target_choices)?;
+    ensure_target_choices_consumed("copy_targets", &copy_target_choices)?;
     ensure_discard_choices_consumed(&discard_choice_groups)?;
     ensure_surveil_choices_consumed(&surveil_choices)?;
     ensure_outside_game_choices_consumed(&outside_game_choices)?;
@@ -3966,6 +4207,9 @@ mod tests {
         let mut trigger_target_groups = VecDeque::new();
         let mut activation_target_groups = VecDeque::new();
         let mut card_choice_groups = VecDeque::new();
+        let mut copy_cast_choices = VecDeque::new();
+        let mut graveyard_target_choices = VecDeque::new();
+        let mut copy_target_choices = VecDeque::new();
         let mut surveil_choices = VecDeque::new();
         let sideboard_labels = HashMap::new();
         let mut outside_game_choices = VecDeque::new();
@@ -3979,6 +4223,9 @@ mod tests {
             &mut trigger_target_groups,
             &mut activation_target_groups,
             &mut card_choice_groups,
+            &mut copy_cast_choices,
+            &mut graveyard_target_choices,
+            &mut copy_target_choices,
             discard_choices,
             &mut surveil_choices,
             &sideboard_labels,
@@ -4888,6 +5135,9 @@ mod tests {
                 let mut trigger_targets = VecDeque::new();
                 let mut activation_targets = VecDeque::new();
                 let mut card_choices = VecDeque::new();
+                let mut copy_cast_choices = VecDeque::new();
+                let mut graveyard_target_choices = VecDeque::new();
+                let mut copy_target_choices = VecDeque::new();
                 let mut discard_choices = [VecDeque::new(), VecDeque::new()];
                 let mut surveil_choices = VecDeque::new();
                 let sideboard_labels = HashMap::new();
@@ -4901,6 +5151,9 @@ mod tests {
                     &mut trigger_targets,
                     &mut activation_targets,
                     &mut card_choices,
+                    &mut copy_cast_choices,
+                    &mut graveyard_target_choices,
+                    &mut copy_target_choices,
                     &mut discard_choices,
                     &mut surveil_choices,
                     &sideboard_labels,
@@ -6242,6 +6495,9 @@ mod surveil_script_choice_tests {
                 let mut trigger_targets = VecDeque::new();
                 let mut activation_targets = VecDeque::new();
                 let mut card_choices = VecDeque::new();
+                let mut copy_cast_choices = VecDeque::new();
+                let mut graveyard_target_choices = VecDeque::new();
+                let mut copy_target_choices = VecDeque::new();
                 let mut discard_choices = [VecDeque::new(), VecDeque::new()];
                 let sideboard_labels = HashMap::new();
                 let mut outside_game_choices = VecDeque::new();
@@ -6256,6 +6512,9 @@ mod surveil_script_choice_tests {
                     &mut trigger_targets,
                     &mut activation_targets,
                     &mut card_choices,
+                    &mut copy_cast_choices,
+                    &mut graveyard_target_choices,
+                    &mut copy_target_choices,
                     &mut discard_choices,
                     &mut surveil_choices,
                     &sideboard_labels,
