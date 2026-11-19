@@ -1300,6 +1300,13 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                     raise ValueError(
                         f"{name}: script[{index}].card must be a setup label"
                     )
+                if (
+                    action.get("expect") != "refused"
+                    and label_locations[card_label][1] != "graveyard"
+                ):
+                    raise ValueError(
+                        f"{name}: script[{index}].card must be a graveyard setup label"
+                    )
         if action.get("action") == "play_land":
             context = f"{name}: script[{index}]"
             if not isinstance(action.get("card"), str) or not action["card"]:

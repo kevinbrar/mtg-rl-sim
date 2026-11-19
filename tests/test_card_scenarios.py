@@ -573,6 +573,30 @@ script = [{ action = "cast", card = "Silvercoat Lion", from = "graveyard" }]
         load_specs([spec])
 
 
+def test_load_specs_requires_ordinary_graveyard_cast_label_in_graveyard(
+    tmp_path: Path,
+) -> None:
+    spec = tmp_path / "ordinary-graveyard-cast-source-zone.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "ordinary graveyard cast uses battlefield label"
+script = [{ action = "cast", card = "bear", from = "graveyard" }]
+
+[scenarios.setup.P0]
+battlefield = [{ card = "Grizzly Bears", label = "bear" }]
+
+[scenarios.setup.P1]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError, match=r"script\[0\]\.card must be a graveyard setup label"
+    ):
+        load_specs([spec])
+
+
 def test_load_specs_allows_battlefield_label_for_later_graveyard_cast(
     tmp_path: Path,
 ) -> None:
