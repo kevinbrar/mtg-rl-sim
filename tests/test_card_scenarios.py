@@ -2166,6 +2166,36 @@ mana_pool = [{ color = "U", source = "land" }]
         load_specs([spec])
 
 
+def test_load_specs_rejects_card_choice_before_refused_necropsy_cast(
+    tmp_path: Path,
+) -> None:
+    spec = tmp_path / "card-choice-before-refusal.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "card choice before refused Necropsy"
+script = [
+  { action = "choose_cards", cards = ["memnite"] },
+  { action = "cast", card = "Urgent Necropsy", targets = ["artifact", "creature"], expect = "refused" }
+]
+
+[scenarios.setup.P0]
+hand = ["Urgent Necropsy"]
+graveyard = [{ label = "memnite", card = "Memnite" }]
+battlefield = [
+  { label = "artifact", card = "Bonesplitter" },
+  { label = "creature", card = "Walking Corpse" }
+]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError, match="choose_cards cannot precede a refused action"
+    ):
+        load_specs([spec])
+
+
 def test_refusal_indices_must_match_scripted_steps_exactly() -> None:
     scenarios = [
         {

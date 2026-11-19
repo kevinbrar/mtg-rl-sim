@@ -238,20 +238,118 @@ fn refusal_mode_for_action_error(offered: bool, error: &ClassifiedActError) -> O
     }
 }
 
-fn classify_cast_commit_error(error: String) -> ClassifiedActError {
-    let harness_errors = [
-        "CollectEvidenceChoice requires a choose_cards group",
-        "CollectEvidenceChoice arrived with an empty choose_cards queue",
-        "cast.targets has ",
-        "cast.targets is missing entry",
-        "cast.targets entry ",
-        "cast.targets skips ",
-    ];
-    if harness_errors.iter().any(|marker| error.contains(marker)) {
-        ClassifiedActError::Harness(error)
-    } else {
-        ClassifiedActError::Engine(error)
+fn refused_attempt_prompt_error(action: &str, waiting_for: &WaitingFor) -> ClassifiedActError {
+    ClassifiedActError::Harness(format!(
+        "refused {action} reached an unscripted prompt: {waiting_for:?}"
+    ))
+}
+
+fn refusal_attempt_runner(runner: &GameRunner) -> GameRunner {
+    GameRunner::from_state(runner.state().clone())
+}
+
+fn attempt_refused_cast(
+    runner: &mut GameRunner,
+    spell: ObjectId,
+    player: PlayerId,
+    script_index: usize,
+    targets: &[Option<TargetRef>],
+    refusal_cost_prompts: &mut Vec<Value>,
+) -> Result<(), ClassifiedActError> {
+    let cast = GameAction::CastSpell {
+        object_id: spell,
+        card_id: runner.state().objects[&spell].card_id,
+        targets: Vec::new(),
+        payment_mode: engine::types::game_state::CastPaymentMode::Auto,
+    };
+    runner
+        .act(cast)
+        .map_err(|error| ClassifiedActError::Engine(error.to_string()))?;
+
+    let mut selected_slots = 0;
+    for _ in 0..64 {
+        match runner.state().waiting_for.clone() {
+            WaitingFor::TargetSelection {
+                target_slots,
+                selection,
+                ..
+            } => {
+                if target_slots.len() != targets.len() {
+                    return Err(ClassifiedActError::Harness(format!(
+                        "refused cast has {} scripted target slot(s) but the engine offered {}",
+                        targets.len(),
+                        target_slots.len()
+                    )));
+                }
+                let Some(slot) = target_slots.get(selection.current_slot) else {
+                    return Err(ClassifiedActError::Harness(
+                        "refused cast target slot is missing".to_string(),
+                    ));
+                };
+                let Some(target) = targets.get(selection.current_slot).cloned() else {
+                    return Err(ClassifiedActError::Harness(
+                        "refused cast target choice is missing".to_string(),
+                    ));
+                };
+                if target
+                    .as_ref()
+                    .is_some_and(|target| !slot.legal_targets.contains(target))
+                {
+                    return Err(ClassifiedActError::Harness(format!(
+                        "refused cast target {:?} is not legal for slot {}",
+                        target, selection.current_slot
+                    )));
+                }
+                if target.is_none() && !slot.optional {
+                    return Err(ClassifiedActError::Harness(format!(
+                        "refused cast cannot skip required target slot {}",
+                        selection.current_slot
+                    )));
+                }
+                runner
+                    .act(GameAction::ChooseTarget { target })
+                    .map_err(|error| ClassifiedActError::Engine(error.to_string()))?;
+                selected_slots += 1;
+            }
+            WaitingFor::CollectEvidenceChoice {
+                player: chooser,
+                cards,
+                ..
+            } => {
+                if chooser != player {
+                    return Err(refused_attempt_prompt_error(
+                        "cast",
+                        &runner.state().waiting_for,
+                    ));
+                }
+                let prompt = format!(
+                    "CollectEvidenceCost card choice, {} candidates",
+                    cards.len()
+                );
+                eprintln!("Phase refusal cost prompt: script[{script_index}] {prompt}");
+                refusal_cost_prompts.push(json!({
+                    "script_index": script_index,
+                    "prompt": prompt,
+                }));
+                runner
+                    .act(GameAction::SelectCards { cards })
+                    .map_err(|error| ClassifiedActError::Engine(error.to_string()))?;
+            }
+            WaitingFor::Priority { .. } => {
+                if selected_slots != targets.len() {
+                    return Err(ClassifiedActError::Harness(format!(
+                        "refused cast consumed {selected_slots} of {} scripted target slot(s)",
+                        targets.len()
+                    )));
+                }
+                return Ok(());
+            }
+            ref waiting_for => return Err(refused_attempt_prompt_error("cast", waiting_for)),
+        }
     }
+    Err(ClassifiedActError::Harness(
+        "refused cast exceeded the target-selection action limit".to_string(),
+    ))
 }
 
 fn cast_target_decision_slot_count_needed(has_targets: bool, expect_refused: bool) -> bool {
@@ -2806,34 +2904,40 @@ fn activate(
             );
         }
     }
-    let act_result = if expect_refused {
-        discard_reconciler.act_classified(runner, activation, &[], discard_choice_groups, labels)
-    } else {
-        discard_reconciler
-            .act(runner, activation, discard_choice_groups, labels)
-            .map_err(ClassifiedActError::Harness)
-    };
-    match act_result {
-        Err(error) if expect_refused => {
-            let Some(mode) = refusal_mode_for_action_error(true, &error) else {
-                return Err(error.to_string());
-            };
-            if !matches!(runner.state().waiting_for, WaitingFor::Priority { .. }) {
-                return Err(error.to_string());
+    if expect_refused {
+        let mut attempt = refusal_attempt_runner(runner);
+        match attempt.act(activation) {
+            Ok(_) if !matches!(attempt.state().waiting_for, WaitingFor::Priority { .. }) => {
+                return Err(refused_attempt_prompt_error(
+                    "activation",
+                    &attempt.state().waiting_for,
+                )
+                .to_string());
             }
-            let after = project(runner.state(), labels, None, true);
-            record_refusal(
-                action_index,
-                "activate",
-                mode,
-                before.as_ref().expect("refusal projection was captured"),
-                &after,
-                refusals,
-            )?;
-            return Ok(());
+            Ok(_) => return Err("expected refusal but activate was accepted".to_string()),
+            Err(error) => {
+                let classified_error = ClassifiedActError::Engine(error.to_string());
+                let Some(mode) = refusal_mode_for_action_error(true, &classified_error) else {
+                    return Err(classified_error.to_string());
+                };
+                let after = project(attempt.state(), labels, None, true);
+                record_refusal(
+                    action_index,
+                    "activate",
+                    mode,
+                    before.as_ref().expect("refusal projection was captured"),
+                    &after,
+                    refusals,
+                )?;
+                return Ok(());
+            }
         }
-        Err(error) => return Err(error.to_string()),
-        Ok(()) => {}
+    }
+    let act_result = discard_reconciler
+        .act(runner, activation, discard_choice_groups, labels)
+        .map_err(ClassifiedActError::Harness);
+    if let Err(error) = act_result {
+        return Err(error.to_string());
     }
 
     let mut target_index = 0;
@@ -2906,9 +3010,6 @@ fn activate(
     ensure_activation_cost_prompt_matches_field(alternative_cost, alternative_cost_prompt_seen)?;
     if runner.state().stack.len() <= stack_size {
         return Err("activated ability did not commit to the stack".to_string());
-    }
-    if expect_refused {
-        return Err("expected refusal but activate was accepted".to_string());
     }
     if let (Some(choice), Some(before)) = (&mana_choice, &mana_pool_before) {
         verify_mana_choice_spent(
@@ -3720,6 +3821,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     let mut discard_reconciler = DiscardChoiceReconciler::default();
     let mut attack_needs_resolution = false;
     let mut refusals = Vec::new();
+    let mut refusal_cost_prompts = Vec::new();
     for (action_index, action) in actions.iter().enumerate() {
         let expect_refused = script_expected_refusal(action, action_index)?;
         validate_script_cast_from(action)?;
@@ -3778,12 +3880,6 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                                 .is_some_and(|object| object.name == card)
                         })
                         .collect::<Vec<_>>();
-                    if expect_refused && matches.len() != 1 {
-                        return Err(format!(
-                            "cast card {card} must match exactly one card in P{}'s hand",
-                            player.0
-                        ));
-                    }
                     matches
                         .first()
                         .copied()
@@ -3867,29 +3963,21 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                         continue;
                     }
 
-                    let mut attempt = GameRunner::from_state(runner.state().clone());
-                    let cast = attempt.cast(spell);
-                    let cast = if let Some(x) = x { cast.x(x) } else { cast };
-                    let cast = if let Some(sacrifices) = sacrifice_objects.as_ref() {
-                        if sacrifices.is_empty() {
-                            cast.decline_optional()
-                        } else {
-                            let x = u32::try_from(sacrifices.len())
-                                .map_err(|_| "cast.sacrifice has too many labels")?;
-                            cast.accept_optional().x(x).sacrifice_with(sacrifices)
+                    let mut attempt = refusal_attempt_runner(&runner);
+                    match attempt_refused_cast(
+                        &mut attempt,
+                        spell,
+                        player,
+                        action_index,
+                        &target_slots,
+                        &mut refusal_cost_prompts,
+                    ) {
+                        Ok(()) => {
+                            return Err("expected refusal but cast was accepted".to_string());
                         }
-                    } else {
-                        cast
-                    };
-                    let cast = if action.get("targets").is_some() {
-                        cast.target_slot_selections(&target_slots)
-                    } else {
-                        cast
-                    };
-                    match cast.commit_with_card_choices(&mut card_choice_groups) {
-                        Ok(_) => return Err("expected refusal but cast was accepted".to_string()),
-                        Err(error) => {
-                            let classified_error = classify_cast_commit_error(error.to_string());
+                        Err(ClassifiedActError::Harness(error)) => return Err(error),
+                        Err(error @ ClassifiedActError::Engine(_)) => {
+                            let classified_error = error;
                             let Some(mode) = refusal_mode_for_action_error(true, &classified_error)
                             else {
                                 return Err(classified_error.to_string());
@@ -4103,7 +4191,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
         "projection": project(runner.state(), &labels, legal, reached),
         "reach": reached,
         "refusals": refusals,
-        "refusal_cost_prompts": [],
+        "refusal_cost_prompts": refusal_cost_prompts,
     }))
 }
 
@@ -4621,35 +4709,43 @@ mod tests {
         assert_eq!(
             refusal_mode_for_action_error(
                 true,
-                &ClassifiedActError::Engine("commit rejected the cast".to_string())
+                &ClassifiedActError::Engine("ActionNotAllowed: insufficient evidence".to_string())
             ),
             Some(RefusalMode::OfferedThenErr)
         );
         assert_eq!(
             refusal_mode_for_action_error(
                 true,
-                &ClassifiedActError::Harness("target preflight failed".to_string())
+                &ClassifiedActError::Harness(
+                    "ActionNotAllowed: missing scripted choice".to_string()
+                )
             ),
             None
         );
     }
 
     #[test]
-    fn cast_commit_provenance_excludes_scenario_helper_errors() {
-        let engine_error = classify_cast_commit_error(
-            "Action not allowed: Not enough total mana value in graveyard to collect evidence 3"
-                .to_string(),
+    fn refused_attempt_prompts_fail_closed() {
+        let prompt_error = refused_attempt_prompt_error(
+            "cast",
+            &WaitingFor::MeldPairChoice {
+                player: PlayerId(0),
+                choices: Vec::new(),
+            },
         );
-        assert_eq!(
-            refusal_mode_for_action_error(true, &engine_error),
-            Some(RefusalMode::OfferedThenErr)
-        );
+        assert!(prompt_error.to_string().contains("unscripted prompt"));
+        assert_eq!(refusal_mode_for_action_error(true, &prompt_error), None);
+    }
 
-        let helper_error = classify_cast_commit_error(
-            "Action not allowed: CollectEvidenceChoice arrived with an empty choose_cards queue"
-                .to_string(),
-        );
-        assert_eq!(refusal_mode_for_action_error(true, &helper_error), None);
+    #[test]
+    fn refused_activation_attempt_keeps_turn_tracking_on_its_clone() {
+        let runner = GameScenario::new().build();
+        let mut attempt = refusal_attempt_runner(&runner);
+        attempt
+            .state_mut()
+            .activated_abilities_this_turn
+            .insert((ObjectId(1), 0), 1);
+        assert!(runner.state().activated_abilities_this_turn.is_empty());
     }
 
     #[test]

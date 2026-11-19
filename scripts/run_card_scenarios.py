@@ -1317,20 +1317,46 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
         if not isinstance(decision, str) or decision not in {"accept", "decline"}:
             raise ValueError(f"{context} must be accept or decline")
 
+    queue_choice_actions = {
+        "choose_cards",
+        "choose_copies",
+        "choose_discard",
+        "choose_mana",
+        "choose_outside_game",
+        "choose_surveil",
+        "copy_choice",
+        "copy_targets",
+        "graveyard_targets",
+        "trigger_targets",
+        "unless_choices",
+    }
     for index, action in enumerate(script):
-        if action.get("action") != "choose_mana":
+        choice_action = action.get("action")
+        if choice_action not in queue_choice_actions:
             continue
+        remaining = script[index + 1 :]
+        if choice_action != "choose_mana":
+            resolution_index = next(
+                (
+                    offset
+                    for offset, candidate in enumerate(remaining)
+                    if candidate.get("action") == "pass_until_resolved"
+                ),
+                None,
+            )
+            if resolution_index is not None:
+                remaining = remaining[:resolution_index]
         consumer = next(
             (
                 candidate
-                for candidate in script[index + 1 :]
+                for candidate in remaining
                 if candidate.get("action") in {"cast", "activate"}
             ),
             None,
         )
         if consumer is not None and consumer.get("expect") == "refused":
             raise ValueError(
-                f"{name}: script[{index}].choose_mana cannot precede a refused action"
+                f"{name}: script[{index}].{choice_action} cannot precede a refused action"
             )
 
 

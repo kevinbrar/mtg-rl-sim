@@ -99,15 +99,16 @@ retain the original setup-zone validation.
 
 During an expected-refusal attempt only, a card-selection prompt raised while
 paying a recognized monotone cost may be answered with every legal candidate
-up to the prompt's maximum. XMage recognizes Collect Evidence and exile-from-
-graveyard costs; Forge recognizes fixed-count graveyard-exile costs. Each
-automatic answer is logged and recorded in `refusal_cost_prompts`, which is
-evidence only and is not compared across engines. The action still counts as
-refused only when the engine declines it and the projection is unchanged. This
-exception is limited to monotone costs: if the maximal selection cannot pay,
-no smaller selection can. Do not extend it to non-monotone costs without a new
-decision. All other unscripted prompts, including card selections outside cost
-payment, remain fail-closed.
+up to the prompt's maximum. Phase recognizes its `CollectEvidenceChoice`
+prompt; XMage recognizes Collect Evidence and exile-from-graveyard costs; Forge
+recognizes fixed-count graveyard-exile costs. Each automatic answer is logged
+and recorded in `refusal_cost_prompts`, which is evidence only and is not
+compared across engines. The action still counts as refused only when the
+engine declines it and the projection is unchanged. This exception is limited
+to monotone costs: if the maximal selection cannot pay, no smaller selection
+can. Do not extend it to non-monotone costs without a new decision. All other
+unscripted prompts, including card selections outside cost payment, remain
+fail-closed.
 
 Working recipe (verified 2026-11-10, pinned mage-bench revision):
 
