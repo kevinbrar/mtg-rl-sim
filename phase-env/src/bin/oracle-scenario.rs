@@ -356,6 +356,16 @@ fn cast_target_decision_slot_count_needed(has_targets: bool, expect_refused: boo
     has_targets && !expect_refused
 }
 
+fn activation_source_zone_precondition(zone: Zone, source_label: &str) -> Result<(), String> {
+    if matches!(zone, Zone::Battlefield | Zone::Graveyard) {
+        Ok(())
+    } else {
+        Err(format!(
+            "activate source label {source_label} must be on the battlefield or in the graveyard"
+        ))
+    }
+}
+
 fn record_refusal(
     action_index: usize,
     action: &str,
@@ -2842,6 +2852,9 @@ fn activate(
             "activate source label {source_label} is not controlled by the player with priority"
         ));
     }
+    if expect_refused {
+        activation_source_zone_precondition(object.zone, source_label)?;
+    }
     let activation_player = *player;
     let mana_choice = if expect_refused {
         None
@@ -4746,6 +4759,14 @@ mod tests {
             .activated_abilities_this_turn
             .insert((ObjectId(1), 0), 1);
         assert!(runner.state().activated_abilities_this_turn.is_empty());
+    }
+
+    #[test]
+    fn refused_activation_rejects_sources_outside_battlefield_or_graveyard() {
+        assert!(activation_source_zone_precondition(Zone::Battlefield, "source").is_ok());
+        assert!(activation_source_zone_precondition(Zone::Graveyard, "source").is_ok());
+        let error = activation_source_zone_precondition(Zone::Hand, "source").unwrap_err();
+        assert!(error.contains("must be on the battlefield or in the graveyard"));
     }
 
     #[test]
