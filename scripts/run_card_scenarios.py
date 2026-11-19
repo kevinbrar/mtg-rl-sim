@@ -486,6 +486,45 @@ def _results_by_name(
     return mapped, errors
 
 
+def validate_refusal_indices(
+    scenarios: list[dict], results: list[dict], engine: str
+) -> list[str]:
+    result_by_name, errors = _results_by_name(results, engine)
+    for scenario in scenarios:
+        name = scenario["name"]
+        result = result_by_name.get(name)
+        if result is None:
+            continue
+        expected = [
+            index
+            for index, action in enumerate(scenario.get("script", []))
+            if action.get("expect") == "refused"
+        ]
+        actual = result.get("refusals")
+        if not isinstance(actual, list) or any(
+            type(index) is not int for index in actual
+        ):
+            errors.append(f"{engine} scenario {name} has missing or invalid refusals")
+        elif actual != expected:
+            errors.append(
+                f"{engine} scenario {name} refusal indices mismatch: "
+                f"expected {expected}, got {actual}"
+            )
+        cost_prompts = result.get("refusal_cost_prompts")
+        if not isinstance(cost_prompts, list) or any(
+            not isinstance(prompt, dict)
+            or type(prompt.get("script_index")) is not int
+            or prompt.get("script_index") not in expected
+            or not isinstance(prompt.get("prompt"), str)
+            or not prompt["prompt"].strip()
+            for prompt in cost_prompts
+        ):
+            errors.append(
+                f"{engine} scenario {name} has missing or invalid refusal_cost_prompts"
+            )
+    return errors
+
+
 def _results_by_suite_scenario(
     results: list[dict], engine: str, suite_by_scenario: dict[str, str]
 ) -> tuple[dict[tuple[str, str], dict], list[str]]:
@@ -797,7 +836,6 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
     if not isinstance(setup, dict):
         raise TypeError(f"{name}: setup must be a table")
     labels: set[str] = set()
-    graveyard_labels: set[str] = set()
     label_locations: dict[str, tuple[str, str, str]] = {}
     for player, player_setup in setup.items():
         if player not in {"P0", "P1"}:
@@ -843,8 +881,6 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                             raise ValueError(f"{name}: duplicate setup label {label}")
                         labels.add(label)
                         label_locations[label] = (player, field, card["card"])
-                        if field == "graveyard":
-                            graveyard_labels.add(label)
                 elif not isinstance(card, str):
                     raise TypeError(
                         f"{name}: setup.{player}.{field}[{index}] must name a card"
@@ -904,6 +940,14 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
     for index, action in enumerate(script):
         if not isinstance(action, dict):
             raise TypeError(f"{name}: script[{index}] must be a table")
+        if "expect" in action:
+            context = f"{name}: script[{index}].expect"
+            if action["expect"] != "refused":
+                raise ValueError(f"{context} must be 'refused'")
+            if action.get("action") not in {"cast", "activate"}:
+                raise ValueError(f"{context} is only valid for cast or activate")
+            if {"sacrifice", "alternative_cost", "x"} & action.keys():
+                raise ValueError(f"{context} cannot be combined with choice scripts")
         if action.get("action") == "cast" and "player" in action:
             if action["player"] not in {"P0", "P1"}:
                 raise ValueError(
@@ -1252,9 +1296,13 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                 raise ValueError(f"{context} must be hand or graveyard")
             if source == "graveyard":
                 card_label = action.get("card")
+                if not isinstance(card_label, str) or card_label not in label_locations:
+                    raise ValueError(
+                        f"{name}: script[{index}].card must be a setup label"
+                    )
                 if (
-                    not isinstance(card_label, str)
-                    or card_label not in graveyard_labels
+                    action.get("expect") != "refused"
+                    and label_locations[card_label][1] != "graveyard"
                 ):
                     raise ValueError(
                         f"{name}: script[{index}].card must be a graveyard setup label"
@@ -1275,6 +1323,48 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
         decision = action["alternative_cost"]
         if not isinstance(decision, str) or decision not in {"accept", "decline"}:
             raise ValueError(f"{context} must be accept or decline")
+
+    queue_choice_actions = {
+        "choose_cards",
+        "choose_copies",
+        "choose_discard",
+        "choose_mana",
+        "choose_outside_game",
+        "choose_surveil",
+        "copy_choice",
+        "copy_targets",
+        "graveyard_targets",
+        "trigger_targets",
+        "unless_choices",
+    }
+    for index, action in enumerate(script):
+        choice_action = action.get("action")
+        if choice_action not in queue_choice_actions:
+            continue
+        remaining = script[index + 1 :]
+        if choice_action != "choose_mana":
+            resolution_index = next(
+                (
+                    offset
+                    for offset, candidate in enumerate(remaining)
+                    if candidate.get("action") == "pass_until_resolved"
+                ),
+                None,
+            )
+            if resolution_index is not None:
+                remaining = remaining[:resolution_index]
+        consumer = next(
+            (
+                candidate
+                for candidate in remaining
+                if candidate.get("action") in {"cast", "activate"}
+            ),
+            None,
+        )
+        if consumer is not None and consumer.get("expect") == "refused":
+            raise ValueError(
+                f"{name}: script[{index}].{choice_action} cannot precede a refused action"
+            )
 
 
 def load_specs(paths: list[Path]) -> dict:
@@ -1601,6 +1691,17 @@ def main() -> int:
         runner_errors.append(f"XMage runner exited {mage_returncode}")
     if forge_returncode:
         runner_errors.append(f"Forge runner exited {forge_returncode}")
+    runner_errors.extend(
+        validate_refusal_indices(spec["scenarios"], phase_results, "Phase")
+    )
+    if xmage_scenarios:
+        runner_errors.extend(
+            validate_refusal_indices(xmage_scenarios, mage_results, "XMage")
+        )
+    if forge_scenarios:
+        runner_errors.extend(
+            validate_refusal_indices(forge_scenarios, forge_results, "Forge")
+        )
     compared_phase_results = normalize_label_insensitive_count_groups(
         spec["scenarios"], phase_results
     )

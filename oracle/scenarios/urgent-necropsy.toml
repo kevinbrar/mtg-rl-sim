@@ -73,6 +73,44 @@ library_top = []
 graveyard = []
 
 [[scenarios]]
+name = "U5 refuses insufficient evidence for both targets"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Urgent Necropsy", targets = ["p1.artifact", "p1.creature"], expect = "refused" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.swamp.1", card = "Swamp" },
+  { label = "land.swamp.2", card = "Swamp" },
+  { label = "land.forest.1", card = "Forest" },
+  { label = "land.forest.2", card = "Forest" },
+]
+hand = ["Urgent Necropsy"]
+graveyard = [
+  { label = "evidence.memnite", card = "Memnite" },
+  { label = "evidence.bonesplitter", card = "Bonesplitter" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "p1.artifact", card = "Bonesplitter" },
+  { label = "p1.creature", card = "Walking Corpse" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Urgent Necropsy", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Bonesplitter", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Walking Corpse", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Memnite", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Bonesplitter", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Swamp", count = 2, tapped = false },
+  { zone = "battlefield", player = "P0", card = "Forest", count = 2, tapped = false },
+]
+
+[[scenarios]]
 name = "U3 skip a legal creature while destroying the artifact and enchantment"
 active_player = 0
 step = "precombat_main"

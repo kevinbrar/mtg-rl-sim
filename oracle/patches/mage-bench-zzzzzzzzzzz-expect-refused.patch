@@ -1,0 +1,494 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+index 62710864..2fcc0af3 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -106,6 +106,8 @@ public class TestPlayer implements Player {
+     private final List<String> choices = new ArrayList<>(); // choices stack for choice
+     private final List<String> targets = new ArrayList<>(); // targets stack for choose (it's uses on empty direct target by cast command)
+     private final List<List<String>> cardChoiceGroups = new ArrayList<>();
++    private final List<String> refusalCostPrompts = new ArrayList<>();
++    private int expectedRefusalScriptIndex = -1;
+     private UUID expectedBeholdSource;
+     private Boolean expectedBeholdChoice;
+     private final Map<String, UUID> aliases = new HashMap<>(); // aliases for game objects/players (use it for cards with same name to save and use)
+@@ -322,6 +324,23 @@ public class TestPlayer implements Player {
+         cardChoiceGroups.add(new ArrayList<>(cards));
+     }
+ 
++    public void beginScenarioExpectedRefusal(int scriptIndex) {
++        if (expectedRefusalScriptIndex >= 0 || !refusalCostPrompts.isEmpty()) {
++            throw new IllegalStateException("an expected-refusal attempt is already active");
++        }
++        expectedRefusalScriptIndex = scriptIndex;
++    }
++
++    public List<String> finishScenarioExpectedRefusal() {
++        if (expectedRefusalScriptIndex < 0) {
++            throw new IllegalStateException("no expected-refusal attempt is active");
++        }
++        expectedRefusalScriptIndex = -1;
++        List<String> prompts = List.copyOf(refusalCostPrompts);
++        refusalCostPrompts.clear();
++        return prompts;
++    }
++
+     List<String> takeNextCardChoiceGroup() {
+         if (cardChoiceGroups.isEmpty()) {
+             throw new IllegalStateException("card-choice prompt arrived with an empty choose_cards queue");
+@@ -661,6 +680,24 @@ public class TestPlayer implements Player {
+                 1, matches.size());
+     }
+ 
++    public void assertUniqueActivatedAbilityIncludingUnplayable(Game game, String nameOrAlias) {
++        List<ActivatedAbility> matches = new ArrayList<>();
++        for (Permanent permanent : game.getBattlefield().getAllActivePermanents()) {
++            if (!getId().equals(permanent.getControllerId())) {
++                continue;
++            }
++            for (Ability ability : permanent.getAbilities(game)) {
++                if (ability instanceof ActivatedAbility activated
++                        && activated.isNonManaActivatedAbility()
++                        && hasAbilityTargetNameOrAlias(game, activated, nameOrAlias)) {
++                    matches.add(activated);
++                }
++            }
++        }
++        Assert.assertEquals("Expected exactly one matching non-mana activated ability: " + nameOrAlias,
++                1, matches.size());
++    }
++
+     public boolean hasObjectTargetNameOrAlias(MageObject object, String nameOrAlias) {
+         if (object == null || nameOrAlias == null) {
+             return false;
+@@ -1656,13 +1693,7 @@ public class TestPlayer implements Player {
+     }
+ 
+     private void assertPlayableAbility(PlayerAction action, Game game, Player player, String abilityStartText, boolean mustHave) {
+-        boolean found = false;
+-        for (Ability ability : computerPlayer.getPlayable(game, true)) {
+-            if (ability.toString().startsWith(abilityStartText)) {
+-                found = true;
+-                break;
+-            }
+-        }
++        boolean found = hasPlayableAbilityStartingWith(game, abilityStartText);
+ 
+         if (mustHave && !found) {
+             printStart(game, "Available mana for " + computerPlayer.getName());
+@@ -1683,6 +1714,59 @@ public class TestPlayer implements Player {
+         }
+     }
+ 
++    public boolean hasPlayableAbilityStartingWith(Game game, String abilityStartText) {
++        return computerPlayer.getPlayable(game, true).stream()
++                .anyMatch(ability -> ability.toString().startsWith(abilityStartText));
++    }
++
++    public boolean attemptScenarioActivatedAbility(String command, Game game) {
++        String[] groups = command.split("\\$");
++        List<ActivatedAbility> matches = computerPlayer.getPlayable(game, true, Zone.ALL, false).stream()
++                .filter(ability -> hasAbilityTargetNameOrAlias(game, ability, groups[0]))
++                .toList();
++        if (matches.isEmpty()) {
++            return false;
++        }
++        if (matches.size() != 1) {
++            throw new IllegalStateException(
++                    "expected exactly one playable activated ability for " + groups[0]
++                            + ", found " + matches.size());
++        }
++        groupsForTargetHandling = groups.length > 1
++                && !groups[1].equals("target=" + NO_TARGET) ? groups : null;
++        try {
++            return computerPlayer.activateAbility(matches.get(0).copy(), game);
++        } finally {
++            groupsForTargetHandling = null;
++        }
++    }
++
++    public boolean attemptScenarioSpell(UUID sourceId, Zone zone, Game game) {
++        if (sourceId == null) {
++            throw new IllegalArgumentException("scenario spell source id is required");
++        }
++        Set<Card> sourceCards = zone == Zone.HAND
++                ? computerPlayer.getHand().getCards(game)
++                : computerPlayer.getGraveyard().getCards(game);
++        if (sourceCards.stream().noneMatch(card -> sourceId.equals(card.getId()))) {
++            throw new IllegalStateException("scenario spell object is not in " + zone + ": " + sourceId);
++        }
++        List<SpellAbility> matches = computerPlayer.getPlayable(game, true, zone, false).stream()
++                .filter(SpellAbility.class::isInstance)
++                .map(SpellAbility.class::cast)
++                .filter(ability -> sourceId.equals(ability.getSourceId()))
++                .toList();
++        if (matches.isEmpty()) {
++            return false;
++        }
++        if (matches.size() != 1) {
++            throw new IllegalStateException(
++                    "expected exactly one playable spell ability for object " + sourceId
++                            + " in " + zone + ", found " + matches.size());
++        }
++        return computerPlayer.activateAbility(matches.get(0).copy(), game);
++    }
++
+     private void assertAttackers(PlayerAction action, Game game, Player player, String attackers) {
+         AttackedOrBlockedThisCombatWatcher watcher = game.getState().getWatcher(AttackedOrBlockedThisCombatWatcher.class);
+         Assert.assertNotNull(watcher);
+@@ -4730,9 +4814,42 @@ public class TestPlayer implements Player {
+ 
+     private boolean makeScenarioCardChoice(
+             Outcome outcome, Target target, Ability source, Game game, Cards fromCards) {
+-        List<String> group = takeNextCardChoiceGroup();
+         int min = target.getMinNumberOfTargets() - target.getSize();
+         int max = target.getMaxNumberOfTargets() - target.getSize();
++        String costName = null;
++        if (expectedRefusalScriptIndex >= 0) {
++            if (!cardChoiceGroups.isEmpty()) {
++                throw new IllegalStateException(
++                        "expected refusal cannot consume a queued card-choice script");
++            }
++            costName = refusalCostPaymentName();
++            if (costName == null) {
++                throw new IllegalStateException(
++                        "unscripted card-choice prompt outside a monotone cost payment during expected refusal");
++            }
++        }
++        UUID abilityControllerId = target.getAffectedAbilityControllerId(this.getId());
++        PossibleTargetsSelector selector = new PossibleTargetsSelector(
++                outcome, target, abilityControllerId, source, game);
++        selector.findNewTargets(fromCards);
++        if (costName != null) {
++            List<Card> candidates = selector.getAny().stream()
++                    .filter(Card.class::isInstance)
++                    .map(Card.class::cast)
++                    .toList();
++            int count = Math.min(max, candidates.size());
++            for (int index = 0; index < count; index++) {
++                target.add(candidates.get(index).getId(), game);
++            }
++            target.setSkipChoice(true);
++            String prompt = costName + " card choice, " + candidates.size() + " candidates";
++            refusalCostPrompts.add(prompt);
++            System.err.println(
++                    "XMage refusal cost prompt: script[" + expectedRefusalScriptIndex + "] " + prompt);
++            return target.isChosen(game);
++        }
++
++        List<String> group = takeNextCardChoiceGroup();
+         if (!group.isEmpty() && group.size() < min) {
+             throw new IllegalStateException("card choice group has " + group.size()
+                     + " cards but the prompt requires at least " + min);
+@@ -4742,10 +4859,6 @@ public class TestPlayer implements Player {
+                     + " cards but the prompt allows at most " + max);
+         }
+ 
+-        UUID abilityControllerId = target.getAffectedAbilityControllerId(this.getId());
+-        PossibleTargetsSelector selector = new PossibleTargetsSelector(
+-                outcome, target, abilityControllerId, source, game);
+-        selector.findNewTargets(fromCards);
+         if (group.isEmpty()) {
+             target.setSkipChoice(true);
+             return false;
+@@ -4764,6 +4877,19 @@ public class TestPlayer implements Player {
+         return target.isChosen(game);
+     }
+ 
++    private static String refusalCostPaymentName() {
++        Set<String> monotoneCosts = Set.of(
++                "mage.abilities.costs.common.CollectEvidenceCost",
++                "mage.abilities.costs.common.ExileFromGraveCost");
++        for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
++            if (frame.getMethodName().equals("pay") && monotoneCosts.contains(frame.getClassName())) {
++                String className = frame.getClassName();
++                return className.substring(className.lastIndexOf('.') + 1);
++            }
++        }
++        return null;
++    }
++
+     private boolean chooseRottenmouthDiscardCard(
+             Outcome outcome, Target target, Ability source, Game game) {
+         boolean selected = makeScenarioCardChoice(outcome, target, source, game, null);
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+index d40360f3..b18f91a8 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -62,6 +62,10 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+     private final Map<String, Map<String, Integer>> counters = new LinkedHashMap<>();
+     private JsonArray initialLegalTargets;
+     private final List<String> expectedAttackers = new ArrayList<>();
++    private final List<Integer> expectedRefusalIndices = new ArrayList<>();
++    private final List<Integer> refusalExecutions = new ArrayList<>();
++    private final List<Integer> refusals = new ArrayList<>();
++    private final List<JsonObject> refusalCostPrompts = new ArrayList<>();
+ 
+     public CardScenarioProjectionTest(String scenarioName, JsonObject scenario) {
+         this.scenarioName = scenarioName;
+@@ -131,6 +135,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             player(index).assertNoPendingRottenmouthUnlessChoices();
+             player(index).assertNoPendingFirebenderCopyChoices();
+         }
++        if (!refusalExecutions.equals(expectedRefusalIndices)
++                || !refusals.equals(expectedRefusalIndices)) {
++            throw new IllegalStateException(
++                    "refused commands were not consumed exactly once: expected "
++                            + expectedRefusalIndices + ", executed " + refusalExecutions
++                            + ", recorded " + refusals);
++        }
+         for (String label : expectedAttackers) {
+             UUID attacker = labels.get(label);
+             if (attacker == null || !currentGame.getCombat().getAttackers().contains(attacker)) {
+@@ -146,9 +157,28 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         int turn = 1;
+         int activeIndex = initialActive;
+         boolean attackNeedsResolution = false;
++        int scriptIndex = 0;
+         for (JsonElement item : array(scenario, "script")) {
+             JsonObject action = item.getAsJsonObject();
+             String kind = requiredString(action, "action");
++            int actionIndex = scriptIndex++;
++            boolean expectRefused = false;
++            if (action.has("expect")) {
++                String expected = requiredString(action, "expect");
++                if (!expected.equals("refused")) {
++                    throw new IllegalArgumentException("script.expect must be 'refused'");
++                }
++                if (!kind.equals("cast") && !kind.equals("activate")) {
++                    throw new IllegalArgumentException("script.expect is only valid for cast or activate");
++                }
++                if (action.has("sacrifice") || action.has("alternative_cost") || action.has("x")) {
++                    throw new IllegalArgumentException(
++                            "script.expect cannot be combined with choice scripts");
++                }
++                expectRefused = true;
++                expectedRefusalIndices.add(actionIndex);
++                    }
++                    final boolean refusedStep = expectRefused;
+             if (attackNeedsResolution && !kind.equals("pass_until_resolved")) {
+                 throw new IllegalArgumentException("attack must be followed by pass_until_resolved");
+             }
+@@ -295,7 +325,8 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                         Card spell;
+                         if (source.equals("graveyard")) {
+                             UUID objectId = labels.get(card);
+-                            if (objectId == null || labelZones.get(card) != Zone.GRAVEYARD) {
++                            if (objectId == null
++                                    || (!refusedStep && labelZones.get(card) != Zone.GRAVEYARD)) {
+                                 throw new IllegalStateException(card + " is not a graveyard setup label");
+                             }
+                             spell = actingPlayer.getGraveyard().getCards(game).stream()
+@@ -303,8 +334,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                                     .findFirst()
+                                     .orElseThrow(() -> new IllegalStateException(
+                                             card + " is not in the active player's graveyard"));
+-                            if (!actingPlayer.getPlayableObjects(game, Zone.GRAVEYARD)
+-                                    .containsObject(objectId)) {
++                            if (!refusedStep
++                                    && !actingPlayer.getPlayableObjects(game, Zone.GRAVEYARD)
++                                            .containsObject(objectId)) {
+                                 throw new IllegalStateException(
+                                         card + " is not offered as a graveyard cast");
+                             }
+@@ -331,9 +363,10 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                         setChoice(actingPlayer, "X=" + x);
+                     }
+                     List<String> targets = strings(array(action, "targets"));
++                    List<String> scriptedTargets = new ArrayList<>();
+                     for (String label : targets) {
+                         if (label.equals("@skip")) {
+-                            actingPlayer.addTarget(TestPlayer.TARGET_SKIP);
++                            scriptedTargets.add(TestPlayer.TARGET_SKIP);
+                         } else {
+                             if (label.startsWith("@")) {
+                                 throw new IllegalArgumentException(
+@@ -343,14 +376,20 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                             if (!labels.containsKey(label)) {
+                                 throw new IllegalArgumentException("unknown target label " + label);
+                             }
+-                            actingPlayer.addTarget("@" + label);
++                            scriptedTargets.add("@" + label);
+                         }
+                     }
+-                    if (source.equals("graveyard")) {
++                    if (expectRefused) {
++                        scheduleExpectedRefusal(
++                                actionIndex, "cast", card, source, null, scriptedTargets,
++                                turn, step, actingPlayer);
++                    } else if (source.equals("graveyard")) {
++                        scriptedTargets.forEach(actingPlayer::addTarget);
+                         UUID sourceId = labels.get(card);
+                         runCode("cast labeled graveyard spell", turn, step, actingPlayer,
+                                 (info, player, game) -> actingPlayer.castPlayableSpellFromGraveyard(sourceId, game));
+                     } else {
++                        scriptedTargets.forEach(actingPlayer::addTarget);
+                         castSpell(turn, step, actingPlayer, card);
+                     }
+                     if (castSacrifices != null) {
+@@ -524,33 +563,45 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                         targets.set(index, "@" + label);
+                     }
+                     runCode("require unique activated ability", turn, step, actingPlayer,
+-                            (info, player, game) -> actingPlayer.assertUniqueActivatedAbility(game, command));
+-                    if (hasAlternativeCost) {
++                            (info, player, game) -> {
++                                if (refusedStep) {
++                                    actingPlayer.assertUniqueActivatedAbilityIncludingUnplayable(game, command);
++                                } else {
++                                    actingPlayer.assertUniqueActivatedAbility(game, command);
++                                }
++                            });
++                    if (expectRefused) {
++                        scheduleExpectedRefusal(
++                                actionIndex, "activate", source, null, ability, targets,
++                                turn, step, actingPlayer);
++                    } else if (hasAlternativeCost) {
+                         boolean accepted = acceptAlternativeCost;
+                         runCode("queue alternative-cost choice", turn, step, actingPlayer,
+                                 (info, player, game) -> setChoice(actingPlayer, accepted));
+                     }
+-                    if (targets.isEmpty()) {
+-                        activateAbility(turn, step, actingPlayer, command);
+-                    } else {
+-                        activateAbility(turn, step, actingPlayer, command, targets.toArray(String[]::new));
+-                    }
+-                    runCode("assert activation committed", turn, step, actingPlayer, (info, player, game) -> {
+-                        boolean committed = game.getStack().stream()
+-                                .anyMatch(stackObject -> sourceId.equals(stackObject.getSourceId()));
+-                        if (!committed) {
+-                            throw new IllegalStateException("activated ability did not commit to the stack");
++                    if (!expectRefused) {
++                        if (targets.isEmpty()) {
++                            activateAbility(turn, step, actingPlayer, command);
++                        } else {
++                            activateAbility(turn, step, actingPlayer, command, targets.toArray(String[]::new));
++                        }
++                        runCode("assert activation committed", turn, step, actingPlayer, (info, player, game) -> {
++                            boolean committed = game.getStack().stream()
++                                    .anyMatch(stackObject -> sourceId.equals(stackObject.getSourceId()));
++                            if (!committed) {
++                                throw new IllegalStateException("activated ability did not commit to the stack");
++                            }
++                        });
++                        if (hasAlternativeCost) {
++                            runCode("assert alternative-cost choice was consumed", turn, step, actingPlayer,
++                                    (info, player, game) -> {
++                                        if (!actingPlayer.getChoices().isEmpty()) {
++                                            throw new IllegalStateException(
++                                                    "activate.alternative_cost was provided but no prompt consumed it"
++                                            );
++                                        }
++                                    });
+                         }
+-                    });
+-                    if (hasAlternativeCost) {
+-                        runCode("assert alternative-cost choice was consumed", turn, step, actingPlayer,
+-                                (info, player, game) -> {
+-                                    if (!actingPlayer.getChoices().isEmpty()) {
+-                                        throw new IllegalStateException(
+-                                                "activate.alternative_cost was provided but no prompt consumed it"
+-                                        );
+-                                    }
+-                                });
+                     }
+                     lastStep = step;
+                 }
+@@ -587,6 +638,85 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         return false;
+     }
+ 
++    private void scheduleExpectedRefusal(
++            int scriptIndex,
++            String kind,
++            String cardOrSource,
++            String sourceZone,
++            String ability,
++            List<String> targets,
++            int turn,
++            PhaseStep step,
++            TestPlayer actingPlayer) {
++        runCode("attempt expected refusal script[" + scriptIndex + "]", turn, step, actingPlayer,
++                (info, player, game) -> {
++                    if (refusalExecutions.contains(scriptIndex)) {
++                        throw new IllegalStateException(
++                                "refused command would be retried at script[" + scriptIndex + "]");
++                    }
++                    refusalExecutions.add(scriptIndex);
++                    JsonObject before = result().getAsJsonObject("projection").deepCopy();
++                    boolean accepted;
++                    actingPlayer.beginScenarioExpectedRefusal(scriptIndex);
++                    try {
++                        if (kind.equals("cast")) {
++                            Zone zone = sourceZone.equals("graveyard") ? Zone.GRAVEYARD : Zone.HAND;
++                            UUID sourceId;
++                            if (zone == Zone.GRAVEYARD) {
++                                sourceId = labels.get(cardOrSource);
++                                if (sourceId == null) {
++                                    throw new IllegalStateException(
++                                            cardOrSource + " is not a setup label");
++                                }
++                                if (actingPlayer.getGraveyard().getCards(game).stream()
++                                        .noneMatch(candidate -> sourceId.equals(candidate.getId()))) {
++                                    throw new IllegalStateException(
++                                            cardOrSource + " is not in the active player's graveyard");
++                                }
++                            } else {
++                                sourceId = actingPlayer.getHand().getCards(game).stream()
++                                        .filter(candidate -> candidate.getName().equals(cardOrSource))
++                                        .findFirst()
++                                        .orElseThrow(() -> new IllegalStateException(
++                                                cardOrSource + " is not in the active player's hand"))
++                                        .getId();
++                            }
++                            boolean offered =
++                                    actingPlayer.getPlayableObjects(game, zone).containsObject(sourceId);
++                            if (offered) {
++                                targets.forEach(actingPlayer::addTarget);
++                                accepted = actingPlayer.attemptScenarioSpell(sourceId, zone, game);
++                            } else {
++                                accepted = false;
++                            }
++                        } else {
++                            String command = "@" + cardOrSource + " " + ability;
++                            if (!targets.isEmpty()) {
++                                command += "$target=" + String.join("^", targets);
++                            }
++                            accepted = actingPlayer.attemptScenarioActivatedAbility(command, game);
++                        }
++                    } finally {
++                        for (String prompt : actingPlayer.finishScenarioExpectedRefusal()) {
++                            JsonObject costPrompt = new JsonObject();
++                            costPrompt.addProperty("script_index", scriptIndex);
++                            costPrompt.addProperty("prompt", prompt);
++                            refusalCostPrompts.add(costPrompt);
++                        }
++                    }
++                    if (accepted) {
++                        throw new IllegalStateException("expected refusal but " + kind + " was accepted");
++                    }
++                    JsonObject after = result().getAsJsonObject("projection");
++                    if (!before.equals(after)) {
++                        throw new IllegalStateException(
++                                "refused action left state changed\nbefore:\n" + GSON.toJson(before)
++                                        + "\nafter:\n" + GSON.toJson(after));
++                    }
++                    refusals.add(scriptIndex);
++                });
++    }
++
+     private void addScenarioSetup() {
+         JsonObject setup = object(scenario, "setup");
+         rejectUnknownKeys(setup, Set.of("P0", "P1"), "setup");
+@@ -813,6 +943,12 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         result.addProperty("scenario", scenarioName);
+         result.add("projection", projection);
+         result.addProperty("reach", reached);
++        JsonArray refusalIndices = new JsonArray();
++        refusals.forEach(refusalIndices::add);
++        result.add("refusals", refusalIndices);
++        JsonArray costPrompts = new JsonArray();
++        refusalCostPrompts.forEach(costPrompts::add);
++        result.add("refusal_cost_prompts", costPrompts);
+         return result;
+     }
+ 

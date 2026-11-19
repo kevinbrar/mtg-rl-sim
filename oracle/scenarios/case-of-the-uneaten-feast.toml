@@ -125,3 +125,73 @@ all = [
   { zone = "graveyard", player = "P0", card = "Case of the Uneaten Feast", count = 1 },
   { zone = "battlefield", player = "P0", card = "Plains", tapped = true, count = 1 },
 ]
+
+[[scenarios]]
+name = "C5 refuses the unsolved Case sacrifice"
+active_player = 0
+script = [
+  { action = "activate", source = "case", ability = "Sacrifice this Case", expect = "refused" },
+]
+
+[scenarios.setup.P0]
+battlefield = [{ label = "case", card = "Case of the Uneaten Feast" }]
+graveyard = [{ label = "hawk", card = "Healer's Hawk" }]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Case of the Uneaten Feast", solved = false },
+  { zone = "graveyard", player = "P0", card = "Healer's Hawk", count = 1 },
+]
+
+[[scenarios]]
+name = "C6 post-grant creature is a new graveyard object"
+active_player = 0
+script = [
+  { action = "cast", card = "Memnite" },
+  { action = "pass_until_resolved" },
+  { action = "cast", card = "Ritual of Rejuvenation" },
+  { action = "pass_until_resolved" },
+  { action = "end_turn" },
+  { action = "end_turn" },
+  { action = "activate", source = "case", ability = "Sacrifice this Case" },
+  { action = "pass_until_resolved" },
+  { action = "cast", card = "Shock", targets = ["bears"] },
+  { action = "pass_until_resolved" },
+  { action = "cast", card = "bears", from = "graveyard", expect = "refused" },
+  { action = "cast", card = "hawk", from = "graveyard" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "case", card = "Case of the Uneaten Feast" },
+  { label = "plains.1", card = "Plains" },
+  { label = "island.1", card = "Island" },
+  { label = "island.2", card = "Island" },
+  { label = "island.3", card = "Island" },
+  { label = "island.4", card = "Island" },
+  { label = "mountain", card = "Mountain" },
+  { label = "forest.1", card = "Forest" },
+  { label = "forest.2", card = "Forest" },
+  { label = "forest.3", card = "Forest" },
+  { label = "forest.4", card = "Forest" },
+  { label = "bears", card = "Grizzly Bears" },
+]
+hand = [{ card = "Memnite" }, { card = "Ritual of Rejuvenation" }, { card = "Shock" }]
+graveyard = [{ label = "hawk", card = "Healer's Hawk" }]
+library_top = ["Island", "Island"]
+
+[scenarios.setup.P1]
+life = 20
+library_top = ["Island", "Island"]
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P0", card = "Grizzly Bears", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Healer's Hawk", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Forest", tapped = false },
+  { zone = "battlefield", player = "P0", card = "Island", tapped = false },
+]

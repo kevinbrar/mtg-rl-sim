@@ -397,3 +397,105 @@ all = [
   { zone = "hand", player = "P1", card = "Island", count = 1 },
   { zone = "graveyard", player = "P0", card = "Jace's Machinations", count = 1 },
 ]
+
+[[scenarios]]
+name = "J7 no Machinations does not allow an opposing-turn activation"
+active_player = 1
+step = "precombat_main"
+script = [
+  { action = "pass_priority", player = "P1" },
+  { action = "activate", source = "beleren", ability = "+2", expect = "refused" },
+]
+
+[scenarios.setup.P0]
+battlefield = [{ label = "beleren", card = "Jace Beleren", counters = { loyalty = 3 } }]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Jace Beleren", count = 1, counters = { loyalty = 3 } },
+]
+
+[[scenarios]]
+name = "J8 once-per-turn rule still refuses a second loyalty activation"
+active_player = 1
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Island", tapped = true },
+  { label = "mana.2", card = "Island", tapped = true },
+  { label = "mana.3", card = "Island", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "U", source = "mana.3" },
+]
+hand = ["Jace's Machinations"]
+library_top = [{ label = "drawn", card = "Island" }]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_entity"
+player = "P0"
+card = "Jace Token"
+
+[[scenarios.script]]
+action = "pass_priority"
+player = "P1"
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Jace's Machinations"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[[scenarios.script]]
+action = "pass_priority"
+player = "P1"
+
+[[scenarios.script]]
+action = "label_permanent"
+player = "P0"
+card = "Jace"
+label = "jace-token"
+token = true
+
+[[scenarios.script]]
+action = "activate"
+source = "jace-token"
+ability = "-3"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[[scenarios.script]]
+action = "choose_replacement"
+player = "P0"
+description = "Jace Token enters with zero loyalty counters on it."
+
+[[scenarios.script]]
+action = "pass_priority"
+player = "P1"
+
+[[scenarios.script]]
+action = "activate"
+source = "jace-token"
+ability = "-1"
+expect = "refused"
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Jace", count = 1, token = true, counters = { loyalty = 5 } },
+  { zone = "hand", player = "P0", card = "Island", count = 1 },
+]

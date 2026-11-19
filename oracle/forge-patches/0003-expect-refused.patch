@@ -1,0 +1,438 @@
+diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
+index c0f30400..9e7e61e9 100644
+--- a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
++++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
+@@ -16,6 +16,7 @@ import forge.game.card.CardCollection;
+ import forge.game.card.CardCollectionView;
+ import forge.game.card.CounterEnumType;
+ import forge.game.card.CounterType;
++import forge.game.cost.CostExile;
+ import forge.game.cost.CostPart;
+ import forge.game.cost.CostPutCounter;
+ import forge.game.cost.CostRemoveCounter;
+@@ -441,6 +442,27 @@ public final class CardScenarioProjectionTest extends AITest {
+         }
+     }
+ 
++    @Test
++    public void expectedRefusalLeavesNonCostCardChoicesFailClosed() {
++        Game game = initAndCreateGame();
++        Player player = game.getPlayers().get(0);
++        List<String> failures = new ArrayList<>();
++        ScriptedController controller = new ScriptedController(
++                game, player, player.getLobbyPlayer(), Map.of(), new IdentityHashMap<>(),
++                new ArrayDeque<>(), failures);
++
++        controller.beginExpectedRefusal(4);
++        try {
++            controller.chooseCardsForEffect(
++                    new CardCollection(), null, "unscripted non-cost prompt", 1, 1, false, Map.of());
++            throw new AssertionError("non-cost card choice did not fail closed");
++        } catch (IllegalStateException expected) {
++            assertTrue(expected.getMessage().contains("unscripted card choice"));
++        } finally {
++            controller.endExpectedRefusal();
++        }
++    }
++
+     @Test
+     public void projectScenarios() throws IOException {
+         String specPath = System.getProperty("oracleScenarioSpec");
+@@ -505,33 +527,48 @@ public final class CardScenarioProjectionTest extends AITest {
+         Map<Player, Deque<Player>> opponentChoices = new IdentityHashMap<>();
+         Deque<TriggerTargetChoice> triggerTargetChoices = new ArrayDeque<>();
+         List<String> scriptedFailures = new ArrayList<>();
++        List<JsonObject> refusalCostPrompts = new ArrayList<>();
+         ScriptedController controller0 =
+                 new ScriptedController(
+                         game, p0, p0.getLobbyPlayer(), labels, opponentChoices, triggerTargetChoices,
+-                        scriptedFailures);
++                        scriptedFailures, refusalCostPrompts);
+         ScriptedController controller1 =
+                 new ScriptedController(
+                         game, p1, p1.getLobbyPlayer(), labels, opponentChoices, triggerTargetChoices,
+-                        scriptedFailures);
++                        scriptedFailures, refusalCostPrompts);
+         p0.dangerouslySetController(controller0);
+         p1.dangerouslySetController(controller1);
+         loadScript(scenario, labels, controller0, controller1, game.getPlayers().get(activePlayer));
+ 
+-        for (JsonElement value : scenario.getAsJsonArray("script")) {
+-            JsonObject action = value.getAsJsonObject();
++        List<Integer> refusals = new ArrayList<>();
++        JsonArray script = scenario.getAsJsonArray("script");
++        for (int scriptIndex = 0; scriptIndex < script.size(); scriptIndex++) {
++            JsonObject action = script.get(scriptIndex).getAsJsonObject();
++            boolean expectRefused = expectedRefusal(action, scriptIndex);
+             switch (requiredString(action, "action")) {
+                 case "cast" -> {
+                     Player caster = action.has("player")
+                             ? playerFor(action.get("player").getAsString(), game)
+                             : game.getPlayers().get(activePlayer);
+-                    cast(caster, requiredString(action, "card"), labels);
++                    if (expectRefused) {
++                        castExpectedRefusal(
++                                action, scriptIndex, caster, game, labels, refusals);
++                    } else {
++                        cast(caster, requiredString(action, "card"), labels);
++                    }
+                 }
+                 case "choose_outside_game", "choose_mana", "choose_surveil", "choose_discard",
+                         "trigger_targets", "graveyard_targets", "copy_targets", "choose_copies",
+                         "choose_replacement", "choose_entity" -> { }
+                 case "pass_priority" -> passPriority(action, game);
+                 case "label_permanent" -> labelPermanent(action, game, labels);
+-                case "activate" -> activate(action, game, labels);
++                case "activate" -> {
++                    if (expectRefused) {
++                        activateExpectedRefusal(action, scriptIndex, game, labels, refusals);
++                    } else {
++                        activate(action, game, labels);
++                    }
++                }
+                 case "pass_until_resolved" -> {
+                     controller0.setPassingPriority(true);
+                     controller1.setPassingPriority(true);
+@@ -553,6 +590,12 @@ public final class CardScenarioProjectionTest extends AITest {
+         result.addProperty("scenario", requiredString(scenario, "name"));
+         result.add("projection", projection);
+         result.addProperty("reach", reached);
++        JsonArray refusalIndices = new JsonArray();
++        refusals.forEach(refusalIndices::add);
++        result.add("refusals", refusalIndices);
++        JsonArray costPrompts = new JsonArray();
++        refusalCostPrompts.forEach(costPrompts::add);
++        result.add("refusal_cost_prompts", costPrompts);
+         System.out.println(RESULT_PREFIX + GSON.toJson(result));
+         assertTrue(reached, "Forge reach assertions failed for " + scenario.get("name"));
+     }
+@@ -1016,6 +1059,191 @@ public final class CardScenarioProjectionTest extends AITest {
+         };
+     }
+ 
++    private boolean expectedRefusal(JsonObject action, int scriptIndex) {
++        if (!action.has("expect")) return false;
++        if (!"refused".equals(requiredString(action, "expect"))) {
++            throw new IllegalArgumentException("script[" + scriptIndex + "].expect must be 'refused'");
++        }
++        String kind = requiredString(action, "action");
++        if (!"cast".equals(kind) && !"activate".equals(kind)) {
++            throw new IllegalArgumentException(
++                    "script[" + scriptIndex + "].expect is only valid for cast or activate");
++        }
++        if (action.has("sacrifice") || action.has("alternative_cost") || action.has("x")) {
++            throw new IllegalArgumentException(
++                    "script[" + scriptIndex + "].expect cannot be combined with choice scripts");
++        }
++        return true;
++    }
++
++    private List<String> scriptedTargets(JsonObject action, Map<String, Card> labels) {
++        if (!action.has("targets")) return null;
++        JsonElement value = action.get("targets");
++        if (!value.isJsonArray()) {
++            throw new IllegalArgumentException("script.targets must be an array");
++        }
++        List<String> targets = new ArrayList<>();
++        Set<String> unique = new LinkedHashSet<>();
++        for (JsonElement targetValue : value.getAsJsonArray()) {
++            if (!targetValue.isJsonPrimitive() || !targetValue.getAsJsonPrimitive().isString()) {
++                throw new IllegalArgumentException("script.targets labels must be strings");
++            }
++            String label = targetValue.getAsString();
++            if (!unique.add(label)) {
++                throw new IllegalArgumentException("script.targets cannot repeat labels");
++            }
++            if (!labels.containsKey(label)) {
++                throw new IllegalArgumentException("unknown target label " + label);
++            }
++            targets.add(label);
++        }
++        return targets;
++    }
++
++    private void castExpectedRefusal(
++            JsonObject action,
++            int scriptIndex,
++            Player player,
++            Game game,
++            Map<String, Card> labels,
++            List<Integer> refusals) {
++        if (game.getPhaseHandler().getPriorityPlayer() != player) {
++            throw new IllegalStateException("scripted caster does not have priority: " + player.getName());
++        }
++        String sourceZone = action.has("from") ? requiredString(action, "from") : "hand";
++        if (!"hand".equals(sourceZone) && !"graveyard".equals(sourceZone)) {
++            throw new IllegalArgumentException("cast.from must be hand or graveyard");
++        }
++        String cardName = requiredString(action, "card");
++        Card card;
++        if ("graveyard".equals(sourceZone)) {
++            card = labels.get(cardName);
++            if (card == null || card.getZone() == null
++                    || card.getZone().getZoneType() != ZoneType.Graveyard
++                    || card.getOwner() != player) {
++                throw new IllegalStateException(
++                        "graveyard cast label must name the caster's card in their graveyard: " + cardName);
++            }
++        } else {
++            card = player.getZone(ZoneType.Hand).getCards().stream()
++                    .filter(candidate -> candidate.getName().equals(cardName))
++                    .findFirst()
++                    .orElseThrow(() -> new IllegalStateException("card not in hand: " + cardName));
++        }
++        List<SpellAbility> spellAbilities = card.getSpellAbilities().stream()
++                .filter(SpellAbility::isSpell)
++                .toList();
++        if (spellAbilities.size() != 1) {
++            throw new IllegalStateException(
++                    "expected exactly one spell ability for " + cardName + ", found "
++                            + spellAbilities.size());
++        }
++        ScriptedController controller = (ScriptedController) player.getController();
++        List<String> targets = scriptedTargets(action, labels);
++        JsonObject before = projection(game, labels, false).deepCopy();
++        int manaChoicesBefore = controller.manaChoiceCount();
++        SpellAbility spell = spellAbilities.get(0);
++        boolean accepted = false;
++        controller.beginExpectedRefusal(scriptIndex);
++        try {
++            if (spell.canPlay()) {
++                if (targets != null) {
++                    if ("graveyard".equals(sourceZone)
++                            && spell.getTargetRestrictions() != null
++                            && spell.getTargetRestrictions().getZone().contains(ZoneType.Graveyard)) {
++                        controller.addGraveyardTargetChoice(targets);
++                    } else {
++                        controller.addTriggerTargetChoice(player, targets);
++                    }
++                }
++                accepted = PlaySpellAbility.playSpellAbility(controller, player, spell);
++            }
++            finishExpectedRefusal(scriptIndex, "cast", accepted, before, game, labels, refusals);
++        } finally {
++            controller.endExpectedRefusal();
++        }
++        if (controller.manaChoiceCount() != manaChoicesBefore) {
++            throw new IllegalStateException("refused cast consumed a scripted mana choice");
++        }
++    }
++
++    private void activateExpectedRefusal(
++            JsonObject action,
++            int scriptIndex,
++            Game game,
++            Map<String, Card> labels,
++            List<Integer> refusals) {
++        Player player = game.getPhaseHandler().getPriorityPlayer();
++        String sourceLabel = requiredString(action, "source");
++        Card source = labels.get(sourceLabel);
++        if (source == null || source.getZone() == null
++                || source.getZone().getZoneType() != ZoneType.Battlefield
++                        && source.getZone().getZoneType() != ZoneType.Graveyard) {
++            throw new IllegalArgumentException(
++                    "activate source is not on the battlefield or in the graveyard: " + sourceLabel);
++        }
++        Player sourcePlayer = source.getZone().getZoneType() == ZoneType.Graveyard
++                ? source.getOwner() : source.getController();
++        if (sourcePlayer != player) {
++            throw new IllegalStateException("activate source is not controlled by the player with priority");
++        }
++        String requested = normalizeAbilityLabel(requiredString(action, "ability"), source);
++        List<SpellAbility> candidates = source.getSpellAbilities().stream()
++                .filter(SpellAbility::isActivatedAbility)
++                .toList();
++        List<SpellAbility> matches = candidates.stream()
++                .filter(ability -> {
++                    String description = ability.getDescription();
++                    return (description != null
++                            && normalizeAbilityLabel(description, source).equals(requested))
++                            || requested.equals(loyaltyCostLabel(ability));
++                })
++                .toList();
++        if (matches.size() != 1) {
++            throw new IllegalStateException(
++                    "expected one activated ability labeled " + action.get("ability").getAsString()
++                            + " on " + source.getName() + ", found " + matches.size());
++        }
++        SpellAbility ability = matches.get(0);
++        ScriptedController controller = (ScriptedController) player.getController();
++        List<String> targets = scriptedTargets(action, labels);
++        JsonObject before = projection(game, labels, false).deepCopy();
++        int manaChoicesBefore = controller.manaChoiceCount();
++        boolean accepted = false;
++        controller.beginExpectedRefusal(scriptIndex);
++        try {
++            if (ability.canPlay()) {
++                if (targets != null) controller.addTriggerTargetChoice(player, targets);
++                accepted = PlaySpellAbility.playSpellAbility(controller, player, ability);
++            }
++            finishExpectedRefusal(scriptIndex, "activate", accepted, before, game, labels, refusals);
++        } finally {
++            controller.endExpectedRefusal();
++        }
++        if (controller.manaChoiceCount() != manaChoicesBefore) {
++            throw new IllegalStateException("refused activation consumed a scripted mana choice");
++        }
++    }
++
++    private void finishExpectedRefusal(
++            int scriptIndex,
++            String kind,
++            boolean accepted,
++            JsonObject before,
++            Game game,
++            Map<String, Card> labels,
++            List<Integer> refusals) {
++        if (accepted) {
++            throw new IllegalStateException("expected refusal but " + kind + " was accepted");
++        }
++        JsonObject after = projection(game, labels, false);
++        if (!before.equals(after)) {
++            throw new IllegalStateException(
++                    "refused action left state changed\nbefore:\n" + before + "\nafter:\n" + after);
++        }
++        refusals.add(scriptIndex);
++    }
++
+     private void cast(Player player, String cardName, Map<String, Card> labels) {
+         if (player.getGame().getPhaseHandler().getPriorityPlayer() != player) {
+             throw new IllegalStateException("scripted caster does not have priority: " + player.getName());
+@@ -1449,6 +1677,8 @@ public final class CardScenarioProjectionTest extends AITest {
+         private final Map<String, Card> labels;
+         private final Map<Player, Deque<Player>> opponentChoicesByChooser;
+         private final List<String> scriptedFailures;
++        private final List<JsonObject> refusalCostPrompts;
++        private int expectedRefusalScriptIndex = -1;
+         private boolean noOutsideGameChoiceExpected;
+         private boolean outsideGameChoiceObserved;
+         private boolean pendingOutsideGameCancellation;
+@@ -1477,11 +1707,21 @@ public final class CardScenarioProjectionTest extends AITest {
+                 Game game, Player player, LobbyPlayer lobbyPlayer, Map<String, Card> labels,
+                 Map<Player, Deque<Player>> opponentChoicesByChooser,
+                 Deque<TriggerTargetChoice> triggerTargetChoices, List<String> scriptedFailures) {
++            this(game, player, lobbyPlayer, labels, opponentChoicesByChooser, triggerTargetChoices,
++                    scriptedFailures, new ArrayList<>());
++        }
++
++        private ScriptedController(
++                Game game, Player player, LobbyPlayer lobbyPlayer, Map<String, Card> labels,
++                Map<Player, Deque<Player>> opponentChoicesByChooser,
++                Deque<TriggerTargetChoice> triggerTargetChoices, List<String> scriptedFailures,
++                List<JsonObject> refusalCostPrompts) {
+             super(game, player, lobbyPlayer);
+             this.labels = labels;
+             this.opponentChoicesByChooser = opponentChoicesByChooser;
+             this.triggerTargetChoices = triggerTargetChoices;
+             this.scriptedFailures = scriptedFailures;
++            this.refusalCostPrompts = refusalCostPrompts;
+         }
+ 
+         private IllegalStateException failClosed(String message) {
+@@ -1489,6 +1729,71 @@ public final class CardScenarioProjectionTest extends AITest {
+             return new IllegalStateException(message);
+         }
+ 
++        private void beginExpectedRefusal(int scriptIndex) {
++            if (expectedRefusalScriptIndex >= 0) {
++                throw failClosed("an expected-refusal attempt is already active");
++            }
++            expectedRefusalScriptIndex = scriptIndex;
++        }
++
++        private void endExpectedRefusal() {
++            if (expectedRefusalScriptIndex < 0) {
++                throw failClosed("no expected-refusal attempt is active");
++            }
++            expectedRefusalScriptIndex = -1;
++        }
++
++        private CardCollection maximalGraveyardExileSelection(
++                Iterable<Card> choices, int max, String prompt, SpellAbility ability) {
++            if (expectedRefusalScriptIndex < 0 || max < 0
++                    || !isMonotoneGraveyardExilePayment(ability)) return null;
++            List<Card> candidates = new ArrayList<>();
++            for (Card card : choices) {
++                if (card.getZone() == null || card.getZone().getZoneType() != ZoneType.Graveyard) {
++                    return null;
++                }
++                candidates.add(card);
++            }
++            CardCollection selected = new CardCollection();
++            for (int index = 0; index < Math.min(max, candidates.size()); index++) {
++                selected.add(candidates.get(index));
++            }
++            String description = "CostExile card choice, " + candidates.size() + " candidates";
++            JsonObject record = new JsonObject();
++            record.addProperty("script_index", expectedRefusalScriptIndex);
++            record.addProperty("prompt", description);
++            refusalCostPrompts.add(record);
++            System.err.println(
++                    "Forge refusal cost prompt: script[" + expectedRefusalScriptIndex + "] "
++                            + description + " (" + prompt + ")");
++            return selected;
++        }
++
++        private boolean isMonotoneGraveyardExilePayment(SpellAbility ability) {
++            if (ability == null || ability.getPayCosts() == null) return false;
++            CostExile cost = ability.getPayCosts().getCostPartByType(CostExile.class);
++            if (cost == null || !cost.from.equals(List.of(ZoneType.Graveyard))) return false;
++            try {
++                if (Integer.parseInt(cost.getAmount()) < 0) return false;
++            } catch (NumberFormatException error) {
++                return false;
++            }
++            String type = cost.getType();
++            if (type.contains("+with") || type.equals("All")) return false;
++
++            boolean paymentFrame = false;
++            for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
++                String method = frame.getMethodName();
++                if ((frame.getClassName().equals(CostExile.class.getName())
++                                || frame.getClassName().equals("forge.game.cost.CostPartWithList"))
++                        && (method.startsWith("pay") || method.equals("executePayment"))) {
++                    paymentFrame = true;
++                    break;
++                }
++            }
++            return paymentFrame;
++        }
++
+         private static final class ManaScriptPayment {
+             private final List<String> sourceOrder;
+             private final Set<String> expectedSources;
+@@ -1581,6 +1886,10 @@ public final class CardScenarioProjectionTest extends AITest {
+             return !manaChoices.isEmpty();
+         }
+ 
++        private int manaChoiceCount() {
++            return manaChoices.size();
++        }
++
+         private Map<Integer, Integer> manaSourceCounts() {
+             Map<Integer, Integer> counts = new java.util.HashMap<>();
+             for (Mana mana : player.getManaPool()) {
+@@ -1924,6 +2233,11 @@ public final class CardScenarioProjectionTest extends AITest {
+         public CardCollectionView chooseCardsForEffect(
+                 CardCollectionView choices, SpellAbility ability, String title,
+                 int min, int max, boolean optional, Map<String, Object> params) {
++            if (ability == null || ability.getActivatingPlayer() == null
++                    || ability.getActivatingPlayer() == player) {
++                CardCollection selected = maximalGraveyardExileSelection(choices, max, title, ability);
++                if (selected != null) return selected;
++            }
+             throw failClosed("unscripted card choice: " + title);
+         }
+ 
+@@ -1931,6 +2245,11 @@ public final class CardScenarioProjectionTest extends AITest {
+         public List<Card> chooseCardsForZoneChange(
+                 ZoneType destination, List<ZoneType> origin, SpellAbility ability, CardCollection choices,
+                 int min, int max, DelayedReveal reveal, String selectPrompt, Player decider) {
++            if (decider == player && origin.contains(ZoneType.Graveyard)) {
++                CardCollection selected =
++                        maximalGraveyardExileSelection(choices, max, selectPrompt, ability);
++                if (selected != null) return new ArrayList<>(selected);
++            }
+             throw failClosed("unscripted multi-card zone choice: " + selectPrompt);
+         }
+ 
