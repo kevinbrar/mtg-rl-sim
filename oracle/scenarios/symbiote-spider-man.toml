@@ -1,0 +1,25 @@
+[[scenarios]]
+name = "SS1-combat-damage-choice"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [{ label = "attacker", card = "Symbiote Spider-Man" }]
+library_top = [
+  { label = "Forest", card = "Forest" },
+  { label = "Mountain", card = "Mountain" },
+]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_cards"
+cards = ["Forest"]
+
+[[scenarios.script]]
+action = "attack"
+attackers = ["attacker"]
+through = "damage"
+
+[[scenarios.script]]
+action = "pass_until_resolved"

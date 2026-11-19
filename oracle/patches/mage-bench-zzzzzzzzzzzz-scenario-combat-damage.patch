@@ -51,3 +51,37 @@ index b18f91a8..89af781d 100644
                  }
                  case "end_turn", "next_turn" -> {
                      turn++;
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -3010,2 +3010,30 @@ public class TestPlayer implements Player {
+         List<String> scriptedTargets = currentTargetQueue();
++        if (scriptedTargets.isEmpty() && !cardChoiceGroups.isEmpty()) {
++            List<String> group = takeNextCardChoiceGroup();
++            int min = target.getMinNumberOfTargets();
++            int max = target.getMaxNumberOfTargets();
++            if (group.size() < min) {
++                throw new IllegalStateException("card choice group has " + group.size()
++                        + " cards but the prompt requires at least " + min);
++            }
++            if (group.size() > max) {
++                throw new IllegalStateException("card choice group has " + group.size()
++                        + " cards but the prompt allows at most " + max);
++            }
++            Set<UUID> possibleTargets = target.possibleTargets(abilityControllerId, source, game, cards);
++            for (String label : group) {
++                List<Card> matches = cards.getCards(game).stream()
++                        .filter(card -> possibleTargets.contains(card.getId()))
++                        .filter(card -> hasObjectTargetNameOrAlias(card, ALIAS_PREFIX + label)
++                                || hasObjectTargetNameOrAlias(card, label))
++                        .toList();
++                if (matches.size() != 1) {
++                    throw new IllegalStateException("choose_cards label " + label
++                            + " matched " + matches.size() + " cards in the card-choice prompt");
++                }
++                target.addTarget(matches.get(0).getId(), source, game);
++            }
++            target.setSkipChoice(true);
++            return target.isChosen(game);
++        }
+         if (strictTargetQueue && scriptedTargets.isEmpty() && !target.isNotTarget()) {

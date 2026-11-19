@@ -1,8 +1,40 @@
 diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
-index 9e7e61e9..f2d04426 100644
+index 9e7e61e9..42934743 100644
 --- a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
 +++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
-@@ -542,6 +542,8 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -61,6 +61,30 @@ public final class CardScenarioProjectionTest extends AITest {
+     private static final String RESULT_PREFIX = "CARD_SCENARIO_RESULT:";
+     private static final String PROMPT_FAILURE_PREFIX = "CARD_SCENARIO_PROMPT_FAILURE:";
+-
++
++    @Test
++    public void attackRequiresCurrentPriorityPlayer() {
++        JsonObject priorityHeldByP1 = JsonParser.parseString("""
++                {
++                  "name": "attack while P1 has priority is rejected",
++                  "active_player": 0,
++                  "setup": {
++                    "P0": {"battlefield": [{"label": "attacker", "card": "Centaur Courser"}]},
++                    "P1": {}
++                  },
++                  "script": [
++                    {"action": "pass_priority", "player": "P0"},
++                    {"action": "attack", "attackers": ["attacker"]}
++                  ]
++                }
++                """).getAsJsonObject();
++        try {
++            runScenario(priorityHeldByP1);
++            throw new AssertionError("attack while P1 has priority was accepted");
++        } catch (IllegalArgumentException expected) {
++            assertTrue(expected.getMessage().contains("attack requires P0 active with priority"));
++        }
++    }
++
+     @Test
+     public void singleEntityCardChoicesAreFifoAndFailClosed() {
+         Game game = initAndCreateGame();
+@@ -542,6 +585,8 @@ public final class CardScenarioProjectionTest extends AITest {
  
          List<Integer> refusals = new ArrayList<>();
          JsonArray script = scenario.getAsJsonArray("script");
@@ -11,7 +43,7 @@ index 9e7e61e9..f2d04426 100644
          for (int scriptIndex = 0; scriptIndex < script.size(); scriptIndex++) {
              JsonObject action = script.get(scriptIndex).getAsJsonObject();
              boolean expectRefused = expectedRefusal(action, scriptIndex);
-@@ -562,6 +564,51 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -562,6 +607,52 @@ public final class CardScenarioProjectionTest extends AITest {
                          "choose_replacement", "choose_entity" -> { }
                  case "pass_priority" -> passPriority(action, game);
                  case "label_permanent" -> labelPermanent(action, game, labels);
@@ -19,7 +51,7 @@ index 9e7e61e9..f2d04426 100644
 +                    if (attackNeedsResolution) {
 +                        throw new IllegalArgumentException("attack must be followed by pass_until_resolved");
 +                    }
-+                    if (activePlayer != 0 || priorityPlayer != 0) {
++                    if (activePlayer != 0 || game.getPhaseHandler().getPriorityPlayer() != p0) {
 +                        throw new IllegalArgumentException("attack requires P0 active with priority");
 +                    }
 +                    for (String key : action.keySet()) {
@@ -56,6 +88,7 @@ index 9e7e61e9..f2d04426 100644
 +                            throw new IllegalArgumentException(
 +                                    "attack label " + label + " must be on P0's battlefield");
 +                        }
++                        attacker.setSickness(false);
 +                    }
 +                    controller0.addAttackers(attackers);
 +                    attackNeedsResolution = true;
@@ -63,7 +96,7 @@ index 9e7e61e9..f2d04426 100644
                  case "activate" -> {
                      if (expectRefused) {
                          activateExpectedRefusal(action, scriptIndex, game, labels, refusals);
-@@ -572,7 +619,13 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -572,7 +663,13 @@ public final class CardScenarioProjectionTest extends AITest {
                  case "pass_until_resolved" -> {
                      controller0.setPassingPriority(true);
                      controller1.setPassingPriority(true);
@@ -78,7 +111,7 @@ index 9e7e61e9..f2d04426 100644
                      controller0.setPassingPriority(false);
                      controller1.setPassingPriority(false);
                  }
-@@ -581,6 +634,9 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -581,6 +678,9 @@ public final class CardScenarioProjectionTest extends AITest {
              }
          }
  
@@ -88,17 +121,7 @@ index 9e7e61e9..f2d04426 100644
          assertNoScriptedControllerFailures(scriptedFailures);
          controller0.assertConsumed();
          controller1.assertConsumed();
-@@ -818,6 +874,9 @@ public final class CardScenarioProjectionTest extends AITest {
-             JsonObject item = value.isJsonObject() ? value.getAsJsonObject() : null;
-             String cardName = item == null ? value.getAsString() : requiredString(item, "card");
-             Card card = addCardToZone(cardName, player, zone);
-+            if (zone == ZoneType.Battlefield) {
-+                card.setSickness(false);
-+            }
-             if (item != null && item.has("label")) {
-                 labels.put(requiredString(item, "label"), card);
-             }
-@@ -1408,6 +1467,18 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1408,6 +1508,20 @@ public final class CardScenarioProjectionTest extends AITest {
          }
      }
  
@@ -109,15 +132,17 @@ index 9e7e61e9..f2d04426 100644
 +
 +        game.getPhaseHandler().devAdvanceToPhase(PhaseType.COMBAT_DAMAGE, () -> resolve(game));
 +        resolve(game);
-+        if (game.getPhaseHandler().getPhase() != PhaseType.COMBAT_DAMAGE) {
-+            throw new IllegalStateException("attack did not stop at combat damage");
++        PhaseType phase = game.getPhaseHandler().getPhase();
++        if (phase != PhaseType.COMBAT_DAMAGE && phase != PhaseType.COMBAT_END) {
++            throw new IllegalStateException(
++                    "attack did not stop after combat damage: " + phase);
 +        }
 +    }
 +
      private JsonObject projection(Game game, Map<String, Card> labels, boolean reached) {
          JsonObject players = new JsonObject();
          for (int index = 0; index < 2; index++) {
-@@ -1674,6 +1745,7 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1674,6 +1786,7 @@ public final class CardScenarioProjectionTest extends AITest {
          private final Deque<CopyCastChoice> copyCastChoices = new ArrayDeque<>();
          private final Deque<String> replacementChoices = new ArrayDeque<>();
          private final Deque<String> singleEntityCardChoices = new ArrayDeque<>();
@@ -125,7 +150,7 @@ index 9e7e61e9..f2d04426 100644
          private final Map<String, Card> labels;
          private final Map<Player, Deque<Player>> opponentChoicesByChooser;
          private final List<String> scriptedFailures;
-@@ -1923,7 +1995,40 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -1923,7 +2036,40 @@ public final class CardScenarioProjectionTest extends AITest {
              passingPriority = value;
          }
  

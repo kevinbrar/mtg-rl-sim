@@ -1,0 +1,24 @@
+[[scenarios]]
+name = "LA1 first-strike damage trigger resolves before regular damage"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "attack", attackers = ["first-striker", "regular-attacker"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "first-striker", card = "Lightning, Army of One" },
+  { label = "regular-attacker", card = "Grizzly Bears" },
+]
+library_top = ["Island", "Island"]
+
+[scenarios.setup.P1]
+battlefield = [{ label = "potential-blocker", card = "Grizzly Bears" }]
+library_top = ["Island", "Island"]
+
+[scenarios.reach]
+all = [
+  { player = "P1", life = 13 },
+]

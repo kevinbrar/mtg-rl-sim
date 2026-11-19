@@ -1102,6 +1102,22 @@ fn apply_card_choice_group(
                 labels,
             )
         }
+        WaitingFor::DigChoice {
+            selectable_cards,
+            keep_count,
+            up_to,
+            ..
+        } => {
+            let group = take_card_choice_group(groups)?;
+            let min_count = if up_to { 0 } else { keep_count };
+            validate_card_choice_group(&group, &selectable_cards, min_count, keep_count, labels)?;
+            discard_reconciler.act(
+                runner,
+                GameAction::SelectCards { cards: group },
+                discard_choice_groups,
+                labels,
+            )
+        }
         WaitingFor::DiscardChoice {
             cards,
             count,
@@ -2451,8 +2467,6 @@ fn pass_until_resolved(
                 WaitingFor::OrderTriggers { .. }
                     | WaitingFor::AssignCombatDamage { .. }
                     | WaitingFor::AssignBlockerDamage { .. }
-                    | WaitingFor::EffectZoneChoice { .. }
-                    | WaitingFor::ChooseFromZoneChoice { .. }
             )
         {
             return Err(format!(
@@ -2651,7 +2665,9 @@ fn pass_until_resolved(
                     labels,
                 )?;
             }
-            WaitingFor::EffectZoneChoice { .. } | WaitingFor::ChooseFromZoneChoice { .. } => {
+            WaitingFor::EffectZoneChoice { .. }
+            | WaitingFor::ChooseFromZoneChoice { .. }
+            | WaitingFor::DigChoice { .. } => {
                 apply_card_choice_group(
                     runner,
                     labels,
@@ -2833,6 +2849,7 @@ fn pass_until_resolved(
                     | WaitingFor::SurveilChoice { .. }
                     | WaitingFor::EffectZoneChoice { .. }
                     | WaitingFor::ChooseFromZoneChoice { .. }
+                    | WaitingFor::DigChoice { .. }
                     | WaitingFor::DiscardChoice { .. }
                     | WaitingFor::OptionalEffectChoice { .. }
                     | WaitingFor::OutsideGameChoice { .. }
@@ -3366,16 +3383,21 @@ fn advance_through_combat_damage(
 ) -> Result<(), String> {
     let active_player = runner.state().active_player;
     for _ in 0..128 {
-        let (phase, stack_is_empty, waiting_for) = {
+        let (phase, stack_is_empty, regular_damage_done, waiting_for) = {
             let state = runner.state();
             (
                 state.phase,
                 state.stack.is_empty(),
+                state
+                    .combat
+                    .as_ref()
+                    .is_some_and(|combat| combat.regular_damage_done),
                 state.waiting_for.clone(),
             )
         };
         if phase == Phase::CombatDamage
             && stack_is_empty
+            && regular_damage_done
             && matches!(
                 &waiting_for,
                 WaitingFor::Priority { player } if *player == active_player
@@ -3413,7 +3435,10 @@ fn advance_through_combat_damage(
                     labels,
                 )?;
             }
-            WaitingFor::DeclareBlockers { player, .. } if player == PlayerId(1) => {
+            WaitingFor::DeclareBlockers {
+                player: PlayerId(1),
+                ..
+            } => {
                 discard_reconciler.act(
                     runner,
                     GameAction::DeclareBlockers {
@@ -3423,10 +3448,26 @@ fn advance_through_combat_damage(
                     labels,
                 )?;
             }
-            other => {
-                return Err(format!(
-                    "combat progression encountered an unscripted prompt: {other:?}"
-                ));
+            _ => {
+                pass_until_resolved(
+                    scenario_name,
+                    runner,
+                    labels,
+                    groups,
+                    activation_target_groups,
+                    card_choice_groups,
+                    copy_cast_choices,
+                    graveyard_target_choices,
+                    copy_target_choices,
+                    discard_choice_groups,
+                    surveil_choices,
+                    sideboard_labels,
+                    outside_game_choices,
+                    copy_choices,
+                    unless_choice_groups,
+                    discard_reconciler,
+                    true,
+                )?;
             }
         }
     }
@@ -7335,5 +7376,95 @@ mod surveil_script_choice_tests {
         let other_player_choice =
             parse_surveil_choice(&json!({"player": "P1", "cards": ["top-card"]}), &labels).unwrap();
         assert_eq!(other_player_choice.player, PlayerId(1));
+    }
+}
+
+#[cfg(test)]
+mod combat_damage_card_choice_tests {
+    use super::*;
+
+    fn damage_step_choice_runner() -> (GameRunner, HashMap<ObjectId, String>, ObjectId, ObjectId) {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::CombatDamage);
+        let first = scenario.add_card_to_library_top(PlayerId(0), "First Choice");
+        let second = scenario.add_card_to_library_top(PlayerId(0), "Second Choice");
+        let spell = scenario
+            .add_spell_to_hand_from_oracle(
+                PlayerId(0),
+                "Damage Step Choice",
+                true,
+                "Look at the top two cards of your library. Put one of them into your hand and the rest into your graveyard.",
+            )
+            .id();
+        let mut runner = scenario.build();
+        runner.cast(spell).commit();
+        let labels = HashMap::from([
+            (first, "top.first".to_string()),
+            (second, "top.second".to_string()),
+        ]);
+        (runner, labels, first, second)
+    }
+
+    fn resolve_damage_step_choice(
+        runner: &mut GameRunner,
+        labels: &HashMap<ObjectId, String>,
+        card_choices: &mut VecDeque<Vec<ObjectId>>,
+    ) -> Result<(), String> {
+        let mut trigger_targets = VecDeque::new();
+        let mut activation_targets = VecDeque::new();
+        let mut copy_cast_choices = VecDeque::new();
+        let mut graveyard_target_choices = VecDeque::new();
+        let mut copy_target_choices = VecDeque::new();
+        let mut discard_choices = [VecDeque::new(), VecDeque::new()];
+        let mut surveil_choices = VecDeque::new();
+        let sideboard_labels = HashMap::new();
+        let mut outside_game_choices = VecDeque::new();
+        let mut copy_choices = VecDeque::new();
+        let mut unless_choices = [VecDeque::new(), VecDeque::new()];
+        let mut discard_reconciler = DiscardChoiceReconciler::default();
+
+        pass_until_resolved(
+            "combat-damage card choice test",
+            runner,
+            labels,
+            &mut trigger_targets,
+            &mut activation_targets,
+            card_choices,
+            &mut copy_cast_choices,
+            &mut graveyard_target_choices,
+            &mut copy_target_choices,
+            &mut discard_choices,
+            &mut surveil_choices,
+            &sideboard_labels,
+            &mut outside_game_choices,
+            &mut copy_choices,
+            &mut unless_choices,
+            &mut discard_reconciler,
+            true,
+        )
+    }
+
+    #[test]
+    fn damage_step_choice_consumes_choose_cards_and_empty_queue_fails_closed() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let (mut runner, labels, first, second) = damage_step_choice_runner();
+                let mut choices = VecDeque::from([vec![first]]);
+
+                resolve_damage_step_choice(&mut runner, &labels, &mut choices).unwrap();
+
+                assert!(choices.is_empty());
+                assert_eq!(runner.state().objects[&first].zone, Zone::Hand);
+                assert_eq!(runner.state().objects[&second].zone, Zone::Graveyard);
+
+                let (mut runner, labels, _, _) = damage_step_choice_runner();
+                let error = resolve_damage_step_choice(&mut runner, &labels, &mut VecDeque::new())
+                    .unwrap_err();
+                assert!(error.contains("empty choose_cards queue"));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }
