@@ -1139,9 +1139,11 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                     )
         if action.get("action") == "attack":
             context = f"{name}: script[{index}].attack"
-            unknown = action.keys() - {"action", "attackers"}
+            unknown = action.keys() - {"action", "attackers", "through"}
             if unknown:
                 raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            if "through" in action and action["through"] != "damage":
+                raise ValueError(f'{context}.through must be "damage"')
             attackers = action.get("attackers")
             if not isinstance(attackers, list) or not attackers:
                 raise ValueError(f"{context}.attackers must be a non-empty label array")

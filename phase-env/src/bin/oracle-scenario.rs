@@ -1592,9 +1592,14 @@ fn declare_attackers(
     let fields = action.as_object().ok_or("attack must be a table")?;
     if fields
         .keys()
-        .any(|key| !["action", "attackers"].contains(&key.as_str()))
+        .any(|key| !["action", "attackers", "through"].contains(&key.as_str()))
     {
-        return Err("attack supports only attackers".to_string());
+        return Err("attack supports only attackers and through".to_string());
+    }
+    if let Some(through) = action.get("through") {
+        if through.as_str() != Some("damage") {
+            return Err("attack.through must be \"damage\"".to_string());
+        }
     }
     if active != PlayerId(0) {
         return Err("attack action requires P0 active so attackers can attack P1".to_string());
@@ -2435,10 +2440,26 @@ fn pass_until_resolved(
     copy_choices: &mut VecDeque<CopyChoice>,
     unless_choice_groups: &mut [VecDeque<UnlessScriptChoice>; 2],
     discard_reconciler: &mut DiscardChoiceReconciler,
+    fail_closed_unscripted_prompts: bool,
 ) -> Result<(), String> {
     let mut pending_unless_choice = None;
     let mut pending_copy_target_choice = None;
     for _ in 0..128 {
+        if fail_closed_unscripted_prompts
+            && matches!(
+                runner.state().waiting_for,
+                WaitingFor::OrderTriggers { .. }
+                    | WaitingFor::AssignCombatDamage { .. }
+                    | WaitingFor::AssignBlockerDamage { .. }
+                    | WaitingFor::EffectZoneChoice { .. }
+                    | WaitingFor::ChooseFromZoneChoice { .. }
+            )
+        {
+            return Err(format!(
+                "combat progression encountered an unscripted prompt: {:?}",
+                runner.state().waiting_for
+            ));
+        }
         match runner.state().waiting_for.clone() {
             WaitingFor::TriggerTargetSelection { .. } if !graveyard_target_choices.is_empty() => {
                 let choice = graveyard_target_choices
@@ -2776,6 +2797,26 @@ fn pass_until_resolved(
                         .to_string(),
                 );
             }
+            WaitingFor::Priority { .. } if fail_closed_unscripted_prompts => {
+                discard_reconciler.act(
+                    runner,
+                    GameAction::PassPriority,
+                    discard_choice_groups,
+                    labels,
+                )?;
+            }
+            WaitingFor::Priority { .. } => {
+                discard_reconciler.advance_until_stack_empty(
+                    runner,
+                    discard_choice_groups,
+                    labels,
+                )?;
+            }
+            other if fail_closed_unscripted_prompts => {
+                return Err(format!(
+                    "combat progression encountered an unscripted prompt: {other:?}"
+                ));
+            }
             _ => {
                 discard_reconciler.advance_until_stack_empty(
                     runner,
@@ -2800,6 +2841,8 @@ fn pass_until_resolved(
                     | WaitingFor::WardSacrificeChoice { .. }
                     | WaitingFor::WardDiscardChoice { .. }
             )
+            && (!fail_closed_unscripted_prompts
+                || matches!(runner.state().waiting_for, WaitingFor::Priority { .. }))
         {
             if pending_unless_choice.is_some() {
                 return Err("unless cost branch was not followed by its choice prompt".to_string());
@@ -3300,6 +3343,98 @@ fn ensure_permanent_unlabeled(
         ));
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn advance_through_combat_damage(
+    scenario_name: &str,
+    runner: &mut GameRunner,
+    labels: &HashMap<ObjectId, String>,
+    groups: &mut VecDeque<Vec<ObjectId>>,
+    activation_target_groups: &mut VecDeque<Vec<ObjectId>>,
+    card_choice_groups: &mut VecDeque<Vec<ObjectId>>,
+    copy_cast_choices: &mut VecDeque<CopyCastChoice>,
+    graveyard_target_choices: &mut VecDeque<TargetScriptChoice>,
+    copy_target_choices: &mut VecDeque<TargetScriptChoice>,
+    discard_choice_groups: &mut [VecDeque<DiscardScriptChoice>; 2],
+    surveil_choices: &mut VecDeque<SurveilScriptChoice>,
+    sideboard_labels: &HashMap<String, (PlayerId, usize, String)>,
+    outside_game_choices: &mut VecDeque<OutsideGameScriptChoice>,
+    copy_choices: &mut VecDeque<CopyChoice>,
+    unless_choice_groups: &mut [VecDeque<UnlessScriptChoice>; 2],
+    discard_reconciler: &mut DiscardChoiceReconciler,
+) -> Result<(), String> {
+    let active_player = runner.state().active_player;
+    for _ in 0..128 {
+        let (phase, stack_is_empty, waiting_for) = {
+            let state = runner.state();
+            (
+                state.phase,
+                state.stack.is_empty(),
+                state.waiting_for.clone(),
+            )
+        };
+        if phase == Phase::CombatDamage
+            && stack_is_empty
+            && matches!(
+                &waiting_for,
+                WaitingFor::Priority { player } if *player == active_player
+            )
+        {
+            return Ok(());
+        }
+        match waiting_for {
+            WaitingFor::Priority { .. } if !stack_is_empty => {
+                pass_until_resolved(
+                    scenario_name,
+                    runner,
+                    labels,
+                    groups,
+                    activation_target_groups,
+                    card_choice_groups,
+                    copy_cast_choices,
+                    graveyard_target_choices,
+                    copy_target_choices,
+                    discard_choice_groups,
+                    surveil_choices,
+                    sideboard_labels,
+                    outside_game_choices,
+                    copy_choices,
+                    unless_choice_groups,
+                    discard_reconciler,
+                    true,
+                )?;
+            }
+            WaitingFor::Priority { .. } => {
+                discard_reconciler.act(
+                    runner,
+                    GameAction::PassPriority,
+                    discard_choice_groups,
+                    labels,
+                )?;
+            }
+            WaitingFor::DeclareBlockers { player, .. } if player == PlayerId(1) => {
+                discard_reconciler.act(
+                    runner,
+                    GameAction::DeclareBlockers {
+                        assignments: Vec::new(),
+                    },
+                    discard_choice_groups,
+                    labels,
+                )?;
+            }
+            other => {
+                return Err(format!(
+                    "combat progression encountered an unscripted prompt: {other:?}"
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "combat did not reach post-damage priority within 128 actions; phase={:?}, waiting_for={:?}",
+        runner.state().phase,
+        runner.state().waiting_for
+    ))
 }
 
 fn advance_to_next_turn(
@@ -3833,6 +3968,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     let mut unless_choice_groups = [VecDeque::new(), VecDeque::new()];
     let mut discard_reconciler = DiscardChoiceReconciler::default();
     let mut attack_needs_resolution = false;
+    let mut attack_through_damage = false;
     let mut refusals = Vec::new();
     let mut refusal_cost_prompts = Vec::new();
     for (action_index, action) in actions.iter().enumerate() {
@@ -4123,6 +4259,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     &mut discard_choice_groups,
                 )?;
                 attack_needs_resolution = true;
+                attack_through_damage = action.get("through").is_some();
             }
             "choose_cards" => {
                 card_choice_groups.push_back(resolve_card_choice_labels(action, &labels)?);
@@ -4165,10 +4302,33 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     &mut copy_choices,
                     &mut unless_choice_groups,
                     &mut discard_reconciler,
+                    attack_through_damage,
                 )?;
                 if attack_needs_resolution {
-                    ensure_attack_resolution_boundary(&runner)?;
+                    if attack_through_damage {
+                        advance_through_combat_damage(
+                            name,
+                            &mut runner,
+                            &labels,
+                            &mut trigger_target_groups,
+                            &mut activation_target_groups,
+                            &mut card_choice_groups,
+                            &mut copy_cast_choices,
+                            &mut graveyard_target_choices,
+                            &mut copy_target_choices,
+                            &mut discard_choice_groups,
+                            &mut surveil_choices,
+                            &sideboard_labels,
+                            &mut outside_game_choices,
+                            &mut copy_choices,
+                            &mut unless_choice_groups,
+                            &mut discard_reconciler,
+                        )?;
+                    } else {
+                        ensure_attack_resolution_boundary(&runner)?;
+                    }
                     attack_needs_resolution = false;
+                    attack_through_damage = false;
                 }
             }
             "end_turn" | "next_turn" => {
@@ -4624,6 +4784,7 @@ mod tests {
             &mut copy_choices,
             &mut unless_choices,
             discard_reconciler,
+            false,
         )
     }
 
@@ -5656,6 +5817,7 @@ mod tests {
                     &mut copy_choices,
                     &mut unless_choices,
                     &mut discard_reconciler,
+                    false,
                 )
                 .unwrap();
                 ensure_attack_resolution_boundary(&runner).unwrap();
@@ -5663,6 +5825,132 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[test]
+    fn attack_through_damage_reaches_active_player_priority_after_combat_damage() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let attacker = scenario.add_creature(PlayerId(0), "Ready Bear", 2, 2).id();
+                let mut runner = scenario.build();
+                let labels = HashMap::from([(attacker, "attacker".to_string())]);
+                let (mut discard_reconciler, mut discard_choices) = empty_discard_context();
+                declare_attackers(
+                    &mut runner,
+                    &labels,
+                    &json!({
+                        "action": "attack",
+                        "attackers": ["attacker"],
+                        "through": "damage"
+                    }),
+                    &mut discard_reconciler,
+                    &mut discard_choices,
+                )
+                .unwrap();
+
+                let mut trigger_targets = VecDeque::new();
+                let mut activation_targets = VecDeque::new();
+                let mut card_choices = VecDeque::new();
+                let mut copy_cast_choices = VecDeque::new();
+                let mut graveyard_target_choices = VecDeque::new();
+                let mut copy_target_choices = VecDeque::new();
+                let mut surveil_choices = VecDeque::new();
+                let sideboard_labels = HashMap::new();
+                let mut outside_game_choices = VecDeque::new();
+                let mut copy_choices = VecDeque::new();
+                let mut unless_choices = [VecDeque::new(), VecDeque::new()];
+                pass_until_resolved(
+                    "attack through damage test",
+                    &mut runner,
+                    &labels,
+                    &mut trigger_targets,
+                    &mut activation_targets,
+                    &mut card_choices,
+                    &mut copy_cast_choices,
+                    &mut graveyard_target_choices,
+                    &mut copy_target_choices,
+                    &mut discard_choices,
+                    &mut surveil_choices,
+                    &sideboard_labels,
+                    &mut outside_game_choices,
+                    &mut copy_choices,
+                    &mut unless_choices,
+                    &mut discard_reconciler,
+                    true,
+                )
+                .unwrap();
+                advance_through_combat_damage(
+                    "attack through damage test",
+                    &mut runner,
+                    &labels,
+                    &mut trigger_targets,
+                    &mut activation_targets,
+                    &mut card_choices,
+                    &mut copy_cast_choices,
+                    &mut graveyard_target_choices,
+                    &mut copy_target_choices,
+                    &mut discard_choices,
+                    &mut surveil_choices,
+                    &sideboard_labels,
+                    &mut outside_game_choices,
+                    &mut copy_choices,
+                    &mut unless_choices,
+                    &mut discard_reconciler,
+                )
+                .unwrap();
+
+                assert_eq!(runner.state().phase, Phase::CombatDamage);
+                assert!(runner.state().stack.is_empty());
+                assert_eq!(
+                    runner.state().waiting_for,
+                    WaitingFor::Priority {
+                        player: PlayerId(0)
+                    }
+                );
+                assert_eq!(runner.state().players[1].life, 18);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn attack_action_rejects_scripted_blocks_and_unknown_through_modes() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let attacker = scenario.add_creature(PlayerId(0), "Ready Bear", 2, 2).id();
+        let mut runner = scenario.build();
+        let labels = HashMap::from([(attacker, "attacker".to_string())]);
+        let (mut discard_reconciler, mut discard_choices) = empty_discard_context();
+        let blocks_error = declare_attackers(
+            &mut runner,
+            &labels,
+            &json!({
+                "action": "attack",
+                "attackers": ["attacker"],
+                "blocks": []
+            }),
+            &mut discard_reconciler,
+            &mut discard_choices,
+        )
+        .unwrap_err();
+        assert!(blocks_error.contains("supports only attackers and through"));
+        let through_error = declare_attackers(
+            &mut runner,
+            &labels,
+            &json!({
+                "action": "attack",
+                "attackers": ["attacker"],
+                "through": "combat"
+            }),
+            &mut discard_reconciler,
+            &mut discard_choices,
+        )
+        .unwrap_err();
+        assert!(through_error.contains("attack.through must be \"damage\""));
     }
 
     #[test]
@@ -7020,6 +7308,7 @@ mod surveil_script_choice_tests {
                     &mut copy_choices,
                     &mut unless_choices,
                     &mut discard_reconciler,
+                    false,
                 )
                 .unwrap();
 

@@ -499,3 +499,25 @@ all = [
   { zone = "battlefield", player = "P0", card = "Jace", count = 1, token = true, counters = { loyalty = 5 } },
   { zone = "hand", player = "P0", card = "Island", count = 1 },
 ]
+
+[[scenarios]]
+name = "J9 attack through combat damage updates life"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [{ label = "attacker", card = "Centaur Courser" }]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "attack"
+attackers = ["attacker"]
+through = "damage"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+player = "P1"
+life = 17
