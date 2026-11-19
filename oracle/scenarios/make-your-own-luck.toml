@@ -1,0 +1,105 @@
+[[scenarios]]
+name = "MYOL1 exile and plot a nonland card"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Island" },
+  { label = "mana.3", card = "Plains" },
+  { label = "mana.4", card = "Swamp" },
+  { label = "mana.5", card = "Mountain" },
+]
+mana_pool = [
+  { color = "G", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "W", source = "mana.3" },
+  { color = "B", source = "mana.4" },
+  { color = "R", source = "mana.5" },
+]
+hand = ["Make Your Own Luck"]
+library_top = [
+  { label = "plotted", card = "Opt" },
+  { label = "hand.land", card = "Island" },
+  { label = "hand.nonland", card = "Divination" },
+]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3", "mana.4", "mana.5"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Make Your Own Luck"
+
+[[scenarios.script]]
+action = "choose_cards"
+cards = ["plotted"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Opt", count = 1 },
+  { zone = "hand", player = "P0", card = "Island", count = 1 },
+  { zone = "hand", player = "P0", card = "Divination", count = 1 },
+]
+
+[[scenarios]]
+name = "MYOL2 decline the optional nonland exile"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Island" },
+  { label = "mana.3", card = "Plains" },
+  { label = "mana.4", card = "Swamp" },
+  { label = "mana.5", card = "Mountain" },
+]
+mana_pool = [
+  { color = "G", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "W", source = "mana.3" },
+  { color = "B", source = "mana.4" },
+  { color = "R", source = "mana.5" },
+]
+hand = ["Make Your Own Luck"]
+library_top = [
+  { label = "hand.nonland.one", card = "Opt" },
+  { label = "hand.land", card = "Island" },
+  { label = "hand.nonland.two", card = "Divination" },
+]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3", "mana.4", "mana.5"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Make Your Own Luck"
+
+[[scenarios.script]]
+action = "choose_cards"
+cards = []
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Opt", count = 1 },
+  { zone = "hand", player = "P0", card = "Island", count = 1 },
+  { zone = "hand", player = "P0", card = "Divination", count = 1 },
+]

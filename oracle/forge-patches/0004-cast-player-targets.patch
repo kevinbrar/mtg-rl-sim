@@ -1,0 +1,74 @@
+--- a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
++++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
+@@ -10,6 +10,7 @@
+ import forge.card.mana.ManaAtom;
+ import forge.game.Game;
+ import forge.game.GameEntity;
++import forge.game.GameObject;
+ import forge.game.ability.AbilityKey;
+ import forge.game.card.Card;
+ import forge.game.card.CardCollection;
+@@ -554,7 +555,8 @@
+                         castExpectedRefusal(
+                                 action, scriptIndex, caster, game, labels, refusals);
+                     } else {
+-                        cast(caster, requiredString(action, "card"), labels);
++                        cast(caster, requiredString(action, "card"), labels,
++                                scriptedTargets(action, labels));
+                     }
+                 }
+                 case "choose_outside_game", "choose_mana", "choose_surveil", "choose_discard",
+@@ -1092,9 +1094,13 @@
+             if (!unique.add(label)) {
+                 throw new IllegalArgumentException("script.targets cannot repeat labels");
+             }
+-            if (!labels.containsKey(label)) {
++            if (!label.equals("@P0") && !label.equals("@P1") && !label.equals("@skip")
++                    && !labels.containsKey(label)) {
+                 throw new IllegalArgumentException("unknown target label " + label);
+             }
++            if (label.startsWith("@") && !Set.of("@P0", "@P1", "@skip").contains(label)) {
++                throw new IllegalArgumentException("unsupported reserved cast target " + label);
++            }
+             targets.add(label);
+         }
+         return targets;
+@@ -1244,7 +1250,7 @@
+         refusals.add(scriptIndex);
+     }
+ 
+-    private void cast(Player player, String cardName, Map<String, Card> labels) {
++    private void cast(Player player, String cardName, Map<String, Card> labels, List<String> targets) {
+         if (player.getGame().getPhaseHandler().getPriorityPlayer() != player) {
+             throw new IllegalStateException("scripted caster does not have priority: " + player.getName());
+         }
+@@ -1258,6 +1264,7 @@
+                 .orElseThrow(() -> new IllegalArgumentException("no spell ability: " + cardName));
+         assertTrue(spell.canPlay(), cardName + " should be castable");
+         ScriptedController controller = (ScriptedController) player.getController();
++        if (targets != null) controller.addTriggerTargetChoice(player, targets);
+         Map<Integer, Integer> manaBefore = controller.hasManaChoices()
+                 ? controller.manaSourceCounts() : null;
+         assertTrue(PlaySpellAbility.playSpellAbility(controller, player, spell));
+@@ -2008,12 +2015,19 @@
+             }
+             int min = ability.getMinTargets();
+             int max = ability.getMaxTargets();
+-            if (targetLabels.size() < min || targetLabels.size() > max) {
++            long selectedCount = targetLabels.stream().filter(label -> !label.equals("@skip")).count();
++            if (selectedCount < min || selectedCount > max) {
+                 throw failClosed(
+                         "scripted target count " + targetLabels.size() + " outside " + min + ".." + max);
+             }
+             for (String label : targetLabels) {
+-                Card target = labels.get(label);
++                if (label.equals("@skip")) continue;
++                GameObject target;
++                if (label.equals("@P0") || label.equals("@P1")) {
++                    target = player.getGame().getPlayers().get(label.equals("@P0") ? 0 : 1);
++                } else {
++                    target = labels.get(label);
++                }
+                 if (target == null) {
+                     throw failClosed("unknown scripted target label " + label);
+                 }

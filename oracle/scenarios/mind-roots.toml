@@ -1,0 +1,290 @@
+[[scenarios]]
+name = "MR1 choose discarded land"
+active_player = 0
+
+[scenarios.setup.P0]
+hand = ["Mind Roots"]
+battlefield = [
+  { label = "mana.1", card = "Swamp" },
+  { label = "mana.2", card = "Forest" },
+  { label = "mana.3", card = "Swamp" },
+]
+mana_pool = [
+  { color = "B", source = "mana.1" },
+  { color = "G", source = "mana.2" },
+  { color = "B", source = "mana.3" },
+]
+
+[scenarios.setup.P1]
+hand = [
+  { label = "land", card = "Island" },
+  { label = "nonland", card = "Opt" },
+  { label = "kept", card = "Divination" },
+]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Mind Roots"
+targets = ["@P1"]
+
+[[scenarios.script]]
+action = "choose_discard"
+player = "P1"
+cards = ["land", "nonland"]
+
+[[scenarios.script]]
+action = "choose_cards"
+cards = ["land"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Island", count = 1, tapped = true },
+  { zone = "graveyard", player = "P1", card = "Opt", count = 1 },
+  { zone = "hand", player = "P1", card = "Divination", count = 1 },
+]
+
+[[scenarios]]
+name = "MR2 decline discarded land"
+active_player = 0
+
+[scenarios.setup.P0]
+hand = ["Mind Roots"]
+battlefield = [
+  { label = "mana.1", card = "Swamp" },
+  { label = "mana.2", card = "Forest" },
+  { label = "mana.3", card = "Swamp" },
+]
+mana_pool = [
+  { color = "B", source = "mana.1" },
+  { color = "G", source = "mana.2" },
+  { color = "B", source = "mana.3" },
+]
+
+[scenarios.setup.P1]
+hand = [
+  { label = "land", card = "Island" },
+  { label = "nonland", card = "Opt" },
+  { label = "kept", card = "Divination" },
+]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Mind Roots"
+targets = ["@P1"]
+
+[[scenarios.script]]
+action = "choose_discard"
+player = "P1"
+cards = ["land", "nonland"]
+
+[[scenarios.script]]
+action = "choose_cards"
+cards = []
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P1", card = "Island", count = 1 },
+  { zone = "graveyard", player = "P1", card = "Opt", count = 1 },
+]
+
+[[scenarios]]
+name = "MR3 forced discard places land"
+active_player = 0
+
+[scenarios.setup.P0]
+hand = ["Mind Roots"]
+battlefield = [
+  { label = "mana.1", card = "Swamp" },
+  { label = "mana.2", card = "Forest" },
+  { label = "mana.3", card = "Swamp" },
+]
+mana_pool = [
+  { color = "B", source = "mana.1" },
+  { color = "G", source = "mana.2" },
+  { color = "B", source = "mana.3" },
+]
+
+[scenarios.setup.P1]
+hand = [
+  { label = "land", card = "Island" },
+  { label = "nonland", card = "Opt" },
+]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Mind Roots"
+targets = ["@P1"]
+
+[[scenarios.script]]
+action = "choose_cards"
+cards = ["land"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Island", count = 1, tapped = true },
+  { zone = "graveyard", player = "P1", card = "Opt", count = 1 },
+]
+
+[[scenarios]]
+name = "MR4 no land discarded"
+active_player = 0
+
+[scenarios.setup.P0]
+hand = ["Mind Roots"]
+battlefield = [
+  { label = "mana.1", card = "Swamp" },
+  { label = "mana.2", card = "Forest" },
+  { label = "mana.3", card = "Swamp" },
+]
+mana_pool = [
+  { color = "B", source = "mana.1" },
+  { color = "G", source = "mana.2" },
+  { color = "B", source = "mana.3" },
+]
+
+[scenarios.setup.P1]
+hand = [
+  { label = "first", card = "Opt" },
+  { label = "second", card = "Divination" },
+]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Mind Roots"
+targets = ["@P1"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P1", card = "Opt", count = 1 },
+  { zone = "graveyard", player = "P1", card = "Divination", count = 1 },
+]
+
+[[scenarios]]
+name = "MR5 choose second discarded land"
+active_player = 0
+
+[scenarios.setup.P0]
+hand = ["Mind Roots"]
+battlefield = [
+  { label = "mana.1", card = "Swamp" },
+  { label = "mana.2", card = "Forest" },
+  { label = "mana.3", card = "Swamp" },
+]
+mana_pool = [
+  { color = "B", source = "mana.1" },
+  { color = "G", source = "mana.2" },
+  { color = "B", source = "mana.3" },
+]
+
+[scenarios.setup.P1]
+hand = [
+  { label = "land.first", card = "Island" },
+  { label = "land.second", card = "Mountain" },
+]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Mind Roots"
+targets = ["@P1"]
+
+[[scenarios.script]]
+action = "choose_cards"
+cards = ["land.second"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P1", card = "Island", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Mountain", count = 1, tapped = true },
+]
+
+[[scenarios]]
+name = "MR6 target self"
+active_player = 0
+
+[scenarios.setup.P0]
+hand = [
+  "Mind Roots",
+  { label = "land", card = "Island" },
+  { label = "nonland", card = "Opt" },
+]
+battlefield = [
+  { label = "mana.1", card = "Swamp" },
+  { label = "mana.2", card = "Forest" },
+  { label = "mana.3", card = "Swamp" },
+]
+mana_pool = [
+  { color = "B", source = "mana.1" },
+  { color = "G", source = "mana.2" },
+  { color = "B", source = "mana.3" },
+]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Mind Roots"
+targets = ["@P0"]
+
+[[scenarios.script]]
+action = "choose_cards"
+cards = ["land"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Island", count = 1, tapped = true },
+  { zone = "graveyard", player = "P0", card = "Opt", count = 1 },
+]

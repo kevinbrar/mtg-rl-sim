@@ -1,3 +1,9 @@
+## Mind Roots discard placement
+
+- Scope: Mind Roots, Feral Encounter, Make Your Own Luck, and The Key to the Vault. The generic classifier assigns resolution-time timing to non-target `TrackedSetFiltered` zone changes. The controlled A/B and all nine affected records are documented in `runs/card-scenarios/mind-roots-ab/AB-DIFF.md`; five are non-Standard and listed in `DECISIONS.md`.
+- Scenario coverage: MR1–MR6 cover opponent/self targeting, chosen/declined/forced land placement, no-land selection, and tapped/controller/zone assertions. Feral Encounter and Make Your Own Luck each have choose/decline scenarios. The Key to the Vault is **not verified**: the attack harness deliberately stops at empty-stack priority in `DeclareAttackers`, before combat damage; reaching the damage trigger requires extending combat progression.
+- Local scenario data starts from CI-pinned `card-data.json` SHA-256 `4c37e62b4a0edf5935d3ed5216f894b84b9f5b41a002a1fdfc286b81182c6bf9` and applies only the A/B-generated ability-structure deltas. This avoids the current raw-input drift in Hit It! and Niv-Mizzet's Diary. Verification results and any unverified checks are recorded in the PR evidence packet.
+
 ## Uldaros Theorix Forge scenarios (U1–U5)
 
 - Status: U1–U5 match Phase and pinned Forge (5 matched, 0 triaged, 0 failed); the combined Extrapolate/Jace/Cryomancer/Uldaros Forge run reports 25 matched, 2 digest-pinned Forge-bug triaged (E5/E6), 0 failed. E5/E6 digests are unchanged.

@@ -1,0 +1,17 @@
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -367,10 +367,13 @@
+                     for (String label : targets) {
+                         if (label.equals("@skip")) {
+                             scriptedTargets.add(TestPlayer.TARGET_SKIP);
++                        } else if (label.equals("@P0") || label.equals("@P1")) {
++                            TestPlayer targetPlayer = player(label.equals("@P0") ? 0 : 1);
++                            scriptedTargets.add("targetPlayer=" + targetPlayer.getName());
+                         } else {
+                             if (label.startsWith("@")) {
+                                 throw new IllegalArgumentException(
+-                                        "cast.targets allows only the reserved @skip token"
++                                        "cast.targets allows only @skip, @P0, or @P1 reserved tokens"
+                                 );
+                             }
+                             if (!labels.containsKey(label)) {

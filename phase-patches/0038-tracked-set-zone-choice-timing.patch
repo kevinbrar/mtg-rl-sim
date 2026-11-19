@@ -1,0 +1,447 @@
+From 34917aaf97dc9b9b3d13a5ad07467f1747ee7aa3 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Thu, 19 Nov 2026 19:24:50 +0000
+Subject: [PATCH 1/3] Fix tracked-set zone choice timing
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/tests/integration/main.rs       |   1 +
+ .../mind_roots_discard_placement.rs           | 152 ++++++++++++++++++
+ .../src/parser/oracle_effect/lower.rs         |   5 +
+ 3 files changed, 158 insertions(+)
+ create mode 100644 crates/engine/tests/integration/mind_roots_discard_placement.rs
+
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index 0d6ede4d9..525ca03cf 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -188,6 +188,7 @@ mod mbaku_attacked_monarch_intervening_if;
+ mod miles_obrien_returned_to_hand;
+ mod min_blocker_floor_block_candidates_7183;
+ mod mindblade_render_warrior_intervening_if_2867;
++mod mind_roots_discard_placement;
+ mod mjolnir_hammer_double_damage;
+ mod morkrut_ashaya_self_sacrifice;
+ mod mr_foxglove_defending_hand_minus_yours_draw;
+diff --git a/crates/engine/tests/integration/mind_roots_discard_placement.rs b/crates/engine/tests/integration/mind_roots_discard_placement.rs
+new file mode 100644
+index 000000000..0d2f8a14f
+--- /dev/null
++++ b/crates/engine/tests/integration/mind_roots_discard_placement.rs
+@@ -0,0 +1,152 @@
++use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
++use engine::types::actions::GameAction;
++use engine::types::game_state::WaitingFor;
++use engine::types::mana::ManaCost;
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const ORACLE: &str = "Target player discards two cards. Put up to one land card discarded this way onto the battlefield tapped under your control.";
++
++fn mind_roots(scenario: &mut GameScenario) -> engine::types::ObjectId {
++    scenario
++        .add_spell_to_hand_from_oracle(P0, "Mind Roots", false, ORACLE)
++        .with_mana_cost(ManaCost::zero())
++        .id()
++}
++
++fn resolve_mind_roots(
++    runner: &mut GameRunner,
++    spell: engine::types::ObjectId,
++    discarded: &[engine::types::ObjectId],
++    chosen_land: Option<engine::types::ObjectId>,
++) -> bool {
++    let mut cast = runner.cast(spell).target_player(P1).commit();
++    let mut saw_land_choice = false;
++
++    for _ in 0..32 {
++        if cast.state().stack.is_empty()
++            && matches!(cast.state().waiting_for, WaitingFor::Priority { .. })
++        {
++            break;
++        }
++
++        match cast.state().waiting_for.clone() {
++            WaitingFor::Priority { .. } => cast
++                .act(GameAction::PassPriority)
++                .expect("passing priority must advance Mind Roots"),
++            WaitingFor::DiscardChoice { player, count, .. } => {
++                assert_eq!(player, P1);
++                assert_eq!(count, 2);
++                cast.act(GameAction::SelectCards {
++                    cards: discarded.to_vec(),
++                })
++                .expect("P1's discard choice must succeed");
++            }
++            WaitingFor::EffectZoneChoice {
++                player, cards, count, ..
++            } => {
++                assert_eq!(player, P0);
++                assert_eq!(count, 1);
++                assert_eq!(cards.len(), 1);
++                let selected = chosen_land.into_iter().collect::<Vec<_>>();
++                assert!(selected.iter().all(|card| cards.contains(card)));
++                cast.act(GameAction::SelectCards { cards: selected })
++                    .expect("P0's optional land choice must succeed");
++                saw_land_choice = true;
++            }
++            other => panic!("unexpected Mind Roots resolution state: {other:?}"),
++        }
++    }
++
++    assert!(cast.state().stack.is_empty(), "Mind Roots must finish resolving");
++    assert!(matches!(
++        cast.state().waiting_for,
++        WaitingFor::Priority { .. }
++    ));
++    saw_land_choice
++}
++
++fn scenario() -> GameScenario {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    scenario
++}
++
++#[test]
++fn mind_roots_choice_discard_places_land_tapped_under_its_caster() {
++    let mut scenario = scenario();
++    let spell = mind_roots(&mut scenario);
++    let land = scenario.add_land_to_hand(P1, "Forest").id();
++    let nonland = scenario.add_card_to_hand(P1, "Opt");
++    let third = scenario.add_card_to_hand(P1, "Divination");
++    let mut runner = scenario.build();
++
++    assert!(resolve_mind_roots(
++        &mut runner,
++        spell,
++        &[land, nonland],
++        Some(land)
++    ));
++    let object = &runner.state().objects[&land];
++    assert_eq!(object.zone, Zone::Battlefield);
++    assert_eq!(object.controller, P0);
++    assert!(object.tapped);
++    assert_eq!(runner.state().objects[&third].zone, Zone::Hand);
++}
++
++#[test]
++fn mind_roots_may_decline_the_discarded_land() {
++    let mut scenario = scenario();
++    let spell = mind_roots(&mut scenario);
++    let land = scenario.add_land_to_hand(P1, "Forest").id();
++    let nonland = scenario.add_card_to_hand(P1, "Opt");
++    scenario.add_card_to_hand(P1, "Divination");
++    let mut runner = scenario.build();
++
++    assert!(resolve_mind_roots(
++        &mut runner,
++        spell,
++        &[land, nonland],
++        None
++    ));
++    assert_eq!(runner.state().objects[&land].zone, Zone::Graveyard);
++}
++
++#[test]
++fn mind_roots_forced_discard_places_the_land_without_a_discard_prompt() {
++    let mut scenario = scenario();
++    let spell = mind_roots(&mut scenario);
++    let land = scenario.add_land_to_hand(P1, "Forest").id();
++    let nonland = scenario.add_card_to_hand(P1, "Opt");
++    let mut runner = scenario.build();
++
++    assert!(resolve_mind_roots(
++        &mut runner,
++        spell,
++        &[land, nonland],
++        Some(land)
++    ));
++    let object = &runner.state().objects[&land];
++    assert_eq!(object.zone, Zone::Battlefield);
++    assert_eq!(object.controller, P0);
++    assert!(object.tapped);
++}
++
++#[test]
++fn mind_roots_does_not_prompt_when_no_discarded_land_exists() {
++    let mut scenario = scenario();
++    let spell = mind_roots(&mut scenario);
++    let first = scenario.add_card_to_hand(P1, "Opt");
++    let second = scenario.add_card_to_hand(P1, "Divination");
++    scenario.add_card_to_hand(P1, "Shock");
++    let mut runner = scenario.build();
++
++    assert!(!resolve_mind_roots(
++        &mut runner,
++        spell,
++        &[first, second],
++        None
++    ));
++    assert_eq!(runner.state().objects[&first].zone, Zone::Graveyard);
++    assert_eq!(runner.state().objects[&second].zone, Zone::Graveyard);
++}
+diff --git a/crates/phase-parser/src/parser/oracle_effect/lower.rs b/crates/phase-parser/src/parser/oracle_effect/lower.rs
+index 3db560af0..90f800c39 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/lower.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/lower.rs
+@@ -2322,6 +2322,11 @@ pub(super) fn change_zone_target_choice_timing(
+         }
+     } else if nom_primitives::scan_contains(fragment_lower, "target ") {
+         TargetChoiceTiming::Stack
++    } else if matches!(target, TargetFilter::TrackedSetFiltered { .. }) {
++        // CR 608.2c: a filtered "this way" set is only established by earlier
++        // instructions of the resolving effect, so selecting from it cannot
++        // be an announcement-time target choice.
++        TargetChoiceTiming::Resolution
+     } else if change_zone_selects_battlefield_permanent(origin, target) {
+         // CR 115.1: battlefield non-targeted picks (Sothera / Strategic Betrayal
+         // edict class) resolve via EffectZoneChoice after player_scope rebinding,
+-- 
+2.56.0
+
+
+From 0ddd74aa2efd1d31b15f8e17082bac991e0c1e59 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Thu, 19 Nov 2026 19:27:37 +0000
+Subject: [PATCH 2/3] Assert forced Mind Roots discard has no prompt
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../mind_roots_discard_placement.rs           | 30 ++++++++++++-------
+ 1 file changed, 20 insertions(+), 10 deletions(-)
+
+diff --git a/crates/engine/tests/integration/mind_roots_discard_placement.rs b/crates/engine/tests/integration/mind_roots_discard_placement.rs
+index 0d2f8a14f..25f359e98 100644
+--- a/crates/engine/tests/integration/mind_roots_discard_placement.rs
++++ b/crates/engine/tests/integration/mind_roots_discard_placement.rs
+@@ -19,8 +19,9 @@ fn resolve_mind_roots(
+     spell: engine::types::ObjectId,
+     discarded: &[engine::types::ObjectId],
+     chosen_land: Option<engine::types::ObjectId>,
+-) -> bool {
++) -> (bool, bool) {
+     let mut cast = runner.cast(spell).target_player(P1).commit();
++    let mut saw_discard_choice = false;
+     let mut saw_land_choice = false;
+ 
+     for _ in 0..32 {
+@@ -37,6 +38,7 @@ fn resolve_mind_roots(
+             WaitingFor::DiscardChoice { player, count, .. } => {
+                 assert_eq!(player, P1);
+                 assert_eq!(count, 2);
++                saw_discard_choice = true;
+                 cast.act(GameAction::SelectCards {
+                     cards: discarded.to_vec(),
+                 })
+@@ -63,7 +65,7 @@ fn resolve_mind_roots(
+         cast.state().waiting_for,
+         WaitingFor::Priority { .. }
+     ));
+-    saw_land_choice
++    (saw_discard_choice, saw_land_choice)
+ }
+ 
+ fn scenario() -> GameScenario {
+@@ -81,12 +83,14 @@ fn mind_roots_choice_discard_places_land_tapped_under_its_caster() {
+     let third = scenario.add_card_to_hand(P1, "Divination");
+     let mut runner = scenario.build();
+ 
+-    assert!(resolve_mind_roots(
++    let (saw_discard_choice, saw_land_choice) = resolve_mind_roots(
+         &mut runner,
+         spell,
+         &[land, nonland],
+         Some(land)
+-    ));
++    );
++    assert!(saw_discard_choice);
++    assert!(saw_land_choice);
+     let object = &runner.state().objects[&land];
+     assert_eq!(object.zone, Zone::Battlefield);
+     assert_eq!(object.controller, P0);
+@@ -103,12 +107,14 @@ fn mind_roots_may_decline_the_discarded_land() {
+     scenario.add_card_to_hand(P1, "Divination");
+     let mut runner = scenario.build();
+ 
+-    assert!(resolve_mind_roots(
++    let (saw_discard_choice, saw_land_choice) = resolve_mind_roots(
+         &mut runner,
+         spell,
+         &[land, nonland],
+         None
+-    ));
++    );
++    assert!(saw_discard_choice);
++    assert!(saw_land_choice);
+     assert_eq!(runner.state().objects[&land].zone, Zone::Graveyard);
+ }
+ 
+@@ -120,12 +126,14 @@ fn mind_roots_forced_discard_places_the_land_without_a_discard_prompt() {
+     let nonland = scenario.add_card_to_hand(P1, "Opt");
+     let mut runner = scenario.build();
+ 
+-    assert!(resolve_mind_roots(
++    let (saw_discard_choice, saw_land_choice) = resolve_mind_roots(
+         &mut runner,
+         spell,
+         &[land, nonland],
+         Some(land)
+-    ));
++    );
++    assert!(!saw_discard_choice);
++    assert!(saw_land_choice);
+     let object = &runner.state().objects[&land];
+     assert_eq!(object.zone, Zone::Battlefield);
+     assert_eq!(object.controller, P0);
+@@ -141,12 +149,14 @@ fn mind_roots_does_not_prompt_when_no_discarded_land_exists() {
+     scenario.add_card_to_hand(P1, "Shock");
+     let mut runner = scenario.build();
+ 
+-    assert!(!resolve_mind_roots(
++    let (saw_discard_choice, saw_land_choice) = resolve_mind_roots(
+         &mut runner,
+         spell,
+         &[first, second],
+         None
+-    ));
++    );
++    assert!(saw_discard_choice);
++    assert!(!saw_land_choice);
+     assert_eq!(runner.state().objects[&first].zone, Zone::Graveyard);
+     assert_eq!(runner.state().objects[&second].zone, Zone::Graveyard);
+ }
+-- 
+2.56.0
+
+
+From 554615386b651f897039a99e954d3ac334ade515 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Thu, 19 Nov 2026 19:37:35 +0000
+Subject: [PATCH 3/3] Fix Mind Roots regression test compilation
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/tests/integration/main.rs       |  2 +-
+ .../mind_roots_discard_placement.rs           | 49 ++++++++-----------
+ 2 files changed, 21 insertions(+), 30 deletions(-)
+
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index 525ca03cf..b47af51a3 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -187,8 +187,8 @@ mod maze_of_ith_untap_bidirectional_prevent;
+ mod mbaku_attacked_monarch_intervening_if;
+ mod miles_obrien_returned_to_hand;
+ mod min_blocker_floor_block_candidates_7183;
+-mod mindblade_render_warrior_intervening_if_2867;
+ mod mind_roots_discard_placement;
++mod mindblade_render_warrior_intervening_if_2867;
+ mod mjolnir_hammer_double_damage;
+ mod morkrut_ashaya_self_sacrifice;
+ mod mr_foxglove_defending_hand_minus_yours_draw;
+diff --git a/crates/engine/tests/integration/mind_roots_discard_placement.rs b/crates/engine/tests/integration/mind_roots_discard_placement.rs
+index 25f359e98..f0b8f68da 100644
+--- a/crates/engine/tests/integration/mind_roots_discard_placement.rs
++++ b/crates/engine/tests/integration/mind_roots_discard_placement.rs
+@@ -32,9 +32,10 @@ fn resolve_mind_roots(
+         }
+ 
+         match cast.state().waiting_for.clone() {
+-            WaitingFor::Priority { .. } => cast
+-                .act(GameAction::PassPriority)
+-                .expect("passing priority must advance Mind Roots"),
++            WaitingFor::Priority { .. } => {
++                cast.act(GameAction::PassPriority)
++                    .expect("passing priority must advance Mind Roots");
++            }
+             WaitingFor::DiscardChoice { player, count, .. } => {
+                 assert_eq!(player, P1);
+                 assert_eq!(count, 2);
+@@ -45,7 +46,10 @@ fn resolve_mind_roots(
+                 .expect("P1's discard choice must succeed");
+             }
+             WaitingFor::EffectZoneChoice {
+-                player, cards, count, ..
++                player,
++                cards,
++                count,
++                ..
+             } => {
+                 assert_eq!(player, P0);
+                 assert_eq!(count, 1);
+@@ -60,7 +64,10 @@ fn resolve_mind_roots(
+         }
+     }
+ 
+-    assert!(cast.state().stack.is_empty(), "Mind Roots must finish resolving");
++    assert!(
++        cast.state().stack.is_empty(),
++        "Mind Roots must finish resolving"
++    );
+     assert!(matches!(
+         cast.state().waiting_for,
+         WaitingFor::Priority { .. }
+@@ -83,12 +90,8 @@ fn mind_roots_choice_discard_places_land_tapped_under_its_caster() {
+     let third = scenario.add_card_to_hand(P1, "Divination");
+     let mut runner = scenario.build();
+ 
+-    let (saw_discard_choice, saw_land_choice) = resolve_mind_roots(
+-        &mut runner,
+-        spell,
+-        &[land, nonland],
+-        Some(land)
+-    );
++    let (saw_discard_choice, saw_land_choice) =
++        resolve_mind_roots(&mut runner, spell, &[land, nonland], Some(land));
+     assert!(saw_discard_choice);
+     assert!(saw_land_choice);
+     let object = &runner.state().objects[&land];
+@@ -107,12 +110,8 @@ fn mind_roots_may_decline_the_discarded_land() {
+     scenario.add_card_to_hand(P1, "Divination");
+     let mut runner = scenario.build();
+ 
+-    let (saw_discard_choice, saw_land_choice) = resolve_mind_roots(
+-        &mut runner,
+-        spell,
+-        &[land, nonland],
+-        None
+-    );
++    let (saw_discard_choice, saw_land_choice) =
++        resolve_mind_roots(&mut runner, spell, &[land, nonland], None);
+     assert!(saw_discard_choice);
+     assert!(saw_land_choice);
+     assert_eq!(runner.state().objects[&land].zone, Zone::Graveyard);
+@@ -126,12 +125,8 @@ fn mind_roots_forced_discard_places_the_land_without_a_discard_prompt() {
+     let nonland = scenario.add_card_to_hand(P1, "Opt");
+     let mut runner = scenario.build();
+ 
+-    let (saw_discard_choice, saw_land_choice) = resolve_mind_roots(
+-        &mut runner,
+-        spell,
+-        &[land, nonland],
+-        Some(land)
+-    );
++    let (saw_discard_choice, saw_land_choice) =
++        resolve_mind_roots(&mut runner, spell, &[land, nonland], Some(land));
+     assert!(!saw_discard_choice);
+     assert!(saw_land_choice);
+     let object = &runner.state().objects[&land];
+@@ -149,12 +144,8 @@ fn mind_roots_does_not_prompt_when_no_discarded_land_exists() {
+     scenario.add_card_to_hand(P1, "Shock");
+     let mut runner = scenario.build();
+ 
+-    let (saw_discard_choice, saw_land_choice) = resolve_mind_roots(
+-        &mut runner,
+-        spell,
+-        &[first, second],
+-        None
+-    );
++    let (saw_discard_choice, saw_land_choice) =
++        resolve_mind_roots(&mut runner, spell, &[first, second], None);
+     assert!(saw_discard_choice);
+     assert!(!saw_land_choice);
+     assert_eq!(runner.state().objects[&first].zone, Zone::Graveyard);
+-- 
+2.56.0
+

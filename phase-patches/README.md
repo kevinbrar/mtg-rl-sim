@@ -1,3 +1,16 @@
+## Patch 0038 — tracked-set zone-choice timing
+
+- Treat a non-target `ChangeZone` selection over `TrackedSetFiltered` as a
+  resolution-time choice. The filtered “this way” set is populated by earlier
+  instructions of the resolving effect, so it cannot be an announcement-time
+  choice (CR 608.2c).
+- Add Mind Roots regressions for optional discard, forced discard, declining
+  the land placement, and discarding no land. Controlled A/B evidence shows
+  only `target_choice_timing` changes on nine tracked-set selections; four are
+  Standard-legal (Mind Roots, Feral Encounter, Make Your Own Luck, The Key to
+  the Vault), while five non-Standard cards are listed in `DECISIONS.md`.
+  Runtime verification and the current combat-damage limitation for The Key
+  to the Vault are recorded in `STATUS.md` and the PR evidence packet.
 # Local phase-rs fixes
 
 The phase submodule remains pinned at `988bc3412f5d4e475c1837fbc88062b14d1f5489`.

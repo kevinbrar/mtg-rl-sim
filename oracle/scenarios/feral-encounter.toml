@@ -1,0 +1,101 @@
+[[scenarios]]
+name = "F1 exile a creature from the looked-at cards"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Forest" },
+]
+mana_pool = [
+  { color = "G", source = "mana.1" },
+  { color = "G", source = "mana.2" },
+]
+hand = ["Feral Encounter"]
+library_top = [
+  { label = "selected", card = "Grizzly Bears" },
+  { label = "creature.rest", card = "Llanowar Elves" },
+  { label = "rest.opt", card = "Opt" },
+  { label = "rest.land", card = "Island" },
+  { label = "rest.divination", card = "Divination" },
+]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Feral Encounter"
+
+[[scenarios.script]]
+action = "choose_cards"
+cards = ["selected"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Grizzly Bears", count = 1 },
+  { zone = "library", player = "P0", card = "Llanowar Elves", count = 1 },
+  { zone = "library", player = "P0", card = "Opt", count = 1 },
+  { zone = "library", player = "P0", card = "Island", count = 1 },
+  { zone = "library", player = "P0", card = "Divination", count = 1 },
+]
+
+[[scenarios]]
+name = "F2 decline the optional creature exile"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Forest" },
+]
+mana_pool = [
+  { color = "G", source = "mana.1" },
+  { color = "G", source = "mana.2" },
+]
+hand = ["Feral Encounter"]
+library_top = [
+  { label = "creature.one", card = "Grizzly Bears" },
+  { label = "creature.two", card = "Llanowar Elves" },
+  { label = "rest.opt", card = "Opt" },
+  { label = "rest.land", card = "Island" },
+  { label = "rest.divination", card = "Divination" },
+]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Feral Encounter"
+
+[[scenarios.script]]
+action = "choose_cards"
+cards = []
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "library", player = "P0", card = "Grizzly Bears", count = 1 },
+  { zone = "library", player = "P0", card = "Llanowar Elves", count = 1 },
+  { zone = "library", player = "P0", card = "Opt", count = 1 },
+  { zone = "library", player = "P0", card = "Island", count = 1 },
+  { zone = "library", player = "P0", card = "Divination", count = 1 },
+]

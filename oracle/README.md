@@ -85,6 +85,11 @@ fully patched parser before running normal differentials.
 Each runner checks its exact scripted set for casts and activations; both
 oracle-specific lists are required, and choices left unconsumed fail closed.
 
+Cast `targets` accepts setup labels, `@skip` for an optional target slot, and
+the reserved player tokens `@P0` and `@P1`. Player tokens name the scenario's
+two players and must match a legal player target; unknown, illegal, or missing
+targets fail closed in Phase, XMage, and Forge.
+
 `expect = "refused"` is valid only on `cast` and `activate` steps. The runners
 preserve normal label, priority, zone, and ability preconditions, attempt the
 action through the engine, and require the state projection to remain unchanged

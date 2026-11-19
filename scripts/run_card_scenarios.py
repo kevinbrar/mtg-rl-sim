@@ -953,6 +953,24 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                 raise ValueError(
                     f"{name}: script[{index}].cast.player must be P0 or P1"
                 )
+        if action.get("action") == "cast" and "targets" in action:
+            context = f"{name}: script[{index}].cast.targets"
+            targets = action["targets"]
+            if not isinstance(targets, list):
+                raise TypeError(f"{context} must be an array")
+            if any(not isinstance(target, str) or not target for target in targets):
+                raise TypeError(f"{context} entries must be non-empty labels")
+            if len(targets) != len(set(targets)):
+                raise ValueError(f"{context} cannot repeat labels")
+            for target in targets:
+                if target in {"@skip", "@P0", "@P1"}:
+                    continue
+                if target.startswith("@"):
+                    raise ValueError(
+                        f"{context} uses unsupported reserved target {target}"
+                    )
+                if target not in labels:
+                    raise ValueError(f"{context} contains unknown setup label {target}")
         if action.get("action") == "pass_priority":
             context = f"{name}: script[{index}].pass_priority"
             unknown = action.keys() - {"action", "player"}
