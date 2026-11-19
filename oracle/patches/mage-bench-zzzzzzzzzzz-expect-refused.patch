@@ -211,7 +211,7 @@ index 62710864..2fcc0af3 100644
              Outcome outcome, Target target, Ability source, Game game) {
          boolean selected = makeScenarioCardChoice(outcome, target, source, game, null);
 diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-index d40360f3..db04a165 100644
+index d40360f3..b18f91a8 100644
 --- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 +++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 @@ -62,6 +62,10 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
@@ -393,7 +393,7 @@ index d40360f3..db04a165 100644
                      }
                      lastStep = step;
                  }
-@@ -587,6 +638,88 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -587,6 +638,85 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
          return false;
      }
  
@@ -453,10 +453,7 @@ index d40360f3..db04a165 100644
 +                            if (!targets.isEmpty()) {
 +                                command += "$target=" + String.join("^", targets);
 +                            }
-+                            boolean offered = !targets.isEmpty()
-+                                    || actingPlayer.hasPlayableAbilityStartingWith(game, ability);
-+                            accepted = offered
-+                                    && actingPlayer.attemptScenarioActivatedAbility(command, game);
++                            accepted = actingPlayer.attemptScenarioActivatedAbility(command, game);
 +                        }
 +                    } finally {
 +                        for (String prompt : actingPlayer.finishScenarioExpectedRefusal()) {
@@ -482,7 +479,7 @@ index d40360f3..db04a165 100644
      private void addScenarioSetup() {
          JsonObject setup = object(scenario, "setup");
          rejectUnknownKeys(setup, Set.of("P0", "P1"), "setup");
-@@ -813,6 +946,12 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -813,6 +943,12 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
          result.addProperty("scenario", scenarioName);
          result.add("projection", projection);
          result.addProperty("reach", reached);
