@@ -1,0 +1,87 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+index b18f91a8..89af781d 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -157,6 +157,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         int turn = 1;
+         int activeIndex = initialActive;
+         boolean attackNeedsResolution = false;
++        boolean attackThroughDamage = false;
+         int scriptIndex = 0;
+         for (JsonElement item : array(scenario, "script")) {
+             JsonObject action = item.getAsJsonObject();
+@@ -497,10 +498,14 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                             decision.equals("accept"), targetMode, newTargets));
+                 }
+                 case "attack" -> {
+-                    rejectUnknownKeys(action, Set.of("action", "attackers"), "script.attack");
++                    rejectUnknownKeys(action, Set.of("action", "attackers", "through"), "script.attack");
+                     if (activeIndex != 0) {
+                         throw new IllegalArgumentException("attack requires P0 active to attack P1");
+                     }
++                    boolean throughDamage = action.has("through");
++                    if (throughDamage && !requiredString(action, "through").equals("damage")) {
++                        throw new IllegalArgumentException("script.attack.through must be \"damage\"");
++                    }
+                     List<String> attackers = strings(array(action, "attackers"));
+                     if (attackers.isEmpty()) {
+                         throw new IllegalArgumentException("attack.attackers must be a non-empty label array");
+@@ -522,6 +527,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                     }
+                     lastStep = PhaseStep.DECLARE_ATTACKERS;
+                     attackNeedsResolution = true;
++                    attackThroughDamage = throughDamage;
+                 }
+                 case "choose_cards" -> {
+                     if (!action.has("cards") || !action.get("cards").isJsonArray()) {
+@@ -607,12 +613,16 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                 }
+                 case "pass_until_resolved" -> {
+                     if (attackNeedsResolution) {
++                        if (attackThroughDamage) {
++                            lastStep = PhaseStep.COMBAT_DAMAGE;
++                        }
+                         waitStackResolved(turn, lastStep, actingPlayer);
+                     } else {
+                         waitStackResolved(turn, step, actingPlayer);
+                         lastStep = step;
+                     }
+                     attackNeedsResolution = false;
++                    attackThroughDamage = false;
+                 }
+                 case "end_turn", "next_turn" -> {
+                     turn++;
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -3010,2 +3010,30 @@ public class TestPlayer implements Player {
+         List<String> scriptedTargets = currentTargetQueue();
++        if (scriptedTargets.isEmpty() && !cardChoiceGroups.isEmpty()) {
++            List<String> group = takeNextCardChoiceGroup();
++            int min = target.getMinNumberOfTargets();
++            int max = target.getMaxNumberOfTargets();
++            if (group.size() < min) {
++                throw new IllegalStateException("card choice group has " + group.size()
++                        + " cards but the prompt requires at least " + min);
++            }
++            if (group.size() > max) {
++                throw new IllegalStateException("card choice group has " + group.size()
++                        + " cards but the prompt allows at most " + max);
++            }
++            Set<UUID> possibleTargets = target.possibleTargets(abilityControllerId, source, game, cards);
++            for (String label : group) {
++                List<Card> matches = cards.getCards(game).stream()
++                        .filter(card -> possibleTargets.contains(card.getId()))
++                        .filter(card -> hasObjectTargetNameOrAlias(card, ALIAS_PREFIX + label)
++                                || hasObjectTargetNameOrAlias(card, label))
++                        .toList();
++                if (matches.size() != 1) {
++                    throw new IllegalStateException("choose_cards label " + label
++                            + " matched " + matches.size() + " cards in the card-choice prompt");
++                }
++                target.addTarget(matches.get(0).getId(), source, game);
++            }
++            target.setSkipChoice(true);
++            return target.isChosen(game);
++        }
+         if (strictTargetQueue && scriptedTargets.isEmpty() && !target.isNotTarget()) {

@@ -44,6 +44,14 @@ Forge projects ordered libraries, exile contents, and each permanent's
 characteristics and counters. Both runners support `pass_priority`,
 `label_permanent`, `activate`, `choose_surveil`, `choose_discard`, and
 `trigger_targets`.
+An `attack` action may set `through = "damage"` to continue past declare
+attackers, declare blockers, and combat damage, resolving scripted triggers
+before stopping with an empty stack and priority at the active player. Omitted
+`through` preserves the existing declare-attackers stop. The current script
+supports no blockers only; any `blocks` field is rejected, and unscripted combat
+or damage-assignment prompts fail closed. Trigger targets, card choices, and
+other supported resolution choices use the same FIFO handlers during combat
+damage, and the runner stops only after regular combat damage is complete.
 Activations can name a labeled battlefield permanent or a card in the
 activating player's graveyard. Activation labels can match a unique
 loyalty-cost label (for example, `-3` or `+2`) or an ability description;

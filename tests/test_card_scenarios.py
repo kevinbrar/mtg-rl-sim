@@ -742,7 +742,7 @@ def test_load_specs_accepts_attack_and_copy_choice_scripts(tmp_path: Path) -> No
 name = "attack copy choices"
 script = [
   { action = "copy_choice", player = "P0", decision = "accept", new_targets = "keep" },
-  { action = "attack", attackers = ["attacker"] }
+  { action = "attack", attackers = ["attacker"], through = "damage" }
 ]
 
 [scenarios.setup.P0]
@@ -763,6 +763,7 @@ battlefield = [{ label = "defender-a", card = "Centaur Courser" }]
         "new_targets": "keep",
     }
     assert loaded["scenarios"][0]["script"][1]["attackers"] == ["attacker"]
+    assert loaded["scenarios"][0]["script"][1]["through"] == "damage"
 
 
 def test_load_specs_accepts_uldaros_target_and_copy_scripts(tmp_path: Path) -> None:
@@ -864,6 +865,16 @@ def test_load_specs_rejects_invalid_uldaros_choice_scripts(
             '{ action = "attack", attackers = ["attacker"] }',
             '[scenarios.setup.P1]\nbattlefield = [{ label = "attacker", card = "Pulse Tracker" }]',
             "must be on P0's battlefield",
+        ),
+        (
+            '{ action = "attack", attackers = ["attacker"], through = "combat" }',
+            '[scenarios.setup.P0]\nbattlefield = [{ label = "attacker", card = "Pulse Tracker" }]',
+            'through must be "damage"',
+        ),
+        (
+            '{ action = "attack", attackers = ["attacker"], blocks = [] }',
+            '[scenarios.setup.P0]\nbattlefield = [{ label = "attacker", card = "Pulse Tracker" }]',
+            "blocks is unsupported",
         ),
         (
             '{ action = "copy_choice", player = "P0", decision = "maybe" }',

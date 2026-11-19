@@ -232,3 +232,44 @@ library_top = ["Mountain", "Mountain"]
 [scenarios.reach]
 player = "P1"
 life = 19
+
+[[scenarios]]
+name = "F11 combat-damage trigger does not add a quest counter"
+active_player = 0
+script = [
+  { action = "attack", attackers = ["frostfang"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "ascension", card = "Firebender Ascension", counters = { quest = 3 } },
+  { label = "frostfang", card = "Ohran Frostfang" },
+]
+library_top = ["Mountain"]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { player = "P0", zone = "battlefield", card = "Firebender Ascension", counters = { quest = 3 }, count = 1 },
+  { player = "P0", zone = "hand", card = "Mountain", count = 1 },
+  { player = "P1", life = 18 },
+]
+
+[[scenarios]]
+name = "F12 unblocked attack through damage changes life"
+active_player = 0
+script = [
+  { action = "attack", attackers = ["courser"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [{ label = "courser", card = "Centaur Courser" }]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+player = "P1"
+life = 17

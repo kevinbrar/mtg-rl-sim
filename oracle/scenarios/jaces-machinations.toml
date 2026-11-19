@@ -499,3 +499,80 @@ all = [
   { zone = "battlefield", player = "P0", card = "Jace", count = 1, token = true, counters = { loyalty = 5 } },
   { zone = "hand", player = "P0", card = "Island", count = 1 },
 ]
+
+[[scenarios]]
+name = "J9 attack through combat damage updates life"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [{ label = "attacker", card = "Centaur Courser" }]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "attack"
+attackers = ["attacker"]
+through = "damage"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+player = "P1"
+life = 17
+
+[[scenarios]]
+name = "DG2-forge-combat-damage-target"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "trigger_targets", targets = ["artifact-second"] },
+  { action = "attack", attackers = ["attacker"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "attacker", card = "Donatello, Gadget Master" },
+  { label = "artifact-first", card = "Basilisk Collar" },
+  { label = "artifact-second", card = "Bender's Waterskin" },
+]
+
+[scenarios.setup.P1]
+battlefield = [{ label = "potential-blocker", card = "Grizzly Bears" }]
+
+[scenarios.reach]
+player = "P1"
+life = 17
+
+[[scenarios]]
+name = "J10 attack after priority returns from P1"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [{ label = "attacker", card = "Centaur Courser" }]
+
+[scenarios.setup.P1]
+battlefield = [{ label = "potential-blocker", card = "Grizzly Bears" }]
+
+[[scenarios.script]]
+action = "pass_priority"
+player = "P0"
+
+[[scenarios.script]]
+action = "pass_priority"
+player = "P1"
+
+[[scenarios.script]]
+action = "attack"
+attackers = ["attacker"]
+through = "damage"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+player = "P1"
+life = 17

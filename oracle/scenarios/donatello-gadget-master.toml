@@ -1,0 +1,28 @@
+oracle = "xmage"
+
+[[scenarios]]
+name = "DG1-combat-damage-target"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "trigger_targets", targets = ["artifact-second"] },
+  { action = "attack", attackers = ["attacker"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "attacker", card = "Donatello, Gadget Master" },
+  { label = "artifact-first", card = "Basilisk Collar" },
+  { label = "artifact-second", card = "Bender's Waterskin" },
+]
+
+[scenarios.setup.P1]
+battlefield = [{ label = "potential-blocker", card = "Grizzly Bears" }]
+
+[scenarios.reach]
+all = [
+  { player = "P0", zone = "battlefield", card = "Basilisk Collar", count = 1 },
+  { player = "P0", zone = "battlefield", card = "Bender's Waterskin", count = 2 },
+  { player = "P1", life = 17 },
+]
