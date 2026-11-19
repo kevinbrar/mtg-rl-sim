@@ -85,6 +85,30 @@ fully patched parser before running normal differentials.
 Each runner checks its exact scripted set for casts and activations; both
 oracle-specific lists are required, and choices left unconsumed fail closed.
 
+`expect = "refused"` is valid only on `cast` and `activate` steps. The runners
+preserve normal label, priority, zone, and ability preconditions, attempt the
+action through the engine, and require the state projection to remain unchanged
+when the engine declines it. Accepted actions and refusals that change state
+fail the scenario. Refused script indices are emitted as `refusals` and must
+match exactly across Phase and the selected oracle. A refused action cannot
+consume a preceding `choose_mana` script or an inline choice script.
+Hand casts select the first card with the matching name, including expected-
+refused casts, because same-named cards in hand are interchangeable. Graveyard
+casts use setup labels to identify the specific object; ordinary graveyard casts
+retain the original setup-zone validation.
+
+During an expected-refusal attempt only, a card-selection prompt raised while
+paying a recognized monotone cost may be answered with every legal candidate
+up to the prompt's maximum. XMage recognizes Collect Evidence and exile-from-
+graveyard costs; Forge recognizes fixed-count graveyard-exile costs. Each
+automatic answer is logged and recorded in `refusal_cost_prompts`, which is
+evidence only and is not compared across engines. The action still counts as
+refused only when the engine declines it and the projection is unchanged. This
+exception is limited to monotone costs: if the maximal selection cannot pay,
+no smaller selection can. Do not extend it to non-monotone costs without a new
+decision. All other unscripted prompts, including card selections outside cost
+payment, remain fail-closed.
+
 Working recipe (verified 2026-11-10, pinned mage-bench revision):
 
 1. `mvn install package -DskipTests` in a mage-bench clone (Java 21 + Maven; ~25 min).

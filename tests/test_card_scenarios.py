@@ -12,13 +12,13 @@ from scripts.run_card_scenarios import (
     check_changed_known_diff_entries,
     check_changed_scenario_suites,
     evaluate_known_diffs,
+    forge_prompt_sha256,
     format_known_diff_report,
     load_base_known_diffs,
     load_known_diffs,
     load_specs,
     main,
     normalize_label_insensitive_count_groups,
-    forge_prompt_sha256,
     parse_forge_prompt_failures,
     parse_forge_report,
     parse_mage_report,
@@ -26,6 +26,7 @@ from scripts.run_card_scenarios import (
     scenario_names_by_suite,
     scenario_paths_for_cards,
     split_scenarios_by_oracle,
+    validate_refusal_indices,
 )
 
 
@@ -551,7 +552,7 @@ script = [{ action = "cast", card = "Silvercoat Lion", from = "library" }]
         load_specs([spec])
 
 
-def test_load_specs_requires_graveyard_cast_label_to_be_in_graveyard(
+def test_load_specs_requires_graveyard_cast_label_to_exist(
     tmp_path: Path,
 ) -> None:
     spec = tmp_path / "unlabeled-graveyard-cast.toml"
@@ -568,10 +569,31 @@ script = [{ action = "cast", card = "Silvercoat Lion", from = "graveyard" }]
         encoding="utf-8",
     )
 
-    with pytest.raises(
-        ValueError, match=r"script\[0\]\.card must be a graveyard setup label"
-    ):
+    with pytest.raises(ValueError, match=r"script\[0\]\.card must be a setup label"):
         load_specs([spec])
+
+
+def test_load_specs_allows_battlefield_label_for_later_graveyard_cast(
+    tmp_path: Path,
+) -> None:
+    spec = tmp_path / "later-graveyard-cast.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "battlefield card later cast from graveyard"
+script = [{ action = "cast", card = "bear", from = "graveyard", expect = "refused" }]
+
+[scenarios.setup.P0]
+battlefield = [{ card = "Grizzly Bears", label = "bear" }]
+
+[scenarios.setup.P1]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+
+    assert loaded["scenarios"][0]["script"][0]["card"] == "bear"
 
 
 def test_load_specs_accepts_labeled_library_cards(tmp_path: Path) -> None:
@@ -2074,3 +2096,155 @@ script = [{action}]
 
     with pytest.raises(ValueError, match=error):
         load_specs([spec])
+
+
+@pytest.mark.parametrize(
+    ("action", "error"),
+    [
+        (
+            '{ action = "pass_until_resolved", expect = "refused" }',
+            "expect is only valid for cast or activate",
+        ),
+        (
+            '{ action = "cast", card = "spell", expect = "accepted" }',
+            "expect must be 'refused'",
+        ),
+        (
+            '{ action = "cast", card = "spell", sacrifice = [], expect = "refused" }',
+            "cannot be combined with choice scripts",
+        ),
+        (
+            '{ action = "activate", source = "source", ability = "+1", alternative_cost = "decline", expect = "refused" }',
+            "cannot be combined with choice scripts",
+        ),
+        (
+            '{ action = "cast", card = "spell", x = 2, expect = "refused" }',
+            "cannot be combined with choice scripts",
+        ),
+    ],
+)
+def test_load_specs_rejects_invalid_expect_refused_steps(
+    tmp_path: Path, action: str, error: str
+) -> None:
+    spec = tmp_path / "invalid-expect-refused.toml"
+    spec.write_text(
+        f"""
+[[scenarios]]
+name = "invalid expect refused"
+script = [{action}]
+
+[scenarios.setup.P0]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=error):
+        load_specs([spec])
+
+
+def test_load_specs_rejects_mana_script_before_refused_action(
+    tmp_path: Path,
+) -> None:
+    spec = tmp_path / "mana-before-refusal.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "mana before refusal"
+script = [
+  { action = "choose_mana", player = "P0", sources = ["land"] },
+  { action = "cast", card = "spell", expect = "refused" }
+]
+
+[scenarios.setup.P0]
+battlefield = [{ label = "land", card = "Island" }]
+mana_pool = [{ color = "U", source = "land" }]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="choose_mana cannot precede a refused action"):
+        load_specs([spec])
+
+
+def test_refusal_indices_must_match_scripted_steps_exactly() -> None:
+    scenarios = [
+        {
+            "name": "S1",
+            "script": [
+                {"action": "cast", "card": "spell", "expect": "refused"},
+                {"action": "pass_until_resolved"},
+                {"action": "activate", "source": "permanent", "expect": "refused"},
+            ],
+        }
+    ]
+    matching = [{"scenario": "S1", "refusals": [0, 2], "refusal_cost_prompts": []}]
+
+    assert validate_refusal_indices(scenarios, matching, "Phase") == []
+
+    missing = validate_refusal_indices(
+        scenarios,
+        [
+            {
+                "scenario": "S1",
+                "refusals": [0],
+                "refusal_cost_prompts": [],
+            }
+        ],
+        "XMage",
+    )
+    assert len(missing) == 1
+    assert "expected [0, 2], got [0]" in missing[0]
+
+    extra = validate_refusal_indices(
+        scenarios,
+        [
+            {
+                "scenario": "S1",
+                "refusals": [0, 2, 3],
+                "refusal_cost_prompts": [],
+            }
+        ],
+        "Forge",
+    )
+    assert len(extra) == 1
+    assert "expected [0, 2], got [0, 2, 3]" in extra[0]
+
+
+def test_refusal_indices_require_a_result_list() -> None:
+    errors = validate_refusal_indices(
+        [{"name": "S1", "script": []}],
+        [{"scenario": "S1", "refusal_cost_prompts": []}],
+        "Phase",
+    )
+
+    assert errors == ["Phase scenario S1 has missing or invalid refusals"]
+
+
+def test_refusal_cost_prompts_are_required_but_not_compared() -> None:
+    scenarios = [
+        {
+            "name": "S1",
+            "script": [{"action": "cast", "card": "spell", "expect": "refused"}],
+        }
+    ]
+    results = [
+        {
+            "scenario": "S1",
+            "refusals": [0],
+            "refusal_cost_prompts": [
+                {
+                    "script_index": 0,
+                    "prompt": "CollectEvidenceCost card choice, 2 candidates",
+                }
+            ],
+        }
+    ]
+
+    assert validate_refusal_indices(scenarios, results, "XMage") == []
+
+    errors = validate_refusal_indices(
+        scenarios,
+        [{"scenario": "S1", "refusals": [0]}],
+        "Forge",
+    )
+    assert errors == ["Forge scenario S1 has missing or invalid refusal_cost_prompts"]
