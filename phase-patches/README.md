@@ -1,3 +1,15 @@
+## Patch 0038 — tracked-set zone-choice timing
+
+- Treat a non-target `ChangeZone` selection over an action-scoped
+  `TrackedSetFiltered` (`caused_by: Some(_)`) as a resolution-time choice. Dig
+  selections without an action cause retain their existing choice timing.
+- Add Mind Roots regressions for optional discard, forced discard, declining
+  the land placement, and discarding no land. Controlled A/B evidence shows
+  the broad classifier changed nine records, but only Mind Roots among those
+  has `caused_by: Some(_)`; the other eight, including the three Dig-family
+  cards, have no action cause. The fresh CI-pinned A/B export with the narrowed
+  classifier compared 36,280 records with identical keys and changed only
+  Mind Roots. Evidence: `runs/card-scenarios/mind-roots-final/verification-summary.md`.
 # Local phase-rs fixes
 
 The phase submodule remains pinned at `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
