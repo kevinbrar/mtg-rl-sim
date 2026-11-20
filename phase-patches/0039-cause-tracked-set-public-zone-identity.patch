@@ -1,3 +1,27 @@
+From 705d4e9d43b13587adb5aa4021d6e941a9a2b265 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Fri, 20 Nov 2026 20:52:04 +0000
+Subject: [PATCH] Fix cause-tracked set object identity in public zones
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/analysis/resource.rs        |  74 ++++++++++++---
+ crates/engine/src/game/ability_scan.rs        |  34 ++++++-
+ crates/engine/src/game/effects/change_zone.rs |   1 +
+ crates/engine/src/game/effects/mod.rs         |  27 +++++-
+ crates/engine/src/game/effects/token.rs       |   1 +
+ crates/engine/src/game/filter.rs              |  55 +++++++++---
+ crates/engine/src/game/quantity.rs            |  14 +++
+ crates/engine/src/game/targeting.rs           |  84 +++++++++++++++++-
+ crates/engine/src/game/visibility.rs          |  10 ++-
+ crates/engine/src/types/game_state.rs         |  41 ++++++++-
+ .../fixtures/cr733/authority_matrix.json.gz   | Bin 50666 -> 50777 bytes
+ .../deterministic_game_state_serde.rs         |  26 +++++-
+ .../integration/issue_4253_sanar_vivid.rs     |  10 +++
+ .../integration/issue_6634_aven_courier.rs    |  24 +++++
+ .../mind_roots_discard_placement.rs           |  63 +++++++++++++
+ 15 files changed, 431 insertions(+), 33 deletions(-)
+
 diff --git a/crates/engine/src/analysis/resource.rs b/crates/engine/src/analysis/resource.rs
 index 1b2bd1d3d..2bfe9c8a9 100644
 --- a/crates/engine/src/analysis/resource.rs
