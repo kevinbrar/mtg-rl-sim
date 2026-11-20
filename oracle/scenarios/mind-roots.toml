@@ -228,3 +228,116 @@ all = [
   { zone = "battlefield", player = "P0", card = "Island", count = 1, tapped = true },
   { zone = "graveyard", player = "P0", card = "Opt", count = 1 },
 ]
+
+[[scenarios]]
+name = "MR7 Rest in Peace still permits placement from exile"
+active_player = 0
+
+[scenarios.setup.P0]
+hand = ["Mind Roots"]
+battlefield = [
+  { label = "mana.1", card = "Swamp" },
+  { label = "mana.2", card = "Forest" },
+  { label = "mana.3", card = "Swamp" },
+  { label = "rest-in-peace", card = "Rest in Peace" },
+]
+
+[scenarios.setup.P1]
+hand = [
+  { label = "land", card = "Island" },
+  { label = "nonland", card = "Opt" },
+  { label = "kept", card = "Divination" },
+]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Mind Roots"
+targets = ["@P1"]
+
+[[scenarios.script]]
+action = "choose_discard"
+player = "P1"
+cards = ["land", "nonland"]
+
+[[scenarios.script]]
+action = "choose_cards"
+cards = ["land"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Island", count = 1, tapped = true },
+  { zone = "exile", player = "P1", card = "Opt", count = 1 },
+  { zone = "hand", player = "P1", card = "Divination", count = 1 },
+]
+
+[[scenarios]]
+name = "MR8 place the only card in hand"
+active_player = 0
+
+[scenarios.setup.P0]
+hand = ["Mind Roots"]
+battlefield = [
+  { label = "mana.1", card = "Swamp" },
+  { label = "mana.2", card = "Forest" },
+  { label = "mana.3", card = "Swamp" },
+]
+
+[scenarios.setup.P1]
+hand = [{ label = "land", card = "Island" }]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Mind Roots"
+targets = ["@P1"]
+
+[[scenarios.script]]
+action = "choose_cards"
+cards = ["land"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Island", count = 1, tapped = true },
+]
+
+[[scenarios]]
+name = "MR9 ignore a land already in the graveyard"
+active_player = 0
+
+[scenarios.setup.P0]
+hand = ["Mind Roots"]
+battlefield = [
+  { label = "mana.1", card = "Swamp" },
+  { label = "mana.2", card = "Forest" },
+  { label = "mana.3", card = "Swamp" },
+]
+
+[scenarios.setup.P1]
+hand = [
+  { label = "first", card = "Opt" },
+  { label = "second", card = "Divination" },
+]
+graveyard = [{ label = "old-land", card = "Forest" }]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Mind Roots"
+targets = ["@P1"]
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P1", card = "Forest", count = 1 },
+  { zone = "graveyard", player = "P1", card = "Opt", count = 1 },
+  { zone = "graveyard", player = "P1", card = "Divination", count = 1 },
+]
