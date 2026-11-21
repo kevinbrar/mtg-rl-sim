@@ -189,7 +189,10 @@ def _cargo_mutants_reported_empty_selection(path: Path) -> bool:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
         return False
-    return any(line.strip() == "Found 0 mutants to test" for line in lines)
+    return any(
+        line.strip() in {"Found 0 mutants to test", "INFO No mutants to filter"}
+        for line in lines
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

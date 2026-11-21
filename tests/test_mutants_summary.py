@@ -193,11 +193,17 @@ def test_empty_shard_passes_when_cargo_mutants_reports_no_selected_mutants(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "mutants"
-    empty_selection_log = (
-        " WARN No mutants found under the active filters\nFound 0 mutants to test\n"
-    )
 
-    assert run_summary(path, cargo_mutants_log=empty_selection_log) == 0
+    assert run_summary(path, cargo_mutants_log="Found 0 mutants to test\n") == 0
+    assert "Mutants: total=0 caught=0 missed=0" in capsys.readouterr().out
+
+
+def test_no_mutants_to_filter_passes_without_outcome_files(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "mutants"
+
+    assert run_summary(path, cargo_mutants_log="INFO No mutants to filter\n") == 0
     assert "Mutants: total=0 caught=0 missed=0" in capsys.readouterr().out
 
 
