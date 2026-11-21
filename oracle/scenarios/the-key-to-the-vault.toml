@@ -136,7 +136,7 @@ all = [
 ]
 
 [[scenarios]]
-name = "KV5 no eligible nonland card among the top five"
+name = "KV5 no eligible nonland card among the looked-at cards"
 active_player = 0
 step = "precombat_main"
 script = [
@@ -163,5 +163,5 @@ all = [
   { player = "P1", life = 18 },
   { player = "P0", zone = "battlefield", card = "The Key to the Vault", attached_to = "attacker", count = 1 },
   { zone = "library", player = "P0", card = "Forest", count = 5 },
-  { zone = "exile", player = "P0", card = "Grizzly Bears", count = 0 },
+  { zone = "exile", player = "P0", card = "Forest", count = 0 },
 ]

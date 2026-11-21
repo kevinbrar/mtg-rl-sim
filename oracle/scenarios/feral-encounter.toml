@@ -213,13 +213,13 @@ hand = ["Feral Encounter"]
 library_top = ["Opt", "Opt", "Opt", "Opt", "Opt"]
 
 [scenarios.setup.P1]
-battlefield = [{ label = "opponent", card = "Hill Giant" }]
+battlefield = [{ label = "opponent", card = "Grizzly Bears" }]
 library_top = ["Opt", "Opt", "Opt", "Opt", "Opt"]
 
 [scenarios.reach]
 all = [
   { player = "P1", life = 18 },
-  { zone = "battlefield", player = "P1", card = "Hill Giant", count = 1, damage = 0 },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", count = 1, damage = 0 },
   { zone = "battlefield", player = "P0", card = "Grizzly Bears", count = 1 },
 ]
 
