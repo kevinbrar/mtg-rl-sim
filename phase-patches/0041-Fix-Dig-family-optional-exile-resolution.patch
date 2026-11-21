@@ -1,0 +1,643 @@
+From e417eb21e2ef18594bbca0317d86b5bed5dfe184 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sat, 21 Nov 2026 12:20:19 +0000
+Subject: [PATCH] Fix Dig-family optional exile resolution
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../engine/src/game/effects/cast_from_zone.rs |  88 ++++---
+ crates/engine/src/game/engine.rs              |  11 +-
+ .../src/game/engine_resolution_choices.rs     |  42 +++-
+ .../integration/dig_family_optional_exile.rs  | 218 ++++++++++++++++++
+ .../issue_2348_key_to_the_vault.rs            |   8 +-
+ crates/engine/tests/integration/main.rs       |   1 +
+ .../src/parser/oracle_effect/sequence.rs      |  33 ++-
+ .../src/parser/oracle_effect/tests.rs         |  63 +++++
+ 8 files changed, 399 insertions(+), 65 deletions(-)
+ create mode 100644 crates/engine/tests/integration/dig_family_optional_exile.rs
+
+diff --git a/crates/engine/src/game/effects/cast_from_zone.rs b/crates/engine/src/game/effects/cast_from_zone.rs
+index bfbb4aad4..74a189636 100644
+--- a/crates/engine/src/game/effects/cast_from_zone.rs
++++ b/crates/engine/src/game/effects/cast_from_zone.rs
+@@ -3825,10 +3825,9 @@ mod tests {
+     }
+ 
+     /// Keldon Flamesage's parsed attack trigger reaches its real optional
+-    /// exile/cast path and preserves the parser's tracked-set provenance into
+-    /// the MDFC face-choice policy.
++    /// exile/cast path and binds the MDFC face-choice policy to the selected card.
+     #[test]
+-    fn keldon_flamesage_parsed_trigger_reaches_modal_choice_with_tracked_policy() {
++    fn keldon_flamesage_parsed_trigger_reaches_modal_choice_with_selected_card_policy() {
+         let mut state = make_test_state();
+         let source = create_object(
+             &mut state,
+@@ -3867,32 +3866,42 @@ mod tests {
+         let mut events = Vec::new();
+         crate::game::effects::resolve_ability_chain(&mut state, &ability, &mut events, 0)
+             .expect("parsed Keldon trigger must begin resolving");
+-        for gate in 1..=2 {
+-            match &state.waiting_for {
+-                WaitingFor::OptionalEffectChoice
+-                {
+-                    player, source_id, ..
+-                } => {
+-                    assert_eq!(
+-                        *player,
+-                        PlayerId(0),
+-                        "Keldon's optional gate {gate} must belong to its controller"
+-                    );
+-                    assert_eq!(
+-                        *source_id, source,
+-                        "Keldon's optional gate {gate} must belong to the parsed source"
+-                    );
+-                }
+-                other => panic!(
+-                    "expected Keldon's parsed optional gate {gate} before its face choice, got {other:?}"
+-                ),
++        match &state.waiting_for {
++            WaitingFor::DigChoice {
++                player,
++                selectable_cards,
++                kept_destination,
++                rest_destination,
++                rest_order,
++                ..
++            } => {
++                assert_eq!(*player, PlayerId(0));
++                assert!(
++                    selectable_cards.contains(&spell),
++                    "Keldon's looked-at selection must offer the eligible spell"
++                );
++                assert_eq!(*kept_destination, Some(Zone::Exile));
++                assert_eq!(*rest_destination, Some(Zone::Library));
++                assert_eq!(*rest_order, crate::types::ability::DigRestOrder::Random);
+             }
+-            apply_as_current(
+-                &mut state,
+-                GameAction::DecideOptionalEffect { accept: true },
+-            )
+-            .expect("accepting Keldon's parsed optional gate must continue its trigger");
++            other => panic!("expected Keldon's optional exile DigChoice, got {other:?}"),
+         }
++        apply_as_current(&mut state, GameAction::SelectCards { cards: vec![spell] })
++            .expect("selecting Keldon's exiled spell must continue its trigger");
++        match &state.waiting_for {
++            WaitingFor::OptionalEffectChoice {
++                player, source_id, ..
++            } => {
++                assert_eq!(*player, PlayerId(0));
++                assert_eq!(*source_id, source);
++            }
++            other => panic!("expected Keldon's cast optional prompt, got {other:?}"),
++        }
++        apply_as_current(
++            &mut state,
++            GameAction::DecideOptionalEffect { accept: true },
++        )
++        .expect("accepting Keldon's cast prompt must continue its trigger");
+         assert_eq!(
+             state.objects[&spell].zone,
+             Zone::Exile,
+@@ -3922,32 +3931,13 @@ mod tests {
+                 _ => None,
+             })
+             .expect("Keldon's modal election must retain its resolution cleanup policy");
+-        let TargetFilter::TrackedSetFiltered {
+-            id,
+-            filter,
+-            caused_by,
+-        } = &cleanup.face_policy.filter
+-        else {
++        let TargetFilter::SpecificObject { id } = &cleanup.face_policy.filter else {
+             panic!(
+-                "Keldon's installed policy must retain its tracked-set filter, got {:?}",
++                "Keldon's installed policy must retain the selected card, got {:?}",
+                 cleanup.face_policy.filter
+             );
+         };
+-        assert_eq!(
+-            *id,
+-            TrackedSetId(0),
+-            "the parsed tracked-set sentinel is retained"
+-        );
+-        assert_eq!(
+-            *caused_by,
+-            Some(ThisWayCause::Exiled),
+-            "the parsed exile cause is retained in the installed policy"
+-        );
+-        assert_eq!(
+-            **filter,
+-            TargetFilter::Any,
+-            "Keldon's tracked-set membership is retained without an unrelated residual filter"
+-        );
++        assert_eq!(*id, spell);
+         apply_as_current(&mut state, GameAction::ChooseModalFace { back_face: true })
+             .expect("the player must be able to cast Keldon's eligible back face");
+         assert_eq!(state.objects[&spell].zone, Zone::Stack);
+diff --git a/crates/engine/src/game/engine.rs b/crates/engine/src/game/engine.rs
+index ee2abb204..a969c9b53 100644
+--- a/crates/engine/src/game/engine.rs
++++ b/crates/engine/src/game/engine.rs
+@@ -25407,7 +25407,7 @@ mod stage2_injector_tests {
+ 
+         assert_eq!(
+             producers.len() + readers.len() + in_test,
+-            59,
++            60,
+             "CR 603.5 prompt census drifted. A new PRODUCER must have its recipient bound \
+              somewhere — the mint's conjunct (a) covers exactly ONE of them. A new READER is \
+              the benign case (U4's own consumption arm was one).\n\
+@@ -25415,11 +25415,12 @@ mod stage2_injector_tests {
+         );
+         assert_eq!(
+             (producers.len(), readers.len(), in_test),
+-            (4, 11, 44),
++            (4, 11, 45),
+             "the partition, not just the total: four PRODUCTION producers, eleven PRODUCTION \
+-             readers (including the two new optional-subject projection reads), and 44 \
+-             `#[cfg(test)]` lines, including the ChooseOneOf, retained optional/outer, \
+-             and retained repeat/choice restore fixtures.\nproducers={producers:#?}\n\
++             readers (including the two new optional-subject projection reads), and 45 \
++             `#[cfg(test)]` lines, including the DigChoice-before-cast optional fixture, \
++             ChooseOneOf, retained optional/outer, and retained repeat/choice restore \
++             fixtures.\nproducers={producers:#?}\n\
+              readers={readers:#?}"
+         );
+         assert_eq!(
+diff --git a/crates/engine/src/game/engine_resolution_choices.rs b/crates/engine/src/game/engine_resolution_choices.rs
+index 3d5b9b736..25f6e98a2 100644
+--- a/crates/engine/src/game/engine_resolution_choices.rs
++++ b/crates/engine/src/game/engine_resolution_choices.rs
+@@ -6,10 +6,10 @@ use std::collections::{HashMap, HashSet};
+ use rand::seq::SliceRandom;
+ 
+ use crate::types::ability::{
+-    AbilityCost, ChoiceType, ChosenAttribute, CostPaidObjectSnapshot, DigRestOrder,
+-    DigRestSplitScope, Effect, EffectKind, ForwardedResultContext, GuessOutcome, LibraryPosition,
+-    ParentTargetMissingReason, QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole,
+-    ResolvedAbility, TapCreaturesSelectionMode, TargetRef,
++    effect_requires_parent_target_object, AbilityCost, ChoiceType, ChosenAttribute,
++    CostPaidObjectSnapshot, DigRestOrder, DigRestSplitScope, Effect, EffectKind,
++    ForwardedResultContext, GuessOutcome, LibraryPosition, ParentTargetMissingReason, QuantityExpr,
++    QuantityRef, ReciprocalZoneChoiceRole, ResolvedAbility, TapCreaturesSelectionMode, TargetRef,
+ };
+ use crate::types::actions::{GameAction, LearnOption, OutsideGameSelection};
+ use crate::types::events::GameEvent;
+@@ -75,6 +75,24 @@ fn bind_dig_continuation_targets(chain: &mut ResolvedAbility, selected: &[Object
+     if !node_has_stack_target_declaration(chain) {
+         chain.set_unpinned_targets(selected.iter().copied().map(TargetRef::Object).collect());
+     }
++    bind_dig_parent_target_availability(
++        chain,
++        selected
++            .is_empty()
++            .then_some(ParentTargetMissingReason::Dig),
++    );
++}
++
++fn bind_dig_parent_target_availability(
++    ability: &mut ResolvedAbility,
++    missing: Option<ParentTargetMissingReason>,
++) {
++    if effect_requires_parent_target_object(&ability.effect) {
++        ability.parent_target_missing_reason = missing;
++    }
++    for (_, child) in ability.child_links_mut() {
++        bind_dig_parent_target_availability(child, missing);
++    }
+ }
+ 
+ /// A fresh mass library-order prompt is valid only for
+@@ -5348,6 +5366,8 @@ pub(super) fn handle_resolution_choice(
+                 // conditionals on the kept card) bind to the kept selection.
+                 // Hand/bottom/exile tails route via TrackedSetFiltered instead.
+                 bind_dig_continuation_targets(&mut frame.pending.chain, &kept);
++                frame.pending.chain.parent_target_missing_reason =
++                    kept.is_empty().then_some(ParentTargetMissingReason::Dig);
+                 if let Some(snapshot) = effect_context_snapshot {
+                     frame
+                         .pending
+@@ -12505,7 +12525,19 @@ mod tests {
+         let declared_chain = owning_head.clone();
+         for result in [vec![ObjectId(10)], vec![]] {
+             bind_dig_continuation_targets(&mut owning_head, &result);
+-            assert_eq!(owning_head, declared_chain);
++            assert_eq!(owning_head.targets, declared_chain.targets);
++            assert_eq!(
++                owning_head.sub_ability.as_deref().unwrap().targets,
++                declared_chain.sub_ability.as_deref().unwrap().targets
++            );
++            assert_eq!(
++                owning_head
++                    .sub_ability
++                    .as_deref()
++                    .unwrap()
++                    .parent_target_missing_reason,
++                result.is_empty().then_some(ParentTargetMissingReason::Dig)
++            );
+         }
+         let mut delegated = child.clone();
+         delegated.condition = Some(AbilityCondition::AdditionalCostPaidInstead);
+diff --git a/crates/engine/tests/integration/dig_family_optional_exile.rs b/crates/engine/tests/integration/dig_family_optional_exile.rs
+new file mode 100644
+index 000000000..bff10c784
+--- /dev/null
++++ b/crates/engine/tests/integration/dig_family_optional_exile.rs
+@@ -0,0 +1,218 @@
++//! Regression coverage for optional exile picks from looked-at cards.
++
++use engine::game::scenario::{GameScenario, P0};
++use engine::types::actions::GameAction;
++use engine::types::game_state::WaitingFor;
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++use super::rules::run_combat;
++
++const FERAL_ORACLE: &str = "Look at the top five cards of your library. You may exile a creature \
++card from among them. Put the rest on the bottom of your library in a random order. You may cast \
++the exiled card this turn.";
++
++const MAKE_YOUR_OWN_LUCK_ORACLE: &str = "Look at the top three cards of your library. You may \
++exile a nonland card from among them. If you do, it becomes plotted. Put the rest into your hand. \
++(You may cast it as a sorcery on a later turn without paying its mana cost.)";
++
++const KEY_ORACLE: &str = "Whenever equipped creature deals combat damage to a player, look at that \
++many cards from the top of your library. You may exile a nonland card from among them. Put the rest \
++on the bottom of your library in a random order. You may cast the exiled card without paying its \
++mana cost. Equip {3}{U}";
++
++#[test]
++fn feral_encounter_offers_only_creatures_and_randomly_bottoms_the_rest() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let spell = scenario
++        .add_spell_to_hand_from_oracle(P0, "Feral Encounter", false, FERAL_ORACLE)
++        .id();
++    let creature = scenario
++        .add_spell_to_library_top(P0, "Grizzly Bears", false)
++        .as_creature()
++        .id();
++    let other = [
++        scenario.add_spell_to_library_top(P0, "Opt", true).id(),
++        scenario
++            .add_spell_to_library_top(P0, "Divination", false)
++            .id(),
++        scenario
++            .add_spell_to_library_top(P0, "Anticipate", true)
++            .id(),
++        scenario.add_spell_to_library_top(P0, "Consider", true).id(),
++    ];
++    let mut runner = scenario.build();
++
++    let outcome = runner.cast(spell).resolve();
++    match outcome.final_waiting_for() {
++        WaitingFor::DigChoice {
++            selectable_cards,
++            keep_count,
++            up_to,
++            kept_destination,
++            rest_destination,
++            rest_order,
++            ..
++        } => {
++            assert_eq!(selectable_cards, &[creature]);
++            assert_eq!(*keep_count, 1);
++            assert!(*up_to);
++            assert_eq!(*kept_destination, Some(Zone::Exile));
++            assert_eq!(*rest_destination, Some(Zone::Library));
++            assert_eq!(*rest_order, engine::types::ability::DigRestOrder::Random);
++        }
++        other => panic!("expected a filtered DigChoice, got {other:?}"),
++    }
++
++    runner
++        .act(GameAction::SelectCards {
++            cards: vec![creature],
++        })
++        .expect("selecting the offered creature must succeed");
++    runner.advance_until_stack_empty();
++
++    let state = runner.state();
++    assert_eq!(state.objects[&creature].zone, Zone::Exile);
++    assert!(other
++        .iter()
++        .all(|id| state.objects[id].zone == Zone::Library));
++    assert!(
++        matches!(state.waiting_for, WaitingFor::Priority { player } if player == P0),
++        "random order must not prompt"
++    );
++}
++
++#[test]
++fn make_your_own_luck_decline_puts_every_revealed_card_into_hand() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let spell = scenario
++        .add_spell_to_hand_from_oracle(P0, "Make Your Own Luck", false, MAKE_YOUR_OWN_LUCK_ORACLE)
++        .id();
++    let cards = [
++        scenario.add_spell_to_library_top(P0, "Opt", true).id(),
++        scenario
++            .add_spell_to_library_top(P0, "Divination", false)
++            .id(),
++        scenario
++            .add_spell_to_library_top(P0, "Anticipate", true)
++            .id(),
++    ];
++    let mut runner = scenario.build();
++
++    let outcome = runner.cast(spell).resolve();
++    assert!(
++        matches!(outcome.final_waiting_for(), WaitingFor::DigChoice { .. }),
++        "optional exile must be represented by the card-choice group"
++    );
++    runner
++        .act(GameAction::SelectCards { cards: vec![] })
++        .expect("an empty DigChoice selection declines the optional exile");
++    runner.advance_until_stack_empty();
++
++    let state = runner.state();
++    assert!(cards.iter().all(|id| state.objects[id].zone == Zone::Hand));
++    assert!(state.players[0].library.is_empty());
++    assert!(matches!(
++        state.waiting_for,
++        WaitingFor::Priority { player } if player == P0
++    ));
++}
++
++#[test]
++fn key_optional_exile_uses_dig_choice_before_the_cast_decision() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let attacker = scenario.add_creature(P0, "Vault Bearer", 3, 3).id();
++    let key = scenario
++        .add_creature(P0, "The Key to the Vault", 0, 0)
++        .as_artifact()
++        .with_subtypes(vec!["Equipment"])
++        .from_oracle_text(KEY_ORACLE)
++        .id();
++    let picked = scenario.add_spell_to_library_top(P0, "Opt", true).id();
++    let rest_a = scenario
++        .add_spell_to_library_top(P0, "Divination", false)
++        .id();
++    let rest_b = scenario.add_land_to_library_top(P0, "Island").id();
++    let mut runner = scenario.build();
++    engine::game::effects::attach::attach_to(runner.state_mut(), key, attacker);
++    engine::game::layers::evaluate_layers(runner.state_mut());
++
++    run_combat(&mut runner, vec![attacker], vec![]);
++    runner.advance_until_stack_empty();
++    assert!(
++        matches!(runner.state().waiting_for, WaitingFor::DigChoice { .. }),
++        "Key's optional exile must use DigChoice, not a separate yes/no prompt"
++    );
++    runner
++        .act(GameAction::SelectCards {
++            cards: vec![picked],
++        })
++        .expect("selecting the offered nonland card must succeed");
++    runner.advance_until_stack_empty();
++
++    let state = runner.state();
++    assert_eq!(state.objects[&picked].zone, Zone::Exile);
++    assert_eq!(state.objects[&rest_a].zone, Zone::Library);
++    assert_eq!(state.objects[&rest_b].zone, Zone::Library);
++    assert!(
++        matches!(state.waiting_for, WaitingFor::OptionalEffectChoice { .. }),
++        "the next optional prompt should be the separate cast decision"
++    );
++}
++
++#[test]
++fn key_declining_optional_exile_does_not_offer_a_cast_decision() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let attacker = scenario.add_creature(P0, "Vault Bearer", 3, 3).id();
++    let key = scenario
++        .add_creature(P0, "The Key to the Vault", 0, 0)
++        .as_artifact()
++        .with_subtypes(vec!["Equipment"])
++        .from_oracle_text(KEY_ORACLE)
++        .id();
++    let cards = [
++        scenario.add_spell_to_library_top(P0, "Opt", true).id(),
++        scenario
++            .add_spell_to_library_top(P0, "Divination", false)
++            .id(),
++        scenario.add_land_to_library_top(P0, "Island").id(),
++    ];
++    let mut runner = scenario.build();
++    engine::game::effects::attach::attach_to(runner.state_mut(), key, attacker);
++    engine::game::layers::evaluate_layers(runner.state_mut());
++
++    run_combat(&mut runner, vec![attacker], vec![]);
++    runner.advance_until_stack_empty();
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::DigChoice { .. }
++    ));
++    runner
++        .act(GameAction::SelectCards { cards: vec![] })
++        .expect("an empty selection declines the optional exile");
++    runner.advance_until_stack_empty();
++
++    let state = runner.state();
++    assert!(cards
++        .iter()
++        .all(|id| state.objects[id].zone == Zone::Library));
++    let optional_frame = state.active_optional_effect_frame().map(|frame| {
++        (
++            &frame.ability.effect,
++            frame.ability.parent_target_missing_reason,
++        )
++    });
++    assert!(
++        matches!(
++            state.waiting_for,
++            WaitingFor::Priority { player } if player == P0
++        ),
++        "expected priority after declining Key's exile choice, got {:?} with frame {:?}",
++        state.waiting_for,
++        optional_frame
++    );
++}
+diff --git a/crates/engine/tests/integration/issue_2348_key_to_the_vault.rs b/crates/engine/tests/integration/issue_2348_key_to_the_vault.rs
+index d484554fd..f5e3475da 100644
+--- a/crates/engine/tests/integration/issue_2348_key_to_the_vault.rs
++++ b/crates/engine/tests/integration/issue_2348_key_to_the_vault.rs
+@@ -13,10 +13,10 @@ use engine::types::triggers::TriggerMode;
+ 
+ use super::rules::run_combat;
+ 
+-const KEY_ORACLE: &str = "Whenever equipped creature deals combat damage to a player, look at the \
+-top X cards of your library, where X is the amount of damage dealt. Exile a nonland card from \
+-among them. You may cast that card without paying its mana cost. Put the rest on the bottom of \
+-your library in a random order.\nEquip {3}{U}";
++const KEY_ORACLE: &str = "Whenever equipped creature deals combat damage to a player, look at that \
++many cards from the top of your library. You may exile a nonland card from among them. Put the rest \
++on the bottom of your library in a random order. You may cast the exiled card without paying its \
++mana cost.\nEquip {3}{U}";
+ 
+ #[test]
+ fn key_to_the_vault_parses_equipped_creature_combat_damage_trigger() {
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index b47af51a3..f2cdc772e 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -72,6 +72,7 @@ mod delayed_event_subject_anaphor_snapshot;
+ mod delayed_that_many_resolution_scope;
+ mod derived_target_carriers;
+ mod descendants_fury_sacrificed_referent_4795;
++mod dig_family_optional_exile;
+ mod do_this_only_once_each_turn;
+ mod doran_attack_block_pump;
+ mod double_strike_first_strike_trigger_removes_attacker;
+diff --git a/crates/phase-parser/src/parser/oracle_effect/sequence.rs b/crates/phase-parser/src/parser/oracle_effect/sequence.rs
+index 74a3ede32..4297407e4 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/sequence.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/sequence.rs
+@@ -7926,10 +7926,14 @@ pub(super) fn parse_dig_from_among(
+         // (a public action) vs "put"/"return" (a private look) so the patch arm can
+         // promote the Dig to `reveal: true` even when the kept card routes to a
+         // fixed destination (Fertile Thicket).
++        let exile_verb = tag::<_, _, OracleError<'_>>("you may exile ")
++            .parse(before_from)
++            .is_ok();
+         let (after_put, reveal_verb) = alt((
+             value(true, tag::<_, _, OracleError<'_>>("you may reveal ")),
+             value(false, tag("you may put ")),
+             value(false, tag("you may return ")),
++            value(false, tag("you may exile ")),
+             value(false, tag("put ")),
+             value(false, tag("puts ")),
+             value(true, tag("reveal ")),
+@@ -8011,7 +8015,11 @@ pub(super) fn parse_dig_from_among(
+         return Some(ContinuationAst::DigFromAmong {
+             quantity,
+             filter,
+-            destination,
++            destination: if exile_verb {
++                Some(Zone::Exile)
++            } else {
++                destination
++            },
+             rest_destination,
+             rest_split_top_count: None,
+             rest_order,
+@@ -9539,6 +9547,25 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
+                 rest_order: DigRestOrder::Preserve,
+             })
+         }
++        // CR 608.2c + CR 701.20e + CR 702.170c-d: a plotted-card permission
++        // may sit between the optional exile from a looked-at set and its
++        // remainder instruction (Make Your Own Luck). Bind that remainder to
++        // the preceding Dig instead of leaving it as a move from Exile.
++        Effect::GrantCastingPermission {
++            permission: CastingPermission::Plotted { .. },
++            ..
++        } if super::parse_put_rest_destination(&lower).is_some() => {
++            let destination =
++                super::parse_put_rest_destination(&lower).expect("guard parsed rest destination");
++            let rest_order = parse_put_rest_on_bottom_line(&lower)
++                .map(|(_, order)| order)
++                .unwrap_or_default();
++            Some(ContinuationAst::PutRest {
++                destination,
++                reorder_all: false,
++                rest_order,
++            })
++        }
+         // CR 406.3 + CR 701.20e: "[then] exile it/them [face down]" after a
+         // private `Dig` (the "look at the top N cards of <player>'s library"
+         // look step). This is the Gonti, Canny Acquisitor impulse idiom —
+@@ -10058,7 +10085,9 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
+                     || nom_primitives::scan_contains(&lower, "into your hand")
+                     || nom_primitives::scan_contains(&lower, "into their hand")
+                     || nom_primitives::scan_contains(&lower, "to your hand")
+-                    || nom_primitives::scan_contains(&lower, "to their hand")) =>
++                    || nom_primitives::scan_contains(&lower, "to their hand")
++                    || nom_primitives::scan_contains(&lower, "you may exile "))
++                && !nom_primitives::scan_contains(&lower, "for each card type") =>
+         {
+             parse_dig_from_among(&lower, text, ctx)
+         }
+diff --git a/crates/phase-parser/src/parser/oracle_effect/tests.rs b/crates/phase-parser/src/parser/oracle_effect/tests.rs
+index a2b2683ba..3cf332acf 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/tests.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/tests.rs
+@@ -31148,6 +31148,69 @@ fn parse_exile_card_from_among_them_then_it_becomes_plotted() {
+     );
+ }
+ 
++#[test]
++fn parse_optional_exile_from_dig_routes_random_library_remainder() {
++    let def = parse_effect_chain(
++        "Look at the top five cards of your library. You may exile a creature card from among them. Put the rest on the bottom of your library in a random order.",
++        AbilityKind::Spell,
++    );
++    let Effect::Dig {
++        count,
++        keep_count,
++        up_to,
++        destination,
++        rest_destination,
++        rest_order,
++        ..
++    } = def.effect.as_ref()
++    else {
++        panic!("expected a Dig effect, got {:?}", def.effect);
++    };
++    assert_eq!(*count, QuantityExpr::Fixed { value: 5 });
++    assert_eq!(*keep_count, Some(1));
++    assert!(*up_to);
++    assert_eq!(*destination, Some(Zone::Exile));
++    assert_eq!(*rest_destination, Some(Zone::Library));
++    assert_eq!(*rest_order, DigRestOrder::Random);
++    assert!(
++        def.sub_ability.is_none(),
++        "the exile selection and random remainder belong to the Dig effect"
++    );
++}
++
++#[test]
++fn parse_optional_exile_from_dig_routes_unselected_cards_to_hand() {
++    let def = parse_effect_chain(
++        "Look at the top three cards of your library. You may exile a nonland card from among them. If you do, it becomes plotted. Put the rest into your hand.",
++        AbilityKind::Spell,
++    );
++    let Effect::Dig {
++        count,
++        keep_count,
++        up_to,
++        destination,
++        rest_destination,
++        ..
++    } = def.effect.as_ref()
++    else {
++        panic!("expected a Dig effect, got {:?}", def.effect);
++    };
++    assert_eq!(*count, QuantityExpr::Fixed { value: 3 });
++    assert_eq!(*keep_count, Some(1));
++    assert!(*up_to);
++    assert_eq!(*destination, Some(Zone::Exile));
++    assert_eq!(*rest_destination, Some(Zone::Hand));
++
++    let grant = def.sub_ability.as_deref().expect("plot grant sub-ability");
++    assert!(matches!(
++        grant.effect.as_ref(),
++        Effect::GrantCastingPermission {
++            permission: CastingPermission::Plotted { .. },
++            ..
++        }
++    ));
++}
++
+ /// CR 702.170c-d: the OTJ Plot-grant cards (Make Your Own Luck, Lilah,
+ /// Kellan Joins Up, Jace Reawakened) gate the grant behind "If you do," —
+ /// "You may exile a card. If you do, it becomes plotted." The optional
+-- 
+2.56.0
+

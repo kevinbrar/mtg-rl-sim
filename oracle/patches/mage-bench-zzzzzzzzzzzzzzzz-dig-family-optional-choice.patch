@@ -1,0 +1,230 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+index 29d2ce1..98a7032 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -20,5 +20,6 @@ import mage.abilities.costs.mana.ManaCost;
+ import mage.abilities.costs.mana.ManaCosts;
+ import mage.abilities.effects.common.InfoEffect;
++import mage.abilities.effects.common.LookLibraryAndPickControllerEffect;
+ import mage.abilities.mana.ActivatedManaAbilityImpl;
+ import mage.abilities.mana.ManaOptions;
+ import mage.cards.Card;
+@@ -104,6 +104,7 @@ public class TestPlayer implements Player {
+     //private final Map<PlayerAction, PhaseStep> actionsToRemoveLater = new HashMap<>(); // remove actions after some step (used for AI commands)
+     private final Map<Integer, HashMap<UUID, ArrayList<PlayerAction>>> rollbackActions = new HashMap<>(); // actions to add after a executed rollback
+     private final List<String> choices = new ArrayList<>(); // choices stack for choice
++    private final Deque<String> scenarioOptionalAnswers = new ArrayDeque<>();
+     private final List<String> targets = new ArrayList<>(); // targets stack for choose (it's uses on empty direct target by cast command)
+     private final List<List<String>> cardChoiceGroups = new ArrayList<>();
+     private final List<String> refusalCostPrompts = new ArrayList<>();
+@@ -168,6 +169,7 @@ public class TestPlayer implements Player {
+         this.foundNoAction = testPlayer.foundNoAction;
+         this.actions.addAll(testPlayer.actions);
+         this.choices.addAll(testPlayer.choices);
++        this.scenarioOptionalAnswers.addAll(testPlayer.scenarioOptionalAnswers);
+         this.targets.addAll(testPlayer.targets);
+         testPlayer.cardChoiceGroups.forEach(group -> this.cardChoiceGroups.add(new ArrayList<>(group)));
+         this.expectedBeholdSource = testPlayer.expectedBeholdSource;
+@@ -216,6 +218,25 @@ public class TestPlayer implements Player {
+         return this.choices;
+     }
+ 
++    public void addScenarioOptionalAnswer(String answer) {
++        String mappedAnswer = switch (answer) {
++            case "yes" -> "Yes";
++            case "no" -> "No";
++            default -> throw new IllegalArgumentException(
++                    "choose_optional answers must be exactly yes or no");
++        };
++        scenarioOptionalAnswers.addLast(mappedAnswer);
++        addChoice(mappedAnswer);
++    }
++
++    public void assertNoScenarioOptionalAnswers() {
++        if (!scenarioOptionalAnswers.isEmpty()) {
++            throw new IllegalStateException(
++                    scenarioOptionalAnswers.size()
++                            + " choose_optional answer(s) were unconsumed when the script ended");
++        }
++    }
++
+     public void setAutoOrderIdenticalTriggers(boolean autoOrderIdenticalTriggers) {
+         this.autoOrderIdenticalTriggers = autoOrderIdenticalTriggers;
+     }
+@@ -3151,6 +3172,27 @@ public class TestPlayer implements Player {
+             }
+             return false;
+         }
++        if (isLookLibraryAndPickPrompt(source)) {
++            if (cardChoiceGroups.isEmpty()) {
++                throw new IllegalStateException(
++                        "LookLibraryAndPickControllerEffect prompt arrived with an empty choose_cards queue");
++            }
++            if (cardChoiceGroups.get(0).isEmpty()) {
++                takeNextCardChoiceGroup();
++                return false;
++            }
++            return true;
++        }
++        if (!scenarioOptionalAnswers.isEmpty()) {
++            String expected = scenarioOptionalAnswers.peekFirst();
++            if (choices.isEmpty() || !choices.get(0).equals(expected)) {
++                throw new IllegalStateException(
++                        "choose_optional answer is not next in the chooseUse queue: " + expected);
++            }
++            consumeScenarioOptionalAnswer(expected);
++            choicesRemoveCurrent(game, source);
++            return expected.equals("Yes");
++        }
+         if (isFirebenderCopyPrompt(source, game)) {
+             FirebenderCopyChoice choice = takeFirebenderCopyChoice(firebenderCopyChoices);
+             if (choice.accept() && choice.targetMode() != CopyTargetMode.NONE) {
+@@ -3166,10 +3197,12 @@ public class TestPlayer implements Player {
+             String choice = choices.get(0);
+ 
+             if (choice.equals("No")) {
++                consumeScenarioOptionalAnswer(choice);
+                 choicesRemoveCurrent(game, source);
+                 return false;
+             }
+             if (choice.equals("Yes")) {
++                consumeScenarioOptionalAnswer(choice);
+                 choicesRemoveCurrent(game, source);
+                 return true;
+             }
+@@ -3184,6 +3228,23 @@ public class TestPlayer implements Player {
+         return computerPlayer.chooseUse(outcome, message, secondMessage, trueText, falseText, source, game);
+     }
+ 
++    private boolean isLookLibraryAndPickPrompt(Ability source) {
++        return source != null && source.getEffects().stream()
++                .anyMatch(LookLibraryAndPickControllerEffect.class::isInstance);
++    }
++
++    private void consumeScenarioOptionalAnswer(String choice) {
++        if (scenarioOptionalAnswers.isEmpty()) {
++            return;
++        }
++        String expected = scenarioOptionalAnswers.peekFirst();
++        if (!expected.equals(choice)) {
++            throw new IllegalStateException(
++                    "chooseUse consumed " + choice + " instead of scripted " + expected);
++        }
++        scenarioOptionalAnswers.removeFirst();
++    }
++
+     private boolean isFirebenderCopyPrompt(Ability source, Game game) {
+         MageObject sourceObject = source == null ? null : source.getSourceObject(game);
+         return sourceObject != null && sourceObject.getName().equals("Firebender Ascension");
+@@ -3708,6 +3753,36 @@ public class TestPlayer implements Player {
+         }
+     }
+ 
++    public void castPlayableSpellFromExile(UUID sourceId, Game game) {
++        if (sourceId == null) {
++            throw new IllegalArgumentException("exile spell source id is required");
++        }
++        if (game.getExile().getAllCards(game).stream()
++                .noneMatch(card -> sourceId.equals(card.getId()))) {
++            throw new IllegalStateException("spell object is not in exile: " + sourceId);
++        }
++        List<SpellAbility> matches = computerPlayer.getPlayable(game, true, Zone.EXILED, false).stream()
++                .filter(SpellAbility.class::isInstance)
++                .map(SpellAbility.class::cast)
++                .filter(ability -> sourceId.equals(ability.getSourceId()))
++                .collect(Collectors.toList());
++        if (matches.size() != 1) {
++            throw new IllegalStateException(
++                    "expected exactly one playable exile spell ability for object "
++                            + sourceId + ", found " + matches.size());
++        }
++        if (!computerPlayer.activateAbility(matches.get(0).copy(), game)) {
++            throw new IllegalStateException("could not cast exiled spell object " + sourceId);
++        }
++        if (game.getStack().stream().noneMatch(stackObject -> sourceId.equals(stackObject.getSourceId()))) {
++            throw new IllegalStateException("exiled spell object " + sourceId + " was not put on the stack");
++        }
++        if (game.getExile().getAllCards(game).stream()
++                .anyMatch(card -> sourceId.equals(card.getId()))) {
++            throw new IllegalStateException("exiled spell object " + sourceId + " remained in exile");
++        }
++    }
++
+     @Override
+     public boolean playCard(Card card, Game game, boolean noMana, ApprovingObject approvingObject) {
+         return computerPlayer.playCard(card, game, noMana, approvingObject);
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+index 34d6301..e845dbf 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -134,6 +134,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             player(index).assertNoCardChoiceGroups();
+             player(index).assertNoPendingRottenmouthUnlessChoices();
+             player(index).assertNoPendingFirebenderCopyChoices();
++            player(index).assertNoScenarioOptionalAnswers();
+         }
+         if (!refusalExecutions.equals(expectedRefusalIndices)
+                 || !refusals.equals(expectedRefusalIndices)) {
+@@ -291,8 +292,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                 case "cast" -> {
+                     String card = requiredString(action, "card");
+                     String source = action.has("from") ? requiredString(action, "from") : "hand";
+-                    if (!source.equals("hand") && !source.equals("graveyard")) {
+-                        throw new IllegalArgumentException("cast.from must be hand or graveyard");
++                    if (!source.equals("hand") && !source.equals("graveyard")
++                            && !source.equals("exile")) {
++                        throw new IllegalArgumentException("cast.from must be hand, graveyard, or exile");
+                     }
+                     boolean hasX = action.has("x");
+                     int x = hasX ? exactInteger(action.get("x"), "cast.x") : 0;
+@@ -341,6 +343,16 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                                 throw new IllegalStateException(
+                                         card + " is not offered as a graveyard cast");
+                             }
++                        } else if (source.equals("exile")) {
++                            UUID objectId = labels.get(card);
++                            if (objectId == null) {
++                                throw new IllegalStateException(card + " is not a setup label");
++                            }
++                            spell = game.getExile().getAllCards(game).stream()
++                                    .filter(candidate -> candidate.getId().equals(objectId))
++                                    .findFirst()
++                                    .orElseThrow(() -> new IllegalStateException(
++                                            card + " is not in exile"));
+                         } else {
+                             spell = actingPlayer.getHand().getCards(game).stream()
+                                     .filter(candidate -> candidate.getName().equals(card))
+@@ -392,6 +404,11 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                         UUID sourceId = labels.get(card);
+                         runCode("cast labeled graveyard spell", turn, step, actingPlayer,
+                                 (info, player, game) -> actingPlayer.castPlayableSpellFromGraveyard(sourceId, game));
++                    } else if (source.equals("exile")) {
++                        scriptedTargets.forEach(actingPlayer::addTarget);
++                        UUID sourceId = labels.get(card);
++                        runCode("cast labeled exiled spell", turn, step, actingPlayer,
++                                (info, player, game) -> actingPlayer.castPlayableSpellFromExile(sourceId, game));
+                     } else {
+                         scriptedTargets.forEach(actingPlayer::addTarget);
+                         castSpell(turn, step, actingPlayer, card);
+@@ -544,6 +561,21 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                     }
+                     actingPlayer.addCardChoiceGroup(cards);
+                 }
++                case "choose_optional" -> {
++                    rejectUnknownKeys(action, Set.of("action", "answers"), "script.choose_optional");
++                    if (!action.has("answers") || !action.get("answers").isJsonArray()
++                            || action.getAsJsonArray("answers").size() == 0) {
++                        throw new IllegalArgumentException(
++                                "choose_optional.answers must be a non-empty array");
++                    }
++                    for (JsonElement answer : action.getAsJsonArray("answers")) {
++                        if (!answer.isJsonPrimitive() || !answer.getAsJsonPrimitive().isString()) {
++                            throw new IllegalArgumentException(
++                                    "choose_optional.answers entries must be exactly yes or no");
++                        }
++                        actingPlayer.addScenarioOptionalAnswer(answer.getAsString());
++                    }
++                }
+                 case "choose_discard" -> {
+                     rejectUnknownKeys(action, Set.of("action", "player", "cards"), "script.choose_discard");
+                     String choicePlayer = requiredString(action, "player");

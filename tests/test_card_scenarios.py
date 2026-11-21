@@ -606,7 +606,7 @@ solved = false
         load_specs([spec])
 
 
-def test_load_specs_rejects_invalid_graveyard_cast_source(tmp_path: Path) -> None:
+def test_load_specs_rejects_invalid_cast_source(tmp_path: Path) -> None:
     spec = tmp_path / "invalid-graveyard-cast-source.toml"
     spec.write_text(
         """
@@ -622,7 +622,7 @@ script = [{ action = "cast", card = "Silvercoat Lion", from = "library" }]
     )
 
     with pytest.raises(
-        ValueError, match=r"script\[0\]\.from must be hand or graveyard"
+        ValueError, match=r"script\[0\]\.from must be hand, graveyard, or exile"
     ):
         load_specs([spec])
 
@@ -714,6 +714,99 @@ library_top = [{ card = "Grizzly Bears", label = "first" }]
     assert loaded["scenarios"][0]["setup"]["P0"]["library_top"] == [
         {"card": "Grizzly Bears", "label": "first"}
     ]
+
+
+def test_load_specs_accepts_choose_optional_answers(tmp_path: Path) -> None:
+    spec = tmp_path / "choose-optional.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "optional answer queue"
+script = [{ action = "choose_optional", answers = ["yes", "no"] }]
+
+[scenarios.setup.P0]
+
+[scenarios.setup.P1]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+
+    assert loaded["scenarios"][0]["script"][0]["answers"] == ["yes", "no"]
+
+
+def test_load_specs_rejects_choose_optional_for_forge(tmp_path: Path) -> None:
+    spec = tmp_path / "forge-choose-optional.toml"
+    spec.write_text(
+        """
+oracle = "forge"
+
+[[scenarios]]
+name = "Forge optional answer queue"
+script = [{ action = "choose_optional", answers = ["yes"] }]
+
+[scenarios.setup.P0]
+
+[scenarios.setup.P1]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsupported by the Forge scenario runner"):
+        load_specs([spec])
+
+
+def test_load_specs_accepts_cast_from_exile_using_a_setup_label(tmp_path: Path) -> None:
+    spec = tmp_path / "cast-from-exile.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "cast an exiled setup card"
+script = [{ action = "cast", card = "exiled", from = "exile" }]
+
+[scenarios.setup.P0]
+library_top = [{ card = "Grizzly Bears", label = "exiled" }]
+
+[scenarios.setup.P1]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+
+    assert loaded["scenarios"][0]["script"][0]["from"] == "exile"
+
+
+@pytest.mark.parametrize(
+    ("answer_spec", "message"),
+    [
+        ('answers = ["Yes"]', "exactly 'yes' or 'no'"),
+        ('answers = ["nope"]', "exactly 'yes' or 'no'"),
+        ("answers = []", "non-empty array"),
+        ("answers = [1]", "exactly 'yes' or 'no'"),
+        ('answers = ["yes"], player = "P0"', "player is unsupported"),
+    ],
+)
+def test_load_specs_rejects_invalid_choose_optional_answers(
+    tmp_path: Path, answer_spec: str, message: str
+) -> None:
+    spec = tmp_path / "invalid-choose-optional.toml"
+    spec.write_text(
+        f"""
+[[scenarios]]
+name = "invalid optional answer queue"
+script = [{{ action = "choose_optional", {answer_spec} }}]
+
+[scenarios.setup.P0]
+
+[scenarios.setup.P1]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        load_specs([spec])
 
 
 def test_load_specs_accepts_labeled_play_land_behold(tmp_path: Path) -> None:
@@ -2358,6 +2451,16 @@ def test_refusal_indices_require_a_result_list() -> None:
     )
 
     assert errors == ["Phase scenario S1 has missing or invalid refusals"]
+
+
+def test_refusal_indices_skip_scenarios_that_return_runner_errors() -> None:
+    errors = validate_refusal_indices(
+        [{"name": "S1", "script": [{"action": "cast", "card": "spell"}]}],
+        [{"scenario": "S1", "error": "unscripted optional prompt"}],
+        "Phase",
+    )
+
+    assert errors == []
 
 
 def test_refusal_cost_prompts_are_required_but_not_compared() -> None:

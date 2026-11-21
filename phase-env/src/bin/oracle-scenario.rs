@@ -1454,7 +1454,8 @@ fn cast_from(action: &Value) -> Result<&str, String> {
         Some(value) => match value.as_str() {
             Some("hand") => Ok("hand"),
             Some("graveyard") => Ok("graveyard"),
-            Some(_) | None => Err("cast.from must be hand or graveyard".to_string()),
+            Some("exile") => Ok("exile"),
+            Some(_) | None => Err("cast.from must be hand, graveyard, or exile".to_string()),
         },
     }
 }
@@ -1520,6 +1521,103 @@ fn take_copy_choice(
     choices
         .pop_front()
         .ok_or("Firebender copy prompt arrived without copy_choice".to_string())
+}
+
+fn parse_optional_answers(action: &Value) -> Result<Vec<bool>, String> {
+    let fields = action
+        .as_object()
+        .ok_or("choose_optional must be a table")?;
+    if fields
+        .keys()
+        .any(|key| !["action", "answers"].contains(&key.as_str()))
+    {
+        return Err("choose_optional supports only answers".to_string());
+    }
+    let answers = action
+        .get("answers")
+        .and_then(Value::as_array)
+        .ok_or("choose_optional.answers must be an array")?;
+    if answers.is_empty() {
+        return Err("choose_optional.answers must be a non-empty array".to_string());
+    }
+    answers
+        .iter()
+        .map(|answer| match answer.as_str() {
+            Some("yes") => Ok(true),
+            Some("no") => Ok(false),
+            _ => Err("choose_optional.answers entries must be exactly yes or no".to_string()),
+        })
+        .collect()
+}
+
+fn take_optional_choice(
+    choices: &mut [VecDeque<bool>; 2],
+    player: PlayerId,
+) -> Result<bool, String> {
+    let player_index = player.0 as usize;
+    if player_index >= choices.len() {
+        return Err("choose_optional prompt has an invalid player".to_string());
+    }
+    if choices[player_index].is_empty() {
+        return Err(if choices.iter().any(|queue| !queue.is_empty()) {
+            "choose_optional answer was queued for a different player".to_string()
+        } else {
+            "optional prompt arrived without a choose_optional answer".to_string()
+        });
+    }
+    choices[player_index]
+        .pop_front()
+        .ok_or_else(|| "optional prompt arrived without a choose_optional answer".to_string())
+}
+
+fn optional_looked_at_exile_target(state: &GameState, source_id: ObjectId) -> Option<TargetFilter> {
+    let frame = state.active_optional_effect_frame()?;
+    if frame.ability.source_id != source_id {
+        return None;
+    }
+    match &frame.ability.effect {
+        Effect::ChangeZone {
+            destination: Zone::Exile,
+            target:
+                target @ (TargetFilter::TrackedSet { .. } | TargetFilter::TrackedSetFiltered { .. }),
+            ..
+        } => Some(target.clone()),
+        Effect::Dig {
+            destination: Some(Zone::Exile),
+            filter,
+            ..
+        } => Some(filter.clone()),
+        _ => None,
+    }
+}
+
+fn optional_looked_at_exile_candidates(
+    state: &GameState,
+    player: PlayerId,
+    source_id: ObjectId,
+    target: &TargetFilter,
+) -> Result<Vec<ObjectId>, String> {
+    let player_state = state
+        .players
+        .get(player.0 as usize)
+        .ok_or("optional looked-at-card choice has an invalid player")?;
+    let context = FilterContext::from_source_with_controller(source_id, player);
+    Ok(player_state
+        .library
+        .iter()
+        .copied()
+        .filter(|id| matches_target_filter(state, *id, target, &context))
+        .collect())
+}
+
+fn ensure_optional_choices_consumed(choices: &[VecDeque<bool>; 2]) -> Result<(), String> {
+    let remaining = choices.iter().map(VecDeque::len).sum::<usize>();
+    if remaining == 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "{remaining} choose_optional answer(s) were unconsumed when the script ended"
+    ))
 }
 
 fn parse_copy_choice(
@@ -2466,6 +2564,7 @@ fn pass_until_resolved(
     sideboard_labels: &HashMap<String, (PlayerId, usize, String)>,
     outside_game_choices: &mut VecDeque<OutsideGameScriptChoice>,
     copy_choices: &mut VecDeque<CopyChoice>,
+    optional_choice_groups: &mut [VecDeque<bool>; 2],
     unless_choice_groups: &mut [VecDeque<UnlessScriptChoice>; 2],
     discard_reconciler: &mut DiscardChoiceReconciler,
     fail_closed_unscripted_prompts: bool,
@@ -2713,6 +2812,90 @@ fn pass_until_resolved(
             }
             WaitingFor::OptionalEffectChoice {
                 player, source_id, ..
+            } if optional_looked_at_exile_target(runner.state(), source_id).is_some() => {
+                let target = optional_looked_at_exile_target(runner.state(), source_id)
+                    .ok_or("optional looked-at-card frame disappeared")?;
+                let group = card_choice_groups.front().ok_or(
+                    "optional looked-at/revealed-card exile prompt arrived without a choose_cards group",
+                )?;
+                let accept = !group.is_empty();
+                let expected_candidates = if accept {
+                    optional_looked_at_exile_candidates(runner.state(), player, source_id, &target)?
+                } else {
+                    Vec::new()
+                };
+                if !accept {
+                    card_choice_groups.pop_front();
+                }
+                discard_reconciler.act(
+                    runner,
+                    GameAction::DecideOptionalEffect { accept },
+                    discard_choice_groups,
+                    labels,
+                )?;
+                if accept {
+                    match runner.state().waiting_for.clone() {
+                        WaitingFor::EffectZoneChoice {
+                            player: choice_player,
+                            cards,
+                            source_id: choice_source,
+                            zone: Zone::Library,
+                            destination: Some(Zone::Exile),
+                            ..
+                        } if choice_player == player && choice_source == source_id => {
+                            let expected =
+                                expected_candidates.iter().copied().collect::<HashSet<_>>();
+                            let offered = cards.iter().copied().collect::<HashSet<_>>();
+                            if expected != offered {
+                                return Err(format!(
+                                    "Phase engine divergence: optional looked-at/revealed-card exile pick offered wrong candidates (expected {expected_candidates:?}, got {cards:?})"
+                                ));
+                            }
+                        }
+                        WaitingFor::DigChoice {
+                            player: choice_player,
+                            cards,
+                            selectable_cards,
+                            ..
+                        } if choice_player == player => {
+                            let context =
+                                FilterContext::from_source_with_controller(source_id, player);
+                            let expected = cards
+                                .iter()
+                                .copied()
+                                .filter(|id| {
+                                    matches_target_filter(runner.state(), *id, &target, &context)
+                                })
+                                .collect::<HashSet<_>>();
+                            let offered = selectable_cards.iter().copied().collect::<HashSet<_>>();
+                            if expected != offered {
+                                return Err(format!(
+                                    "Phase engine divergence: optional looked-at/revealed-card exile pick offered wrong candidates (expected {expected_candidates:?}, got {selectable_cards:?})"
+                                ));
+                            }
+                        }
+                        other => {
+                            return Err(format!(
+                                "Phase engine divergence: accepted optional looked-at/revealed-card exile pick from {source_id:?} but no matching card choice was offered; next prompt: {other:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+            WaitingFor::OptionalEffectChoice { player, .. }
+            | WaitingFor::OpponentMayChoice { player, .. }
+                if optional_choice_groups.iter().any(|queue| !queue.is_empty()) =>
+            {
+                let accept = take_optional_choice(optional_choice_groups, player)?;
+                discard_reconciler.act(
+                    runner,
+                    GameAction::DecideOptionalEffect { accept },
+                    discard_choice_groups,
+                    labels,
+                )?;
+            }
+            WaitingFor::OptionalEffectChoice {
+                player, source_id, ..
             } if runner
                 .state()
                 .objects
@@ -2768,6 +2951,16 @@ fn pass_until_resolved(
                     labels,
                 )?;
             }
+            WaitingFor::OptionalEffectChoice { .. } if !copy_choices.is_empty() => {
+                return Err(
+                    "copy_choice was queued but an optional prompt from another source arrived"
+                        .to_string(),
+                );
+            }
+            optional @ (WaitingFor::OptionalEffectChoice { .. }
+            | WaitingFor::OpponentMayChoice { .. }) => {
+                return Err(format!("unscripted optional prompt: {optional:?}"));
+            }
             WaitingFor::OutsideGameChoice {
                 player,
                 choices,
@@ -2818,12 +3011,6 @@ fn pass_until_resolved(
                     discard_choice_groups,
                     labels,
                 )?;
-            }
-            WaitingFor::OptionalEffectChoice { .. } if !copy_choices.is_empty() => {
-                return Err(
-                    "copy_choice was queued but an optional prompt from another source arrived"
-                        .to_string(),
-                );
             }
             WaitingFor::Priority { .. } if fail_closed_unscripted_prompts => {
                 discard_reconciler.act(
@@ -3090,7 +3277,22 @@ fn activate(
         return Err("activation did not finish target selection".to_string());
     }
     if target_index < target_ids.len() {
-        activation_target_groups.push_back(target_ids[target_index..].to_vec());
+        let expected_targets = target_ids
+            .iter()
+            .copied()
+            .map(TargetRef::Object)
+            .collect::<Vec<_>>();
+        let targets_were_selected_implicitly = runner
+            .state()
+            .stack
+            .iter()
+            .rev()
+            .find(|entry| entry.source_id == source_id && entry.controller == activation_player)
+            .and_then(|entry| entry.ability())
+            .is_some_and(|ability| ability.targets == expected_targets);
+        if !targets_were_selected_implicitly {
+            activation_target_groups.push_back(target_ids[target_index..].to_vec());
+        }
     }
     ensure_activation_cost_prompt_matches_field(alternative_cost, alternative_cost_prompt_seen)?;
     if runner.state().stack.len() <= stack_size {
@@ -3390,6 +3592,7 @@ fn advance_through_combat_damage(
     sideboard_labels: &HashMap<String, (PlayerId, usize, String)>,
     outside_game_choices: &mut VecDeque<OutsideGameScriptChoice>,
     copy_choices: &mut VecDeque<CopyChoice>,
+    optional_choice_groups: &mut [VecDeque<bool>; 2],
     unless_choice_groups: &mut [VecDeque<UnlessScriptChoice>; 2],
     discard_reconciler: &mut DiscardChoiceReconciler,
 ) -> Result<(), String> {
@@ -3434,6 +3637,7 @@ fn advance_through_combat_damage(
                     sideboard_labels,
                     outside_game_choices,
                     copy_choices,
+                    optional_choice_groups,
                     unless_choice_groups,
                     discard_reconciler,
                     true,
@@ -3476,6 +3680,7 @@ fn advance_through_combat_damage(
                     sideboard_labels,
                     outside_game_choices,
                     copy_choices,
+                    optional_choice_groups,
                     unless_choice_groups,
                     discard_reconciler,
                     true,
@@ -4018,6 +4223,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     let mut outside_game_choices = VecDeque::new();
     let mut mana_choice_groups = VecDeque::new();
     let mut copy_choices = VecDeque::new();
+    let mut optional_choice_groups = [VecDeque::new(), VecDeque::new()];
     let mut unless_choice_groups = [VecDeque::new(), VecDeque::new()];
     let mut discard_reconciler = DiscardChoiceReconciler::default();
     let mut attack_needs_resolution = false;
@@ -4061,6 +4267,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     None => runner.state().active_player,
                     Some(value) => parse_script_player(value.as_str(), "cast")?,
                 };
+                let cast_source = cast_from(action)?;
                 if runner.state().priority_player != player {
                     return Err(format!("P{} does not have priority to cast", player.0));
                 }
@@ -4069,7 +4276,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 } else {
                     consume_mana_choice(&mut mana_choice_groups, player, spec)?
                 };
-                let spell = if cast_from(action)? == "hand" {
+                let spell = if cast_source == "hand" {
                     let matches = runner.state().players[player.0 as usize]
                         .hand
                         .iter()
@@ -4093,22 +4300,27 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                         .collect::<Vec<_>>();
                     if expect_refused && matching_labels.len() != 1 {
                         return Err(format!(
-                            "graveyard label {card} must resolve to exactly one card"
+                            "{cast_source} label {card} must resolve to exactly one card"
                         ));
                     }
                     let spell = matching_labels
                         .first()
                         .copied()
-                        .ok_or_else(|| format!("unknown graveyard label {card}"))?;
-                    if !runner.state().players[player.0 as usize]
-                        .graveyard
-                        .contains(&spell)
-                    {
-                        return Err(format!("{card} is not in the active player's graveyard"));
+                        .ok_or_else(|| format!("unknown {cast_source} label {card}"))?;
+                    let player_state = &runner.state().players[player.0 as usize];
+                    let source_contains_spell = match cast_source {
+                        "graveyard" => player_state.graveyard.contains(&spell),
+                        "exile" => runner.state().exile.contains(&spell),
+                        _ => unreachable!("hand casts are handled above"),
+                    };
+                    if !source_contains_spell {
+                        return Err(format!(
+                            "{card} is not in the active player's {cast_source}"
+                        ));
                     }
                     spell
                 };
-                let offered = (expect_refused || cast_from(action)? == "graveyard")
+                let offered = (expect_refused || cast_source != "hand")
                     && engine::ai_support::legal_actions(runner.state())
                         .iter()
                         .any(|candidate| {
@@ -4117,8 +4329,8 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                                 GameAction::CastSpell { object_id, .. } if *object_id == spell
                             )
                         });
-                if !expect_refused && cast_from(action)? == "graveyard" && !offered {
-                    return Err(format!("{card} is not offered as a graveyard cast"));
+                if !expect_refused && cast_source != "hand" && !offered {
+                    return Err(format!("{card} is not offered as a {cast_source} cast"));
                 }
                 let sacrifice_prompt = if expect_refused {
                     None
@@ -4300,6 +4512,10 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
             "copy_choice" => {
                 copy_choices.push_back(parse_copy_choice(action, &labels)?);
             }
+            "choose_optional" => {
+                let answers = parse_optional_answers(action)?;
+                optional_choice_groups[runner.state().active_player.0 as usize].extend(answers);
+            }
             "attack" => {
                 if attack_needs_resolution {
                     return Err("attack must be followed by pass_until_resolved".to_string());
@@ -4353,6 +4569,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     &sideboard_labels,
                     &mut outside_game_choices,
                     &mut copy_choices,
+                    &mut optional_choice_groups,
                     &mut unless_choice_groups,
                     &mut discard_reconciler,
                     attack_through_damage,
@@ -4374,6 +4591,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                             &sideboard_labels,
                             &mut outside_game_choices,
                             &mut copy_choices,
+                            &mut optional_choice_groups,
                             &mut unless_choice_groups,
                             &mut discard_reconciler,
                         )?;
@@ -4407,6 +4625,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     ensure_outside_game_choices_consumed(&outside_game_choices)?;
     ensure_mana_choices_consumed(&mana_choice_groups)?;
     ensure_copy_choices_consumed(&copy_choices)?;
+    ensure_optional_choices_consumed(&optional_choice_groups)?;
     ensure_unless_choice_groups_consumed(&unless_choice_groups)?;
     if attack_needs_resolution {
         return Err("attack action was not followed by pass_until_resolved".to_string());
@@ -4818,6 +5037,7 @@ mod tests {
         let sideboard_labels = HashMap::new();
         let mut outside_game_choices = VecDeque::new();
         let mut copy_choices = VecDeque::new();
+        let mut optional_choices = [VecDeque::new(), VecDeque::new()];
         let mut unless_choices = [VecDeque::new(), VecDeque::new()];
 
         pass_until_resolved(
@@ -4835,6 +5055,7 @@ mod tests {
             &sideboard_labels,
             &mut outside_game_choices,
             &mut copy_choices,
+            &mut optional_choices,
             &mut unless_choices,
             discard_reconciler,
             false,
@@ -4847,6 +5068,53 @@ mod tests {
         assert!(ensure_behold_prompt_matches_field(true, true).is_ok());
         assert!(ensure_behold_prompt_matches_field(true, false).is_err());
         assert!(ensure_behold_prompt_matches_field(false, true).is_err());
+    }
+
+    #[test]
+    fn choose_optional_answers_are_exact_fifo_and_player_scoped() {
+        let answers = parse_optional_answers(&json!({
+            "action": "choose_optional",
+            "answers": ["yes", "no"]
+        }))
+        .unwrap();
+        let mut choices = [VecDeque::from(answers), VecDeque::new()];
+
+        assert!(take_optional_choice(&mut choices, PlayerId(0)).unwrap());
+        assert!(!take_optional_choice(&mut choices, PlayerId(0)).unwrap());
+        assert!(ensure_optional_choices_consumed(&choices).is_ok());
+        assert_eq!(
+            take_optional_choice(&mut choices, PlayerId(1)).unwrap_err(),
+            "optional prompt arrived without a choose_optional answer"
+        );
+
+        let mut wrong_player = [VecDeque::from([true]), VecDeque::new()];
+        assert_eq!(
+            take_optional_choice(&mut wrong_player, PlayerId(1)).unwrap_err(),
+            "choose_optional answer was queued for a different player"
+        );
+        assert!(ensure_optional_choices_consumed(&wrong_player).is_err());
+    }
+
+    #[test]
+    fn choose_optional_rejects_noncanonical_answers_and_unconsumed_answers() {
+        for answer in ["Yes", "NO", "accept", ""] {
+            let action = json!({"action": "choose_optional", "answers": [answer]});
+            assert!(parse_optional_answers(&action).is_err());
+        }
+        assert!(parse_optional_answers(&json!({
+            "action": "choose_optional",
+            "answers": []
+        }))
+        .is_err());
+        assert!(parse_optional_answers(&json!({
+            "action": "choose_optional",
+            "answers": ["yes"],
+            "player": "P0"
+        }))
+        .is_err());
+
+        let choices = [VecDeque::from([true]), VecDeque::new()];
+        assert!(ensure_optional_choices_consumed(&choices).is_err());
     }
 
     #[test]
@@ -5109,21 +5377,28 @@ mod tests {
         let target = TargetRef::Object(ObjectId(17));
         let other = TargetRef::Object(ObjectId(18));
 
+        assert!(validate_cast_target_entries(
+            &[Some(target.clone())],
+            1,
+            std::slice::from_ref(&target)
+        )
+        .is_ok());
         assert!(
-            validate_cast_target_entries(&[Some(target.clone())], 1, &[target.clone()]).is_ok()
+            validate_cast_target_entries(&[Some(other)], 1, std::slice::from_ref(&target)).is_err()
         );
-        assert!(validate_cast_target_entries(&[Some(other)], 1, &[target.clone()]).is_err());
-        assert!(validate_cast_target_entries(&[], 1, &[target.clone()]).is_err());
+        assert!(validate_cast_target_entries(&[], 1, std::slice::from_ref(&target)).is_err());
         assert!(validate_cast_target_entries(
             &[Some(target.clone()), Some(TargetRef::Object(ObjectId(19)))],
             1,
-            &[target.clone()]
+            std::slice::from_ref(&target)
         )
         .is_err());
-        assert!(
-            validate_cast_target_entries(&[None, Some(target.clone())], 2, &[target.clone()])
-                .is_ok()
-        );
+        assert!(validate_cast_target_entries(
+            &[None, Some(target.clone())],
+            2,
+            std::slice::from_ref(&target)
+        )
+        .is_ok());
         assert!(validate_cast_target_entries(&[Some(target.clone()), None], 1, &[target]).is_err());
         let player = TargetRef::Player(PlayerId(1));
         assert!(validate_cast_target_entries(&[Some(player.clone())], 1, &[player]).is_ok());
@@ -5869,6 +6144,7 @@ mod tests {
                 let sideboard_labels = HashMap::new();
                 let mut outside_game_choices = VecDeque::new();
                 let mut copy_choices = VecDeque::new();
+                let mut optional_choices = [VecDeque::new(), VecDeque::new()];
                 let mut unless_choices = [VecDeque::new(), VecDeque::new()];
                 pass_until_resolved(
                     "attack runner test",
@@ -5885,6 +6161,7 @@ mod tests {
                     &sideboard_labels,
                     &mut outside_game_choices,
                     &mut copy_choices,
+                    &mut optional_choices,
                     &mut unless_choices,
                     &mut discard_reconciler,
                     false,
@@ -5931,6 +6208,7 @@ mod tests {
                 let sideboard_labels = HashMap::new();
                 let mut outside_game_choices = VecDeque::new();
                 let mut copy_choices = VecDeque::new();
+                let mut optional_choices = [VecDeque::new(), VecDeque::new()];
                 let mut unless_choices = [VecDeque::new(), VecDeque::new()];
                 pass_until_resolved(
                     "attack through damage test",
@@ -5947,6 +6225,7 @@ mod tests {
                     &sideboard_labels,
                     &mut outside_game_choices,
                     &mut copy_choices,
+                    &mut optional_choices,
                     &mut unless_choices,
                     &mut discard_reconciler,
                     true,
@@ -5967,6 +6246,7 @@ mod tests {
                     &sideboard_labels,
                     &mut outside_game_choices,
                     &mut copy_choices,
+                    &mut optional_choices,
                     &mut unless_choices,
                     &mut discard_reconciler,
                 )
@@ -6689,6 +6969,7 @@ mod tests {
                 ]);
                 let stack_size = runner.state().stack.len();
                 let (mut discard_reconciler, mut discard_choices) = empty_discard_context();
+                let mut activation_targets = VecDeque::new();
 
                 activate(
                     &mut runner,
@@ -6701,7 +6982,7 @@ mod tests {
                     0,
                     false,
                     &mut Vec::new(),
-                    &mut VecDeque::new(),
+                    &mut activation_targets,
                     &mut VecDeque::new(),
                     &json!({}),
                     &mut discard_reconciler,
@@ -6710,6 +6991,17 @@ mod tests {
                 .unwrap();
 
                 assert_eq!(runner.state().stack.len(), stack_size + 1);
+                assert!(activation_targets.is_empty());
+                assert_eq!(
+                    runner
+                        .state()
+                        .stack
+                        .last()
+                        .and_then(|entry| entry.ability())
+                        .unwrap()
+                        .targets,
+                    vec![TargetRef::Object(target)]
+                );
                 assert!(matches!(
                     runner.state().waiting_for,
                     WaitingFor::Priority { .. }
@@ -7358,6 +7650,7 @@ mod surveil_script_choice_tests {
                 let sideboard_labels = HashMap::new();
                 let mut outside_game_choices = VecDeque::new();
                 let mut copy_choices = VecDeque::new();
+                let mut optional_choices = [VecDeque::new(), VecDeque::new()];
                 let mut unless_choices = [VecDeque::new(), VecDeque::new()];
                 let mut discard_reconciler = DiscardChoiceReconciler::default();
 
@@ -7376,6 +7669,7 @@ mod surveil_script_choice_tests {
                     &sideboard_labels,
                     &mut outside_game_choices,
                     &mut copy_choices,
+                    &mut optional_choices,
                     &mut unless_choices,
                     &mut discard_reconciler,
                     false,
@@ -7449,6 +7743,7 @@ mod combat_damage_card_choice_tests {
         let sideboard_labels = HashMap::new();
         let mut outside_game_choices = VecDeque::new();
         let mut copy_choices = VecDeque::new();
+        let mut optional_choices = [VecDeque::new(), VecDeque::new()];
         let mut unless_choices = [VecDeque::new(), VecDeque::new()];
         let mut discard_reconciler = DiscardChoiceReconciler::default();
 
@@ -7467,6 +7762,7 @@ mod combat_damage_card_choice_tests {
             &sideboard_labels,
             &mut outside_game_choices,
             &mut copy_choices,
+            &mut optional_choices,
             &mut unless_choices,
             &mut discard_reconciler,
             true,

@@ -1,0 +1,88 @@
+[[scenarios]]
+name = "F1 exile a creature and cast it"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["selected"] },
+  { action = "cast", player = "P0", card = "Feral Encounter" },
+  { action = "pass_until_resolved" },
+  { action = "cast", player = "P0", card = "selected", from = "exile" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Forest" },
+  { label = "mana.3", card = "Forest" },
+  { label = "mana.4", card = "Forest" },
+]
+hand = ["Feral Encounter"]
+library_top = [
+  { label = "selected", card = "Grizzly Bears" },
+  { label = "rest", card = "Opt" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Grizzly Bears", count = 1 },
+  { zone = "library", player = "P0", card = "Opt", count = 1 },
+]
+
+[[scenarios]]
+name = "F2 decline the optional creature exile"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = [] },
+  { action = "cast", player = "P0", card = "Feral Encounter" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Forest" },
+]
+hand = ["Feral Encounter"]
+library_top = [{ label = "top", card = "Grizzly Bears" }]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "library", player = "P0", card = "Grizzly Bears", count = 1 },
+  { zone = "exile", player = "P0", card = "Grizzly Bears", count = 0 },
+]
+
+[[scenarios]]
+name = "F3 exile one creature with two cards put on the bottom in random order"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["selected"] },
+  { action = "cast", player = "P0", card = "Feral Encounter" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Forest" },
+]
+hand = ["Feral Encounter"]
+library_top = [
+  { label = "selected", card = "Grizzly Bears" },
+  { label = "bottom.one", card = "Opt" },
+  { label = "bottom.two", card = "Opt" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Grizzly Bears", count = 1 },
+  { zone = "library", player = "P0", card = "Opt", count = 2 },
+]

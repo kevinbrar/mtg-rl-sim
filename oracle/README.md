@@ -71,6 +71,20 @@ replacement candidates require an exact scripted selection. These scripted
 choices are FIFO and fail closed when absent, ambiguous, ineligible, or
 unconsumed.
 
+`choose_cards` also scripts optional card picks from looked-at or revealed
+cards: an empty group declines, and a non-empty group accepts and selects the
+listed card(s). XMage maps `LookLibraryAndPickControllerEffect`'s `chooseUse`
+prompt from the acting player's next card-choice group; Phase maps the
+corresponding `OptionalEffectChoice` from that group. Neither runner consumes a
+`choose_optional` answer for this decision.
+
+`choose_optional` queues non-empty FIFO answers of exact `"yes"` or `"no"` for
+the acting player when a decision has no associated card-choice group, such as
+whether to cast an exiled card. Phase consumes them for other
+`OptionalEffectChoice` and `OpponentMayChoice` prompts; XMage maps them to
+`chooseUse`'s literal `Yes`/`No`. Missing, wrong-player, and unconsumed answers
+fail closed. Forge rejects this action as unsupported.
+
 Uldaros Theorix scenarios use `graveyard_targets` to choose up to one card for
 each card-type slot, `choose_copies` to select which copies to cast and their
 order, and `copy_targets` to script targets for copied spells. Both runners
@@ -97,6 +111,9 @@ Cast `targets` accepts setup labels, `@skip` for an optional target slot, and
 the reserved player tokens `@P0` and `@P1`. Player tokens name the scenario's
 two players and must match a legal player target; unknown, illegal, or missing
 targets fail closed in Phase, XMage, and Forge.
+`cast.from` accepts `hand`, `graveyard`, or `exile`. Graveyard and exile casts
+identify the exact setup-labeled card, and the selected engine must offer that
+object as a legal cast from the requested zone.
 
 `expect = "refused"` is valid only on `cast` and `activate` steps. The runners
 preserve normal label, priority, zone, and ability preconditions, attempt the
