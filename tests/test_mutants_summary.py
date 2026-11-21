@@ -67,10 +67,24 @@ def output_dir(path: Path, outcomes: dict, missed: str = "") -> Path:
     return path
 
 
-def run_summary(path: Path, threshold: int = 0, *, no_mutants_ok: bool = False) -> int:
-    args = [str(path), "--threshold", str(threshold)]
-    if no_mutants_ok:
-        args.append("--no-mutants-ok")
+def run_summary(
+    path: Path,
+    threshold: int = 0,
+    *,
+    cargo_mutants_status: int = 0,
+    cargo_mutants_log: str = "",
+) -> int:
+    log_path = path.parent / "cargo-mutants.log"
+    log_path.write_text(cargo_mutants_log, encoding="utf-8")
+    args = [
+        str(path),
+        "--threshold",
+        str(threshold),
+        "--cargo-mutants-status",
+        str(cargo_mutants_status),
+        "--cargo-mutants-log",
+        str(log_path),
+    ]
     return main(args)
 
 
@@ -175,16 +189,53 @@ def test_zero_mutants_passes(
     assert "total=0 caught=0 missed=0" in capsys.readouterr().out
 
 
-def test_missing_outputs_are_zero_only_with_no_mutants_ok(
+def test_empty_shard_passes_when_cargo_mutants_reports_no_selected_mutants(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "mutants"
 
-    assert run_summary(path) == 1
-    assert "::error::cannot read" in capsys.readouterr().err
-
-    assert run_summary(path, no_mutants_ok=True) == 0
+    assert run_summary(path, cargo_mutants_log="Found 0 mutants to test\n") == 0
     assert "Mutants: total=0 caught=0 missed=0" in capsys.readouterr().out
+
+
+def test_no_mutants_to_filter_passes_without_outcome_files(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "mutants"
+
+    assert run_summary(path, cargo_mutants_log="INFO No mutants to filter\n") == 0
+    assert "Mutants: total=0 caught=0 missed=0" in capsys.readouterr().out
+
+
+def test_empty_shard_fails_without_explicit_empty_selection_message(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "mutants"
+
+    assert (
+        run_summary(
+            path,
+            cargo_mutants_log=" WARN No mutants found under the active filters\n",
+        )
+        == 1
+    )
+    assert "without a successful empty-selection report" in capsys.readouterr().err
+
+
+def test_empty_shard_requires_successful_cargo_mutants_exit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "mutants"
+
+    assert (
+        run_summary(
+            path,
+            cargo_mutants_status=2,
+            cargo_mutants_log="Found 0 mutants to test\n",
+        )
+        == 1
+    )
+    assert "without a successful empty-selection report" in capsys.readouterr().err
 
 
 def test_declared_total_must_match_outcome_count(
@@ -215,7 +266,7 @@ def test_missing_outcomes_file_fails(
     path.mkdir()
     (path / "missed.txt").write_text("", encoding="utf-8")
 
-    assert run_summary(path, no_mutants_ok=True) == 1
+    assert run_summary(path, cargo_mutants_log="Found 0 mutants to test\n") == 1
     assert "::error::cannot read" in capsys.readouterr().err
 
 

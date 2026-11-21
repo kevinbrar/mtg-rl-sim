@@ -1340,9 +1340,21 @@ fn resolve_cast_target_slots(
             if label == "@skip" {
                 return Ok(None);
             }
+            if let Some(player) = label.strip_prefix("@P") {
+                let player = match player {
+                    "0" => PlayerId(0),
+                    "1" => PlayerId(1),
+                    _ => {
+                        return Err(format!(
+                            "cast.targets player token {label} must be @P0 or @P1"
+                        ));
+                    }
+                };
+                return Ok(Some(TargetRef::Player(player)));
+            }
             if label.starts_with('@') {
                 return Err(format!(
-                    "cast.targets label {label} uses reserved @ prefix; only @skip is valid"
+                    "cast.targets label {label} uses reserved @ prefix; use @skip, @P0, or @P1"
                 ));
             }
             resolve_label(labels, label)
@@ -3987,7 +3999,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     .get(id)
                     .cloned()
                     .ok_or_else(|| format!("target {:?} has no setup label", id)),
-                TargetRef::Player(_) => Err("player targets are unsupported".to_string()),
+                TargetRef::Player(player) => Ok(format!("@P{}", player.0)),
             })
             .collect::<Result<Vec<_>, _>>()?;
         targets.sort();
@@ -5068,8 +5080,12 @@ mod tests {
         let labels = HashMap::from([(id, "artifact".to_string())]);
 
         assert_eq!(
-            resolve_cast_target_slots(&json!({"targets": ["artifact", "@skip"]}), &labels),
-            Ok(vec![Some(TargetRef::Object(id)), None])
+            resolve_cast_target_slots(&json!({"targets": ["artifact", "@skip", "@P1"]}), &labels),
+            Ok(vec![
+                Some(TargetRef::Object(id)),
+                None,
+                Some(TargetRef::Player(PlayerId(1))),
+            ])
         );
         assert!(
             resolve_cast_target_slots(&json!({"targets": ["missing"]}), &labels)
@@ -5079,7 +5095,12 @@ mod tests {
         assert!(
             resolve_cast_target_slots(&json!({"targets": ["@other"]}), &labels)
                 .unwrap_err()
-                .contains("only @skip is valid")
+                .contains("@skip, @P0, or @P1")
+        );
+        assert!(
+            resolve_cast_target_slots(&json!({"targets": ["@P2"]}), &labels)
+                .unwrap_err()
+                .contains("must be @P0 or @P1")
         );
     }
 
@@ -5104,6 +5125,14 @@ mod tests {
                 .is_ok()
         );
         assert!(validate_cast_target_entries(&[Some(target.clone()), None], 1, &[target]).is_err());
+        let player = TargetRef::Player(PlayerId(1));
+        assert!(validate_cast_target_entries(&[Some(player.clone())], 1, &[player]).is_ok());
+        assert!(validate_cast_target_entries(
+            &[Some(TargetRef::Player(PlayerId(1)))],
+            1,
+            &[TargetRef::Player(PlayerId(0))]
+        )
+        .is_err());
     }
 
     #[test]

@@ -567,13 +567,19 @@ jobs:
           path: runs/
           if-no-files-found: warn
 
-  mutants:
+  mutants-shard:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     env:
       CARGO_INCREMENTAL: 0
-      CARGO_BUILD_JOBS: 2
+      CARGO_BUILD_JOBS: 1
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
       MUTANTS_THRESHOLD_FILE: ${{ github.workspace }}/ci/mutants-threshold.txt
     steps:
       - uses: actions/checkout@v4
@@ -681,6 +687,7 @@ jobs:
           cargo_test_args=()
           if ((${#test_filter[@]} > 0)); then
             cargo_test_args+=(--cargo-test-arg=--)
+            cargo_test_target_args+=(--cargo-arg=--lib)
             if ! target_names="$(python "$GITHUB_WORKSPACE/ci/mutants_test_targets.py" "$HEAD_TREE" "${test_filter[@]}")"; then
               exit 1
             fi
@@ -696,7 +703,8 @@ jobs:
             --colors=never \
             --in-diff "$RUNNER_TEMP/engine-changes.diff" \
             -p phase-engine \
-            --jobs 2 \
+            --jobs 1 \
+            --shard "${{ matrix.shard }}/4" \
             --timeout 60 \
             --build-timeout 1200 \
             --output "$RUNNER_TEMP/mutants.out" \
@@ -711,16 +719,12 @@ jobs:
             echo "::error::ci/mutants-threshold.txt must contain one non-negative integer"
             exit 1
           fi
-          summary_args=()
-          if [[ "$mutants_status" == 0 ]] \
-            && grep -Fq 'INFO No mutants to filter' "$RUNNER_TEMP/mutants.log"; then
-            summary_args+=(--no-mutants-ok)
-          fi
           set +e
           python "$GITHUB_WORKSPACE/ci/mutants_summary.py" \
             "$RUNNER_TEMP/mutants.out/mutants.out" \
             --threshold "$threshold" \
-            "${summary_args[@]}" \
+            --cargo-mutants-status "$mutants_status" \
+            --cargo-mutants-log "$RUNNER_TEMP/mutants.log" \
             2>&1 | tee "$RUNNER_TEMP/mutants-summary.log"
           summary_status=${PIPESTATUS[0]}
           set -e
@@ -736,12 +740,27 @@ jobs:
         if: always() && steps.patch-changes.outputs.changed == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: changed-line-mutation-results
+          name: changed-line-mutation-results-shard-${{ matrix.shard }}-of-4
           path: |
             ${{ runner.temp }}/mutants.out/
             ${{ runner.temp }}/mutants.log
             ${{ runner.temp }}/mutants-summary.log
           if-no-files-found: ignore
+
+  mutants:
+    if: always() && github.event_name == 'pull_request'
+    needs: mutants-shard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce the zero-missed result across all shards
+        env:
+          SHARD_RESULT: ${{ needs.mutants-shard.result }}
+        run: |
+          if [[ "$SHARD_RESULT" != "success" ]]; then
+            echo "::error::Mutants shards did not all pass (matrix result: $SHARD_RESULT)."
+            exit 1
+          fi
+          echo "All Mutants shards passed their per-shard zero-missed gate."
 
   packet-lint:
     if: github.event_name == 'pull_request'

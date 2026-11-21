@@ -1,3 +1,43 @@
+## Patch 0038 — tracked-set zone-choice timing
+
+- Treat a non-target `ChangeZone` selection over an action-scoped
+  `TrackedSetFiltered` (`caused_by: Some(_)`) as a resolution-time choice. Dig
+  selections without an action cause retain their existing choice timing.
+- Add Mind Roots regressions for optional discard, forced discard, declining
+  the land placement, and discarding no land. Controlled A/B evidence shows
+  the broad classifier changed nine records, but only Mind Roots among those
+  has `caused_by: Some(_)`; the other eight, including the three Dig-family
+  cards, have no action cause. The fresh CI-pinned A/B export with the narrowed
+  classifier compared 36,280 records with identical keys and changed only
+  Mind Roots. Evidence: `runs/card-scenarios/mind-roots-final/verification-summary.md`.
+
+## Patch 0039 — cause-tracked set object identity
+
+- Snapshot each cause-tracked member's incarnation and resolve it only while
+  that same object remains in a public zone. This follows CR 400.7/400.7j and
+  608.2c without card-specific handling: Library of Leng's hidden Library
+  replacement is excluded, while Rest in Peace's public Exile replacement is
+  eligible.
+- Keep unread incarnation snapshots out of tracked-set loop-growth comparison;
+  live tracked-set readers already block history coverage. The Archaeomancer /
+  Time Warp corpus regression verifies loop certification remains intact.
+- The Library of Leng Phase integration regression is in
+  `mind_roots_discard_placement.rs`; runtime-only, so no card-data export or pin
+  change. Evidence: `runs/card-scenarios/mind-roots-final/verification-summary.md`.
+
+## Patch 0040 — cause-tracked set mutation regressions
+
+- Exercise the tracked-set comparison window, member-incarnation loop
+  canonicalization, `GameState` equality, and consumed-set cleanup paths with
+  tests selected by the Mind Roots Mutants filter.
+- Remove the duplicate public-object prefilter in target resolution: every
+  candidate already passes through `matches_target_filter`, whose
+  `TrackedSetFiltered` branch is the authority for current identity, public
+  zone, and cause.
+- The direct filter regression covers a current public member, a hidden-zone
+  member, and a stale incarnation. No parser or card-data change is involved.
+  Evidence: `runs/card-scenarios/mind-roots-final/verification-summary.md`.
+
 # Local phase-rs fixes
 
 The phase submodule remains pinned at `988bc3412f5d4e475c1837fbc88062b14d1f5489`.

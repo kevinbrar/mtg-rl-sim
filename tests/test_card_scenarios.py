@@ -296,6 +296,81 @@ battlefield = [{card = "Walking Corpse", label = "@skip"}]
         load_specs([battlefield])
 
 
+def test_load_specs_accepts_reserved_player_targets_for_cast(tmp_path: Path) -> None:
+    spec = tmp_path / "cast-player-targets.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "cast player targets"
+script = [
+  { action = "cast", card = "Mind Roots", targets = ["@P1"] },
+  { action = "cast", card = "Mind Roots", targets = ["@P0"] },
+]
+
+[scenarios.setup.P0]
+hand = ["Mind Roots"]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+    assert [action["targets"] for action in loaded["scenarios"][0]["script"]] == [
+        ["@P1"],
+        ["@P0"],
+    ]
+
+
+def test_load_specs_accepts_repeated_cast_skip_slots(tmp_path: Path) -> None:
+    spec = tmp_path / "cast-skip-targets.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "cast skip targets"
+script = [
+  { action = "cast", card = "Urgent Necropsy", targets = ["@skip", "@skip"] },
+]
+
+[scenarios.setup.P0]
+hand = ["Urgent Necropsy"]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+    assert loaded["scenarios"][0]["script"][0]["targets"] == ["@skip", "@skip"]
+
+
+@pytest.mark.parametrize(
+    ("targets", "message"),
+    [
+        ('["@P2"]', "unsupported reserved target"),
+        ('["missing"]', "unknown setup label"),
+        ('["@P1", "@P1"]', "cannot repeat labels"),
+        ('"@P1"', "must be an array"),
+    ],
+)
+def test_load_specs_rejects_invalid_cast_player_targets(
+    tmp_path: Path, targets: str, message: str
+) -> None:
+    spec = tmp_path / "invalid-cast-player-targets.toml"
+    spec.write_text(
+        f"""
+[[scenarios]]
+name = "invalid cast player target"
+[scenarios.setup.P0]
+hand = ["Mind Roots"]
+[[scenarios.script]]
+action = "cast"
+card = "Mind Roots"
+targets = {targets}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        load_specs([spec])
+
+
 def test_runner_rejects_empty_second_suite_with_file_and_exit_two(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

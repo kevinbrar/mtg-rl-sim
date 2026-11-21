@@ -184,14 +184,27 @@ def _read_missed_lines(path: Path) -> list[str]:
     return lines
 
 
+def _cargo_mutants_reported_empty_selection(path: Path) -> bool:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return False
+    return any(
+        line.strip() in {"Found 0 mutants to test", "INFO No mutants to filter"}
+        for line in lines
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output_dir", type=Path, help="cargo-mutants output directory")
     parser.add_argument("--threshold", type=int, required=True)
+    parser.add_argument("--cargo-mutants-status", type=int, required=True)
     parser.add_argument(
-        "--no-mutants-ok",
-        action="store_true",
-        help="allow absent output files for a confirmed empty mutation set",
+        "--cargo-mutants-log",
+        type=Path,
+        required=True,
+        help="log from the cargo-mutants invocation",
     )
     args = parser.parse_args(argv)
 
@@ -201,9 +214,18 @@ def main(argv: list[str] | None = None) -> int:
 
     outcomes_path = args.output_dir / "outcomes.json"
     missed_path = args.output_dir / "missed.txt"
-    if args.no_mutants_ok and not outcomes_path.exists() and not missed_path.exists():
-        print(MutantSummary().format(), flush=True)
-        return 0
+    if not outcomes_path.exists() and not missed_path.exists():
+        if args.cargo_mutants_status == 0 and _cargo_mutants_reported_empty_selection(
+            args.cargo_mutants_log
+        ):
+            print(MutantSummary().format(), flush=True)
+            return 0
+        print(
+            "::error::cargo mutants produced no outcomes without a successful "
+            "empty-selection report",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         summary = summarize_outcomes(_read_outcomes(args.output_dir))

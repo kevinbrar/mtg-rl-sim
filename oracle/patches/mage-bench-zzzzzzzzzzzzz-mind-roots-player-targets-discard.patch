@@ -1,0 +1,62 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+index 06c001a79eb05ee73520a2f3e6f220287aebe514..29d2ce1955297abb49ab98aa7d675720a99069dc 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -4877,6 +4877,11 @@ public class TestPlayer implements Player {
+             return target.isChosen(game);
+         }
+ 
++        if (min == 0 && selector.getAny().isEmpty()) {
++            target.setSkipChoice(true);
++            return false;
++        }
++
+         List<String> group = takeNextCardChoiceGroup();
+         if (!group.isEmpty() && group.size() < min) {
+             throw new IllegalStateException("card choice group has " + group.size()
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+index 89af781da42bb8cd1c044c9568527265f1cf3461..34d630179423d6e58ae85ffdd6c806a06cd776ea 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -368,10 +368,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                     for (String label : targets) {
+                         if (label.equals("@skip")) {
+                             scriptedTargets.add(TestPlayer.TARGET_SKIP);
++                        } else if (label.equals("@P0") || label.equals("@P1")) {
++                            TestPlayer targetPlayer = player(label.equals("@P0") ? 0 : 1);
++                            scriptedTargets.add("targetPlayer=" + targetPlayer.getName());
+                         } else {
+                             if (label.startsWith("@")) {
+                                 throw new IllegalArgumentException(
+-                                        "cast.targets allows only the reserved @skip token"
++                                        "cast.targets allows only @skip, @P0, or @P1 reserved tokens"
+                                 );
+                             }
+                             if (!labels.containsKey(label)) {
+@@ -541,6 +544,26 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                     }
+                     actingPlayer.addCardChoiceGroup(cards);
+                 }
++                case "choose_discard" -> {
++                    rejectUnknownKeys(action, Set.of("action", "player", "cards"), "script.choose_discard");
++                    String choicePlayer = requiredString(action, "player");
++                    if (!choicePlayer.equals("P0") && !choicePlayer.equals("P1")) {
++                        throw new IllegalArgumentException("choose_discard.player must be P0 or P1");
++                    }
++                    if (!action.has("cards") || !action.get("cards").isJsonArray()) {
++                        throw new IllegalArgumentException("choose_discard needs cards");
++                    }
++                    List<String> cards = strings(action.getAsJsonArray("cards"));
++                    if (Set.copyOf(cards).size() != cards.size()) {
++                        throw new IllegalArgumentException("choose_discard.cards cannot repeat labels");
++                    }
++                    for (String label : cards) {
++                        if (!labels.containsKey(label)) {
++                            throw new IllegalArgumentException("unknown card label " + label);
++                        }
++                    }
++                    player(choicePlayer.equals("P0") ? 0 : 1).addCardChoiceGroup(cards);
++                }
+                 case "activate" -> {
+                     String source = requiredString(action, "source");
+                     String ability = requiredString(action, "ability");
