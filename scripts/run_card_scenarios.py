@@ -52,6 +52,7 @@ REACH_FIELDS = {
     "colors",
     "power",
     "toughness",
+    "damage",
     "power_is_null",
     "toughness_is_null",
     "creature",
@@ -108,6 +109,13 @@ def _validate_reach_fields(
         if reach.get("zone", "graveyard") != "battlefield":
             raise ValueError(
                 f"{name}: {path}.solved is only valid for battlefield Cases"
+            )
+    if "damage" in reach:
+        if type(reach["damage"]) is not int or reach["damage"] < 0:
+            raise ValueError(f"{name}: {path}.damage must be a non-negative integer")
+        if reach.get("zone", "graveyard") != "battlefield":
+            raise ValueError(
+                f"{name}: {path}.damage is only valid for battlefield permanents"
             )
     if "life" in reach:
         if isinstance(reach["life"], bool) or not isinstance(reach["life"], int):
@@ -1115,9 +1123,14 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                 raise ValueError(
                     f"{context} is unsupported by the Forge scenario runner"
                 )
-            unknown = action.keys() - {"action", "answers"}
+            unknown = action.keys() - {"action", "answers", "source"}
             if unknown:
                 raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            source = action.get("source")
+            if source is not None and (
+                not isinstance(source, str) or not source.strip()
+            ):
+                raise ValueError(f"{context}.source must be a non-empty label")
             answers = action.get("answers")
             if not isinstance(answers, list) or not answers:
                 raise ValueError(f"{context}.answers must be a non-empty array")

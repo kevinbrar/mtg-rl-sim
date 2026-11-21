@@ -500,6 +500,28 @@ loyalty = 4
         load_specs([spec])
 
 
+def test_load_specs_accepts_battlefield_damage_reach(tmp_path: Path) -> None:
+    spec = tmp_path / "battlefield-damage-reach.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "battlefield damage reach"
+
+[scenarios.setup.P1]
+battlefield = [{ label = "giant", card = "Hill Giant" }]
+
+[scenarios.reach]
+zone = "battlefield"
+player = "P1"
+card = "Hill Giant"
+damage = 2
+""",
+        encoding="utf-8",
+    )
+
+    assert load_specs([spec])
+
+
 def test_load_specs_accepts_labeled_permanent_reach(tmp_path: Path) -> None:
     spec = tmp_path / "labeled-permanent-reach.toml"
     spec.write_text(
@@ -722,9 +744,10 @@ def test_load_specs_accepts_choose_optional_answers(tmp_path: Path) -> None:
         """
 [[scenarios]]
 name = "optional answer queue"
-script = [{ action = "choose_optional", answers = ["yes", "no"] }]
+script = [{ action = "choose_optional", source = "key", answers = ["yes", "no"] }]
 
 [scenarios.setup.P0]
+battlefield = [{ label = "key", card = "The Key to the Vault" }]
 
 [scenarios.setup.P1]
 """,
@@ -733,7 +756,11 @@ script = [{ action = "choose_optional", answers = ["yes", "no"] }]
 
     loaded = load_specs([spec])
 
-    assert loaded["scenarios"][0]["script"][0]["answers"] == ["yes", "no"]
+    assert loaded["scenarios"][0]["script"][0] == {
+        "action": "choose_optional",
+        "source": "key",
+        "answers": ["yes", "no"],
+    }
 
 
 def test_load_specs_rejects_choose_optional_for_forge(tmp_path: Path) -> None:
@@ -786,6 +813,7 @@ library_top = [{ card = "Grizzly Bears", label = "exiled" }]
         ("answers = []", "non-empty array"),
         ("answers = [1]", "exactly 'yes' or 'no'"),
         ('answers = ["yes"], player = "P0"', "player is unsupported"),
+        ('answers = ["yes"], source = 7', "source must be a non-empty label"),
     ],
 )
 def test_load_specs_rejects_invalid_choose_optional_answers(

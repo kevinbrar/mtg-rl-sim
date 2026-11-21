@@ -1,23 +1,38 @@
+From 9da4f4c1430fcc356bcef3feb35f724f9eb44d35 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sat, 21 Nov 2026 16:56:11 +0000
+Subject: [PATCH] Support looked-at card targets alongside trigger targets
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../java/org/mage/test/player/TestPlayer.java | 125 +++++++++++++++++-
+ .../testapi/CardScenarioProjectionTest.java   | 103 +++++++++++++--
+ 2 files changed, 209 insertions(+), 19 deletions(-)
+
 diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
-index 29d2ce1..98a7032 100644
+index 29d2ce19..23eb63aa 100644
 --- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
 +++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
-@@ -20,5 +20,6 @@ import mage.abilities.costs.mana.ManaCost;
+@@ -20,6 +20,7 @@ import mage.abilities.costs.Costs;
+ import mage.abilities.costs.mana.ManaCost;
  import mage.abilities.costs.mana.ManaCosts;
  import mage.abilities.effects.common.InfoEffect;
 +import mage.abilities.effects.common.LookLibraryAndPickControllerEffect;
  import mage.abilities.mana.ActivatedManaAbilityImpl;
  import mage.abilities.mana.ManaOptions;
  import mage.cards.Card;
-@@ -104,6 +104,7 @@ public class TestPlayer implements Player {
+@@ -104,6 +105,10 @@ public class TestPlayer implements Player {
      //private final Map<PlayerAction, PhaseStep> actionsToRemoveLater = new HashMap<>(); // remove actions after some step (used for AI commands)
      private final Map<Integer, HashMap<UUID, ArrayList<PlayerAction>>> rollbackActions = new HashMap<>(); // actions to add after a executed rollback
      private final List<String> choices = new ArrayList<>(); // choices stack for choice
-+    private final Deque<String> scenarioOptionalAnswers = new ArrayDeque<>();
++    private record ScenarioOptionalAnswer(String answer, UUID sourceId) {
++    }
++
++    private final Deque<ScenarioOptionalAnswer> scenarioOptionalAnswers = new ArrayDeque<>();
      private final List<String> targets = new ArrayList<>(); // targets stack for choose (it's uses on empty direct target by cast command)
      private final List<List<String>> cardChoiceGroups = new ArrayList<>();
      private final List<String> refusalCostPrompts = new ArrayList<>();
-@@ -168,6 +169,7 @@ public class TestPlayer implements Player {
+@@ -168,6 +173,7 @@ public class TestPlayer implements Player {
          this.foundNoAction = testPlayer.foundNoAction;
          this.actions.addAll(testPlayer.actions);
          this.choices.addAll(testPlayer.choices);
@@ -25,18 +40,18 @@ index 29d2ce1..98a7032 100644
          this.targets.addAll(testPlayer.targets);
          testPlayer.cardChoiceGroups.forEach(group -> this.cardChoiceGroups.add(new ArrayList<>(group)));
          this.expectedBeholdSource = testPlayer.expectedBeholdSource;
-@@ -216,6 +218,25 @@ public class TestPlayer implements Player {
+@@ -216,6 +222,25 @@ public class TestPlayer implements Player {
          return this.choices;
      }
  
-+    public void addScenarioOptionalAnswer(String answer) {
++    public void addScenarioOptionalAnswer(String answer, UUID sourceId) {
 +        String mappedAnswer = switch (answer) {
 +            case "yes" -> "Yes";
 +            case "no" -> "No";
 +            default -> throw new IllegalArgumentException(
 +                    "choose_optional answers must be exactly yes or no");
 +        };
-+        scenarioOptionalAnswers.addLast(mappedAnswer);
++        scenarioOptionalAnswers.addLast(new ScenarioOptionalAnswer(mappedAnswer, sourceId));
 +        addChoice(mappedAnswer);
 +    }
 +
@@ -51,7 +66,39 @@ index 29d2ce1..98a7032 100644
      public void setAutoOrderIdenticalTriggers(boolean autoOrderIdenticalTriggers) {
          this.autoOrderIdenticalTriggers = autoOrderIdenticalTriggers;
      }
-@@ -3151,6 +3172,27 @@ public class TestPlayer implements Player {
+@@ -1745,10 +1770,17 @@ public class TestPlayer implements Player {
+         if (sourceId == null) {
+             throw new IllegalArgumentException("scenario spell source id is required");
+         }
+-        Set<Card> sourceCards = zone == Zone.HAND
+-                ? computerPlayer.getHand().getCards(game)
+-                : computerPlayer.getGraveyard().getCards(game);
+-        if (sourceCards.stream().noneMatch(card -> sourceId.equals(card.getId()))) {
++        boolean inSourceZone = switch (zone) {
++            case HAND -> computerPlayer.getHand().getCards(game).stream()
++                    .anyMatch(card -> sourceId.equals(card.getId()));
++            case GRAVEYARD -> computerPlayer.getGraveyard().getCards(game).stream()
++                    .anyMatch(card -> sourceId.equals(card.getId()));
++            case EXILED -> game.getExile().getAllCards(game).stream()
++                    .anyMatch(card -> sourceId.equals(card.getId()));
++            default -> throw new IllegalArgumentException(
++                    "unsupported scenario spell source zone: " + zone);
++        };
++        if (!inSourceZone) {
+             throw new IllegalStateException("scenario spell object is not in " + zone + ": " + sourceId);
+         }
+         List<SpellAbility> matches = computerPlayer.getPlayable(game, true, zone, false).stream()
+@@ -3008,7 +3040,8 @@ public class TestPlayer implements Player {
+             return true;
+         }
+         List<String> scriptedTargets = currentTargetQueue();
+-        if (scriptedTargets.isEmpty() && !cardChoiceGroups.isEmpty()) {
++        if (isLookLibraryAndPickPrompt(source)
++                || scriptedTargets.isEmpty() && !cardChoiceGroups.isEmpty()) {
+             List<String> group = takeNextCardChoiceGroup();
+             int min = target.getMinNumberOfTargets();
+             int max = target.getMaxNumberOfTargets();
+@@ -3151,6 +3184,29 @@ public class TestPlayer implements Player {
              }
              return false;
          }
@@ -67,32 +114,34 @@ index 29d2ce1..98a7032 100644
 +            return true;
 +        }
 +        if (!scenarioOptionalAnswers.isEmpty()) {
-+            String expected = scenarioOptionalAnswers.peekFirst();
++            ScenarioOptionalAnswer scripted = scenarioOptionalAnswers.peekFirst();
++            String expected = scripted.answer();
 +            if (choices.isEmpty() || !choices.get(0).equals(expected)) {
 +                throw new IllegalStateException(
 +                        "choose_optional answer is not next in the chooseUse queue: " + expected);
 +            }
-+            consumeScenarioOptionalAnswer(expected);
++            validateScenarioOptionalSource(scripted, source);
++            consumeScenarioOptionalAnswer(expected, source);
 +            choicesRemoveCurrent(game, source);
 +            return expected.equals("Yes");
 +        }
          if (isFirebenderCopyPrompt(source, game)) {
              FirebenderCopyChoice choice = takeFirebenderCopyChoice(firebenderCopyChoices);
              if (choice.accept() && choice.targetMode() != CopyTargetMode.NONE) {
-@@ -3166,10 +3197,12 @@ public class TestPlayer implements Player {
+@@ -3166,10 +3222,12 @@ public class TestPlayer implements Player {
              String choice = choices.get(0);
  
              if (choice.equals("No")) {
-+                consumeScenarioOptionalAnswer(choice);
++                consumeScenarioOptionalAnswer(choice, source);
                  choicesRemoveCurrent(game, source);
                  return false;
              }
              if (choice.equals("Yes")) {
-+                consumeScenarioOptionalAnswer(choice);
++                consumeScenarioOptionalAnswer(choice, source);
                  choicesRemoveCurrent(game, source);
                  return true;
              }
-@@ -3184,6 +3228,23 @@ public class TestPlayer implements Player {
+@@ -3184,6 +3242,33 @@ public class TestPlayer implements Player {
          return computerPlayer.chooseUse(outcome, message, secondMessage, trueText, falseText, source, game);
      }
  
@@ -101,22 +150,32 @@ index 29d2ce1..98a7032 100644
 +                .anyMatch(LookLibraryAndPickControllerEffect.class::isInstance);
 +    }
 +
-+    private void consumeScenarioOptionalAnswer(String choice) {
++    private void validateScenarioOptionalSource(ScenarioOptionalAnswer choice, Ability source) {
++        UUID actualSourceId = source == null ? null : source.getSourceId();
++        if (choice.sourceId() != null && !choice.sourceId().equals(actualSourceId)) {
++            throw new IllegalStateException(
++                    "choose_optional source mismatch: expected " + choice.sourceId()
++                            + ", got " + actualSourceId);
++        }
++    }
++
++    private void consumeScenarioOptionalAnswer(String answer, Ability source) {
 +        if (scenarioOptionalAnswers.isEmpty()) {
 +            return;
 +        }
-+        String expected = scenarioOptionalAnswers.peekFirst();
-+        if (!expected.equals(choice)) {
++        ScenarioOptionalAnswer scripted = scenarioOptionalAnswers.peekFirst();
++        if (!scripted.answer().equals(answer)) {
 +            throw new IllegalStateException(
-+                    "chooseUse consumed " + choice + " instead of scripted " + expected);
++                    "chooseUse consumed " + answer + " instead of scripted " + scripted.answer());
 +        }
++        validateScenarioOptionalSource(scripted, source);
 +        scenarioOptionalAnswers.removeFirst();
 +    }
 +
      private boolean isFirebenderCopyPrompt(Ability source, Game game) {
          MageObject sourceObject = source == null ? null : source.getSourceObject(game);
          return sourceObject != null && sourceObject.getName().equals("Firebender Ascension");
-@@ -3708,6 +3753,36 @@ public class TestPlayer implements Player {
+@@ -3708,6 +3793,36 @@ public class TestPlayer implements Player {
          }
      }
  
@@ -154,10 +213,35 @@ index 29d2ce1..98a7032 100644
      public boolean playCard(Card card, Game game, boolean noMana, ApprovingObject approvingObject) {
          return computerPlayer.playCard(card, game, noMana, approvingObject);
 diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-index 34d6301..e845dbf 100644
+index 34d63017..3bb43eec 100644
 --- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 +++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-@@ -134,6 +134,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -50,7 +50,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+     private static final String RESULT_PREFIX = "CARD_SCENARIO_RESULT:";
+     private static final Set<String> REACH_FIELDS = Set.of(
+             "all", "player", "life", "zone", "card", "count", "tapped_labels", "types", "subtypes",
+-            "colors", "power", "toughness", "power_is_null", "toughness_is_null", "creature",
++            "colors", "power", "toughness", "damage", "power_is_null", "toughness_is_null", "creature",
+             "tapped", "attached_to", "counters", "solved"
+     );
+     private final String scenarioName;
+@@ -101,10 +101,11 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             throw new IllegalArgumentException("active_player must be 0 or 1");
+         }
+         String stepName = string(scenario, "step", "precombat_main");
+-        if (!stepName.equals("precombat_main")) {
+-            throw new IllegalArgumentException("unsupported step " + stepName);
+-        }
+-        PhaseStep step = PhaseStep.PRECOMBAT_MAIN;
++        PhaseStep step = switch (stepName) {
++            case "precombat_main" -> PhaseStep.PRECOMBAT_MAIN;
++            case "postcombat_main" -> PhaseStep.POSTCOMBAT_MAIN;
++            default -> throw new IllegalArgumentException("unsupported step " + stepName);
++        };
+         TestPlayer active = player(initialActive);
+         activePlayer = active;
+         skipInitShuffling();
+@@ -134,6 +135,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
              player(index).assertNoCardChoiceGroups();
              player(index).assertNoPendingRottenmouthUnlessChoices();
              player(index).assertNoPendingFirebenderCopyChoices();
@@ -165,7 +249,7 @@ index 34d6301..e845dbf 100644
          }
          if (!refusalExecutions.equals(expectedRefusalIndices)
                  || !refusals.equals(expectedRefusalIndices)) {
-@@ -291,8 +292,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -291,8 +293,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
                  case "cast" -> {
                      String card = requiredString(action, "card");
                      String source = action.has("from") ? requiredString(action, "from") : "hand";
@@ -177,7 +261,7 @@ index 34d6301..e845dbf 100644
                      }
                      boolean hasX = action.has("x");
                      int x = hasX ? exactInteger(action.get("x"), "cast.x") : 0;
-@@ -341,6 +343,16 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -341,6 +344,16 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
                                  throw new IllegalStateException(
                                          card + " is not offered as a graveyard cast");
                              }
@@ -194,7 +278,16 @@ index 34d6301..e845dbf 100644
                          } else {
                              spell = actingPlayer.getHand().getCards(game).stream()
                                      .filter(candidate -> candidate.getName().equals(card))
-@@ -392,6 +404,11 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -363,7 +376,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                     if (hasX) {
+                         setChoice(actingPlayer, "X=" + x);
+                     }
+-                    List<String> targets = strings(array(action, "targets"));
++                    List<String> targets = new ArrayList<>(strings(array(action, "targets")));
+                     List<String> scriptedTargets = new ArrayList<>();
+                     for (String label : targets) {
+                         if (label.equals("@skip")) {
+@@ -392,6 +405,11 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
                          UUID sourceId = labels.get(card);
                          runCode("cast labeled graveyard spell", turn, step, actingPlayer,
                                  (info, player, game) -> actingPlayer.castPlayableSpellFromGraveyard(sourceId, game));
@@ -206,25 +299,122 @@ index 34d6301..e845dbf 100644
                      } else {
                          scriptedTargets.forEach(actingPlayer::addTarget);
                          castSpell(turn, step, actingPlayer, card);
-@@ -544,6 +561,21 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -454,12 +472,22 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                     }
+                     for (int index = 0; index < targets.size(); index++) {
+                         String label = targets.get(index);
++                        if (label.equals("@skip")) {
++                            targets.set(index, TestPlayer.TARGET_SKIP);
++                            continue;
++                        }
++                        if (label.startsWith("@")) {
++                            throw new IllegalArgumentException(
++                                    "trigger_targets supports only @skip as a reserved target");
++                        }
+                         if (!labels.containsKey(label)) {
+                             throw new IllegalArgumentException("unknown target label " + label);
+                         }
+                         targets.set(index, "@" + label);
+                     }
+-                    actingPlayer.addTarget(String.join("^", targets));
++                    for (String target : targets) {
++                        actingPlayer.addTarget(target);
++                    }
+                 }
+                 case "copy_choice" -> {
+                     rejectUnknownKeys(action, Set.of("action", "player", "decision", "new_targets"),
+@@ -544,6 +572,29 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
                      }
                      actingPlayer.addCardChoiceGroup(cards);
                  }
 +                case "choose_optional" -> {
-+                    rejectUnknownKeys(action, Set.of("action", "answers"), "script.choose_optional");
++                    rejectUnknownKeys(action, Set.of("action", "answers", "source"), "script.choose_optional");
 +                    if (!action.has("answers") || !action.get("answers").isJsonArray()
 +                            || action.getAsJsonArray("answers").size() == 0) {
 +                        throw new IllegalArgumentException(
 +                                "choose_optional.answers must be a non-empty array");
++                    }
++                    UUID sourceId = null;
++                    if (action.has("source")) {
++                        String sourceLabel = requiredString(action, "source");
++                        sourceId = labels.get(sourceLabel);
++                        if (sourceId == null) {
++                            throw new IllegalArgumentException("unknown source label " + sourceLabel);
++                        }
 +                    }
 +                    for (JsonElement answer : action.getAsJsonArray("answers")) {
 +                        if (!answer.isJsonPrimitive() || !answer.getAsJsonPrimitive().isString()) {
 +                            throw new IllegalArgumentException(
 +                                    "choose_optional.answers entries must be exactly yes or no");
 +                        }
-+                        actingPlayer.addScenarioOptionalAnswer(answer.getAsString());
++                        actingPlayer.addScenarioOptionalAnswer(answer.getAsString(), sourceId);
 +                    }
 +                }
                  case "choose_discard" -> {
                      rejectUnknownKeys(action, Set.of("action", "player", "cards"), "script.choose_discard");
                      String choicePlayer = requiredString(action, "player");
+@@ -693,18 +744,29 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                     actingPlayer.beginScenarioExpectedRefusal(scriptIndex);
+                     try {
+                         if (kind.equals("cast")) {
+-                            Zone zone = sourceZone.equals("graveyard") ? Zone.GRAVEYARD : Zone.HAND;
++                            Zone zone = switch (sourceZone) {
++                                case "graveyard" -> Zone.GRAVEYARD;
++                                case "exile" -> Zone.EXILED;
++                                default -> Zone.HAND;
++                            };
+                             UUID sourceId;
+-                            if (zone == Zone.GRAVEYARD) {
++                            if (zone == Zone.GRAVEYARD || zone == Zone.EXILED) {
+                                 sourceId = labels.get(cardOrSource);
+                                 if (sourceId == null) {
+                                     throw new IllegalStateException(
+                                             cardOrSource + " is not a setup label");
+                                 }
+-                                if (actingPlayer.getGraveyard().getCards(game).stream()
+-                                        .noneMatch(candidate -> sourceId.equals(candidate.getId()))) {
++                                boolean inSourceZone = zone == Zone.GRAVEYARD
++                                        ? actingPlayer.getGraveyard().getCards(game).stream()
++                                                .anyMatch(candidate -> sourceId.equals(candidate.getId()))
++                                        : game.getExile().getAllCards(game).stream()
++                                                .anyMatch(candidate -> sourceId.equals(candidate.getId()));
++                                if (!inSourceZone) {
+                                     throw new IllegalStateException(
+-                                            cardOrSource + " is not in the active player's graveyard");
++                                            zone == Zone.GRAVEYARD
++                                                    ? cardOrSource
++                                                            + " is not in the active player's graveyard"
++                                                    : cardOrSource + " is not in exile");
+                                 }
+                             } else {
+                                 sourceId = actingPlayer.getHand().getCards(game).stream()
+@@ -1106,6 +1168,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         if (!zone.equals("battlefield") && reach.has("counters")) {
+             return false;
+         }
++        if (!zone.equals("battlefield") && reach.has("damage")) {
++            throw new IllegalArgumentException("reach.damage is only valid for battlefield permanents");
++        }
+         if (zone.equals("battlefield")) {
+             long matchingPermanents = currentGame.getBattlefield().getAllActivePermanents().stream()
+                     .filter(candidate -> candidate.getControllerId().equals(player.getId()))
+@@ -1181,6 +1246,16 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                 return false;
+             }
+         }
++        if (reach.has("damage")) {
++            JsonElement expected = reach.get("damage");
++            if (!expected.isJsonPrimitive() || !expected.getAsJsonPrimitive().isNumber()
++                    || expected.getAsLong() < 0 || expected.getAsDouble() != expected.getAsLong()) {
++                throw new IllegalArgumentException("reach.damage must be a non-negative integer");
++            }
++            if (permanent.getDamage() != expected.getAsInt()) {
++                return false;
++            }
++        }
+         if (reach.has("power_is_null")
+                 && reach.get("power_is_null").getAsBoolean()
+                 != (!permanent.isCreature(currentGame) || permanent.getPower() == null)) {
+-- 
+2.56.0
+

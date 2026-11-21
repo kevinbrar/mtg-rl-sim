@@ -1,18 +1,19 @@
-From 4a0b7a788fe53ea5efb5f25d904ae450b41131c7 Mon Sep 17 00:00:00 2001
+From 7f5d6cd3324db7f1fce6f28a7daed3ad37c6217e Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
-Date: Sat, 21 Nov 2026 10:28:39 +0000
-Subject: [PATCH 1/3] Fix Dig-family optional exile resolution
+Date: Sat, 21 Nov 2026 17:04:38 +0000
+Subject: [PATCH] Fix Dig-family optional exile resolution
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
- .../engine/src/game/effects/cast_from_zone.rs |  88 +++++-----
+ .../engine/src/game/effects/cast_from_zone.rs |  88 +++--
  crates/engine/src/game/engine.rs              |  11 +-
- .../integration/dig_family_optional_exile.rs  | 164 ++++++++++++++++++
+ .../src/game/engine_resolution_choices.rs     |  61 +++-
+ .../integration/dig_family_optional_exile.rs  | 310 ++++++++++++++++++
  .../issue_2348_key_to_the_vault.rs            |   8 +-
  crates/engine/tests/integration/main.rs       |   1 +
- .../src/parser/oracle_effect/sequence.rs      |  33 +++-
- .../src/parser/oracle_effect/tests.rs         |  63 +++++++
- 7 files changed, 308 insertions(+), 60 deletions(-)
+ .../src/parser/oracle_effect/sequence.rs      |  61 +++-
+ .../src/parser/oracle_effect/tests.rs         | 123 +++++++
+ 8 files changed, 592 insertions(+), 71 deletions(-)
  create mode 100644 crates/engine/tests/integration/dig_family_optional_exile.rs
 
 diff --git a/crates/engine/src/game/effects/cast_from_zone.rs b/crates/engine/src/game/effects/cast_from_zone.rs
@@ -165,17 +166,113 @@ index ee2abb204..a969c9b53 100644
               readers={readers:#?}"
          );
          assert_eq!(
+diff --git a/crates/engine/src/game/engine_resolution_choices.rs b/crates/engine/src/game/engine_resolution_choices.rs
+index 3d5b9b736..4e53d13cb 100644
+--- a/crates/engine/src/game/engine_resolution_choices.rs
++++ b/crates/engine/src/game/engine_resolution_choices.rs
+@@ -6,10 +6,10 @@ use std::collections::{HashMap, HashSet};
+ use rand::seq::SliceRandom;
+ 
+ use crate::types::ability::{
+-    AbilityCost, ChoiceType, ChosenAttribute, CostPaidObjectSnapshot, DigRestOrder,
+-    DigRestSplitScope, Effect, EffectKind, ForwardedResultContext, GuessOutcome, LibraryPosition,
+-    ParentTargetMissingReason, QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole,
+-    ResolvedAbility, TapCreaturesSelectionMode, TargetRef,
++    effect_requires_parent_target_object, AbilityCost, ChoiceType, ChosenAttribute,
++    CostPaidObjectSnapshot, DigRestOrder, DigRestSplitScope, Effect, EffectKind,
++    ForwardedResultContext, GuessOutcome, LibraryPosition, ParentTargetMissingReason, QuantityExpr,
++    QuantityRef, ReciprocalZoneChoiceRole, ResolvedAbility, TapCreaturesSelectionMode, TargetRef,
+ };
+ use crate::types::actions::{GameAction, LearnOption, OutsideGameSelection};
+ use crate::types::events::GameEvent;
+@@ -75,6 +75,26 @@ fn bind_dig_continuation_targets(chain: &mut ResolvedAbility, selected: &[Object
+     if !node_has_stack_target_declaration(chain) {
+         chain.set_unpinned_targets(selected.iter().copied().map(TargetRef::Object).collect());
+     }
++    bind_dig_parent_target_availability(
++        chain,
++        selected
++            .is_empty()
++            .then_some(ParentTargetMissingReason::Dig),
++    );
++}
++
++fn bind_dig_parent_target_availability(
++    ability: &mut ResolvedAbility,
++    missing: Option<ParentTargetMissingReason>,
++) {
++    if effect_requires_parent_target_object(&ability.effect) {
++        if let Some(missing) = missing {
++            ability.parent_target_missing_reason = Some(missing);
++        }
++    }
++    for (_, child) in ability.child_links_mut() {
++        bind_dig_parent_target_availability(child, missing);
++    }
+ }
+ 
+ /// A fresh mass library-order prompt is valid only for
+@@ -12451,6 +12471,25 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn dig_binding_preserves_an_existing_parent_target_missing_reason() {
++        let mut chain = ResolvedAbility::new(
++            Effect::Draw {
++                count: QuantityExpr::Fixed { value: 1 },
++                target: TargetFilter::ParentTarget,
++            },
++            vec![],
++            ObjectId(3),
++            PlayerId(1),
++        );
++        chain.parent_target_missing_reason = Some(ParentTargetMissingReason::SearchLibrary);
++        bind_dig_continuation_targets(&mut chain, &[ObjectId(10)]);
++        assert_eq!(
++            chain.parent_target_missing_reason,
++            Some(ParentTargetMissingReason::SearchLibrary)
++        );
++    }
++
+     #[test]
+     fn dig_binding_is_node_local_and_paid_instead_head_is_not_an_extra_declaration() {
+         let state = GameState::new_two_player(42);
+@@ -12505,7 +12544,19 @@ mod tests {
+         let declared_chain = owning_head.clone();
+         for result in [vec![ObjectId(10)], vec![]] {
+             bind_dig_continuation_targets(&mut owning_head, &result);
+-            assert_eq!(owning_head, declared_chain);
++            assert_eq!(owning_head.targets, declared_chain.targets);
++            assert_eq!(
++                owning_head.sub_ability.as_deref().unwrap().targets,
++                declared_chain.sub_ability.as_deref().unwrap().targets
++            );
++            assert_eq!(
++                owning_head
++                    .sub_ability
++                    .as_deref()
++                    .unwrap()
++                    .parent_target_missing_reason,
++                result.is_empty().then_some(ParentTargetMissingReason::Dig)
++            );
+         }
+         let mut delegated = child.clone();
+         delegated.condition = Some(AbilityCondition::AdditionalCostPaidInstead);
 diff --git a/crates/engine/tests/integration/dig_family_optional_exile.rs b/crates/engine/tests/integration/dig_family_optional_exile.rs
 new file mode 100644
-index 000000000..68fa42196
+index 000000000..d3379f4bb
 --- /dev/null
 +++ b/crates/engine/tests/integration/dig_family_optional_exile.rs
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,310 @@
 +//! Regression coverage for optional exile picks from looked-at cards.
 +
 +use engine::game::scenario::{GameScenario, P0};
 +use engine::types::actions::GameAction;
 +use engine::types::game_state::WaitingFor;
++use engine::types::identifiers::ObjectId;
++use engine::types::keywords::Keyword;
++use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
 +use engine::types::phase::Phase;
 +use engine::types::zones::Zone;
 +
@@ -193,6 +290,11 @@ index 000000000..68fa42196
 +many cards from the top of your library. You may exile a nonland card from among them. Put the rest \
 +on the bottom of your library in a random order. You may cast the exiled card without paying its \
 +mana cost. Equip {3}{U}";
++
++const DURNAN_ORACLE: &str = "Whenever Durnan attacks, look at the top four cards of your library. \
++You may exile a creature card from among them. Put the rest on the bottom of your library in any \
++order. For as long as that card remains exiled, you may cast it. That spell has undaunted. (It costs \
++{1} less to cast for each opponent.)";
 +
 +#[test]
 +fn feral_encounter_offers_only_creatures_and_randomly_bottoms_the_rest() {
@@ -335,301 +437,6 @@ index 000000000..68fa42196
 +        "the next optional prompt should be the separate cast decision"
 +    );
 +}
-diff --git a/crates/engine/tests/integration/issue_2348_key_to_the_vault.rs b/crates/engine/tests/integration/issue_2348_key_to_the_vault.rs
-index d484554fd..f5e3475da 100644
---- a/crates/engine/tests/integration/issue_2348_key_to_the_vault.rs
-+++ b/crates/engine/tests/integration/issue_2348_key_to_the_vault.rs
-@@ -13,10 +13,10 @@ use engine::types::triggers::TriggerMode;
- 
- use super::rules::run_combat;
- 
--const KEY_ORACLE: &str = "Whenever equipped creature deals combat damage to a player, look at the \
--top X cards of your library, where X is the amount of damage dealt. Exile a nonland card from \
--among them. You may cast that card without paying its mana cost. Put the rest on the bottom of \
--your library in a random order.\nEquip {3}{U}";
-+const KEY_ORACLE: &str = "Whenever equipped creature deals combat damage to a player, look at that \
-+many cards from the top of your library. You may exile a nonland card from among them. Put the rest \
-+on the bottom of your library in a random order. You may cast the exiled card without paying its \
-+mana cost.\nEquip {3}{U}";
- 
- #[test]
- fn key_to_the_vault_parses_equipped_creature_combat_damage_trigger() {
-diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
-index b47af51a3..f2cdc772e 100644
---- a/crates/engine/tests/integration/main.rs
-+++ b/crates/engine/tests/integration/main.rs
-@@ -72,6 +72,7 @@ mod delayed_event_subject_anaphor_snapshot;
- mod delayed_that_many_resolution_scope;
- mod derived_target_carriers;
- mod descendants_fury_sacrificed_referent_4795;
-+mod dig_family_optional_exile;
- mod do_this_only_once_each_turn;
- mod doran_attack_block_pump;
- mod double_strike_first_strike_trigger_removes_attacker;
-diff --git a/crates/phase-parser/src/parser/oracle_effect/sequence.rs b/crates/phase-parser/src/parser/oracle_effect/sequence.rs
-index 74a3ede32..4297407e4 100644
---- a/crates/phase-parser/src/parser/oracle_effect/sequence.rs
-+++ b/crates/phase-parser/src/parser/oracle_effect/sequence.rs
-@@ -7926,10 +7926,14 @@ pub(super) fn parse_dig_from_among(
-         // (a public action) vs "put"/"return" (a private look) so the patch arm can
-         // promote the Dig to `reveal: true` even when the kept card routes to a
-         // fixed destination (Fertile Thicket).
-+        let exile_verb = tag::<_, _, OracleError<'_>>("you may exile ")
-+            .parse(before_from)
-+            .is_ok();
-         let (after_put, reveal_verb) = alt((
-             value(true, tag::<_, _, OracleError<'_>>("you may reveal ")),
-             value(false, tag("you may put ")),
-             value(false, tag("you may return ")),
-+            value(false, tag("you may exile ")),
-             value(false, tag("put ")),
-             value(false, tag("puts ")),
-             value(true, tag("reveal ")),
-@@ -8011,7 +8015,11 @@ pub(super) fn parse_dig_from_among(
-         return Some(ContinuationAst::DigFromAmong {
-             quantity,
-             filter,
--            destination,
-+            destination: if exile_verb {
-+                Some(Zone::Exile)
-+            } else {
-+                destination
-+            },
-             rest_destination,
-             rest_split_top_count: None,
-             rest_order,
-@@ -9539,6 +9547,25 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
-                 rest_order: DigRestOrder::Preserve,
-             })
-         }
-+        // CR 608.2c + CR 701.20e + CR 702.170c-d: a plotted-card permission
-+        // may sit between the optional exile from a looked-at set and its
-+        // remainder instruction (Make Your Own Luck). Bind that remainder to
-+        // the preceding Dig instead of leaving it as a move from Exile.
-+        Effect::GrantCastingPermission {
-+            permission: CastingPermission::Plotted { .. },
-+            ..
-+        } if super::parse_put_rest_destination(&lower).is_some() => {
-+            let destination =
-+                super::parse_put_rest_destination(&lower).expect("guard parsed rest destination");
-+            let rest_order = parse_put_rest_on_bottom_line(&lower)
-+                .map(|(_, order)| order)
-+                .unwrap_or_default();
-+            Some(ContinuationAst::PutRest {
-+                destination,
-+                reorder_all: false,
-+                rest_order,
-+            })
-+        }
-         // CR 406.3 + CR 701.20e: "[then] exile it/them [face down]" after a
-         // private `Dig` (the "look at the top N cards of <player>'s library"
-         // look step). This is the Gonti, Canny Acquisitor impulse idiom —
-@@ -10058,7 +10085,9 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
-                     || nom_primitives::scan_contains(&lower, "into your hand")
-                     || nom_primitives::scan_contains(&lower, "into their hand")
-                     || nom_primitives::scan_contains(&lower, "to your hand")
--                    || nom_primitives::scan_contains(&lower, "to their hand")) =>
-+                    || nom_primitives::scan_contains(&lower, "to their hand")
-+                    || nom_primitives::scan_contains(&lower, "you may exile "))
-+                && !nom_primitives::scan_contains(&lower, "for each card type") =>
-         {
-             parse_dig_from_among(&lower, text, ctx)
-         }
-diff --git a/crates/phase-parser/src/parser/oracle_effect/tests.rs b/crates/phase-parser/src/parser/oracle_effect/tests.rs
-index a2b2683ba..3cf332acf 100644
---- a/crates/phase-parser/src/parser/oracle_effect/tests.rs
-+++ b/crates/phase-parser/src/parser/oracle_effect/tests.rs
-@@ -31148,6 +31148,69 @@ fn parse_exile_card_from_among_them_then_it_becomes_plotted() {
-     );
- }
- 
-+#[test]
-+fn parse_optional_exile_from_dig_routes_random_library_remainder() {
-+    let def = parse_effect_chain(
-+        "Look at the top five cards of your library. You may exile a creature card from among them. Put the rest on the bottom of your library in a random order.",
-+        AbilityKind::Spell,
-+    );
-+    let Effect::Dig {
-+        count,
-+        keep_count,
-+        up_to,
-+        destination,
-+        rest_destination,
-+        rest_order,
-+        ..
-+    } = def.effect.as_ref()
-+    else {
-+        panic!("expected a Dig effect, got {:?}", def.effect);
-+    };
-+    assert_eq!(*count, QuantityExpr::Fixed { value: 5 });
-+    assert_eq!(*keep_count, Some(1));
-+    assert!(*up_to);
-+    assert_eq!(*destination, Some(Zone::Exile));
-+    assert_eq!(*rest_destination, Some(Zone::Library));
-+    assert_eq!(*rest_order, DigRestOrder::Random);
-+    assert!(
-+        def.sub_ability.is_none(),
-+        "the exile selection and random remainder belong to the Dig effect"
-+    );
-+}
-+
-+#[test]
-+fn parse_optional_exile_from_dig_routes_unselected_cards_to_hand() {
-+    let def = parse_effect_chain(
-+        "Look at the top three cards of your library. You may exile a nonland card from among them. If you do, it becomes plotted. Put the rest into your hand.",
-+        AbilityKind::Spell,
-+    );
-+    let Effect::Dig {
-+        count,
-+        keep_count,
-+        up_to,
-+        destination,
-+        rest_destination,
-+        ..
-+    } = def.effect.as_ref()
-+    else {
-+        panic!("expected a Dig effect, got {:?}", def.effect);
-+    };
-+    assert_eq!(*count, QuantityExpr::Fixed { value: 3 });
-+    assert_eq!(*keep_count, Some(1));
-+    assert!(*up_to);
-+    assert_eq!(*destination, Some(Zone::Exile));
-+    assert_eq!(*rest_destination, Some(Zone::Hand));
-+
-+    let grant = def.sub_ability.as_deref().expect("plot grant sub-ability");
-+    assert!(matches!(
-+        grant.effect.as_ref(),
-+        Effect::GrantCastingPermission {
-+            permission: CastingPermission::Plotted { .. },
-+            ..
-+        }
-+    ));
-+}
-+
- /// CR 702.170c-d: the OTJ Plot-grant cards (Make Your Own Luck, Lilah,
- /// Kellan Joins Up, Jace Reawakened) gate the grant behind "If you do," —
- /// "You may exile a card. If you do, it becomes plotted." The optional
--- 
-2.56.0
-
-
-From 0b5f733e07fd762ea75008c6918773fe6e3181da Mon Sep 17 00:00:00 2001
-From: kevinbrar2024 <kevinbrar2024@gmail.com>
-Date: Sat, 21 Nov 2026 13:33:54 +0000
-Subject: [PATCH 2/3] Narrow optional Dig exile continuation
-
-Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
----
- .../src/game/engine_resolution_choices.rs     |  42 +++++-
- .../integration/dig_family_optional_exile.rs  | 140 ++++++++++++++++++
- .../src/parser/oracle_effect/sequence.rs      |  28 +++-
- .../src/parser/oracle_effect/tests.rs         |  60 ++++++++
- 4 files changed, 259 insertions(+), 11 deletions(-)
-
-diff --git a/crates/engine/src/game/engine_resolution_choices.rs b/crates/engine/src/game/engine_resolution_choices.rs
-index 3d5b9b736..25f6e98a2 100644
---- a/crates/engine/src/game/engine_resolution_choices.rs
-+++ b/crates/engine/src/game/engine_resolution_choices.rs
-@@ -6,10 +6,10 @@ use std::collections::{HashMap, HashSet};
- use rand::seq::SliceRandom;
- 
- use crate::types::ability::{
--    AbilityCost, ChoiceType, ChosenAttribute, CostPaidObjectSnapshot, DigRestOrder,
--    DigRestSplitScope, Effect, EffectKind, ForwardedResultContext, GuessOutcome, LibraryPosition,
--    ParentTargetMissingReason, QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole,
--    ResolvedAbility, TapCreaturesSelectionMode, TargetRef,
-+    effect_requires_parent_target_object, AbilityCost, ChoiceType, ChosenAttribute,
-+    CostPaidObjectSnapshot, DigRestOrder, DigRestSplitScope, Effect, EffectKind,
-+    ForwardedResultContext, GuessOutcome, LibraryPosition, ParentTargetMissingReason, QuantityExpr,
-+    QuantityRef, ReciprocalZoneChoiceRole, ResolvedAbility, TapCreaturesSelectionMode, TargetRef,
- };
- use crate::types::actions::{GameAction, LearnOption, OutsideGameSelection};
- use crate::types::events::GameEvent;
-@@ -75,6 +75,24 @@ fn bind_dig_continuation_targets(chain: &mut ResolvedAbility, selected: &[Object
-     if !node_has_stack_target_declaration(chain) {
-         chain.set_unpinned_targets(selected.iter().copied().map(TargetRef::Object).collect());
-     }
-+    bind_dig_parent_target_availability(
-+        chain,
-+        selected
-+            .is_empty()
-+            .then_some(ParentTargetMissingReason::Dig),
-+    );
-+}
-+
-+fn bind_dig_parent_target_availability(
-+    ability: &mut ResolvedAbility,
-+    missing: Option<ParentTargetMissingReason>,
-+) {
-+    if effect_requires_parent_target_object(&ability.effect) {
-+        ability.parent_target_missing_reason = missing;
-+    }
-+    for (_, child) in ability.child_links_mut() {
-+        bind_dig_parent_target_availability(child, missing);
-+    }
- }
- 
- /// A fresh mass library-order prompt is valid only for
-@@ -5348,6 +5366,8 @@ pub(super) fn handle_resolution_choice(
-                 // conditionals on the kept card) bind to the kept selection.
-                 // Hand/bottom/exile tails route via TrackedSetFiltered instead.
-                 bind_dig_continuation_targets(&mut frame.pending.chain, &kept);
-+                frame.pending.chain.parent_target_missing_reason =
-+                    kept.is_empty().then_some(ParentTargetMissingReason::Dig);
-                 if let Some(snapshot) = effect_context_snapshot {
-                     frame
-                         .pending
-@@ -12505,7 +12525,19 @@ mod tests {
-         let declared_chain = owning_head.clone();
-         for result in [vec![ObjectId(10)], vec![]] {
-             bind_dig_continuation_targets(&mut owning_head, &result);
--            assert_eq!(owning_head, declared_chain);
-+            assert_eq!(owning_head.targets, declared_chain.targets);
-+            assert_eq!(
-+                owning_head.sub_ability.as_deref().unwrap().targets,
-+                declared_chain.sub_ability.as_deref().unwrap().targets
-+            );
-+            assert_eq!(
-+                owning_head
-+                    .sub_ability
-+                    .as_deref()
-+                    .unwrap()
-+                    .parent_target_missing_reason,
-+                result.is_empty().then_some(ParentTargetMissingReason::Dig)
-+            );
-         }
-         let mut delegated = child.clone();
-         delegated.condition = Some(AbilityCondition::AdditionalCostPaidInstead);
-diff --git a/crates/engine/tests/integration/dig_family_optional_exile.rs b/crates/engine/tests/integration/dig_family_optional_exile.rs
-index 68fa42196..6777b9df6 100644
---- a/crates/engine/tests/integration/dig_family_optional_exile.rs
-+++ b/crates/engine/tests/integration/dig_family_optional_exile.rs
-@@ -3,6 +3,9 @@
- use engine::game::scenario::{GameScenario, P0};
- use engine::types::actions::GameAction;
- use engine::types::game_state::WaitingFor;
-+use engine::types::identifiers::ObjectId;
-+use engine::types::keywords::Keyword;
-+use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
- use engine::types::phase::Phase;
- use engine::types::zones::Zone;
- 
-@@ -21,6 +24,11 @@ many cards from the top of your library. You may exile a nonland card from among
- on the bottom of your library in a random order. You may cast the exiled card without paying its \
- mana cost. Equip {3}{U}";
- 
-+const DURNAN_ORACLE: &str = "Whenever Durnan attacks, look at the top four cards of your library. \
-+You may exile a creature card from among them. Put the rest on the bottom of your library in any \
-+order. For as long as that card remains exiled, you may cast it. That spell has undaunted. (It costs \
-+{1} less to cast for each opponent.)";
-+
- #[test]
- fn feral_encounter_offers_only_creatures_and_randomly_bottoms_the_rest() {
-     let mut scenario = GameScenario::new();
-@@ -162,3 +170,135 @@ fn key_optional_exile_uses_dig_choice_before_the_cast_decision() {
-         "the next optional prompt should be the separate cast decision"
-     );
- }
 +
 +#[test]
 +fn key_declining_optional_exile_does_not_offer_a_cast_decision() {
@@ -725,7 +532,10 @@ index 68fa42196..6777b9df6 100644
 +    if matches!(runner.state().waiting_for, WaitingFor::Priority { .. }) {
 +        runner.pass_both_players();
 +    }
-+    if matches!(runner.state().waiting_for, WaitingFor::DeclareBlockers { .. }) {
++    if matches!(
++        runner.state().waiting_for,
++        WaitingFor::DeclareBlockers { .. }
++    ) {
 +        runner
 +            .act(GameAction::DeclareBlockers {
 +                assignments: vec![],
@@ -754,7 +564,10 @@ index 68fa42196..6777b9df6 100644
 +        .cast(exiled_creature)
 +        .try_resolve()
 +        .expect("the exile permission must allow casting the creature for its full cost");
-+    assert_eq!(runner.state().objects[&exiled_creature].zone, Zone::Battlefield);
++    assert_eq!(
++        runner.state().objects[&exiled_creature].zone,
++        Zone::Battlefield
++    );
 +    assert!(
 +        runner.state().objects[&durnan]
 +            .keywords
@@ -762,11 +575,96 @@ index 68fa42196..6777b9df6 100644
 +        "the current parser applies Durnan's Undaunted grant to Durnan"
 +    );
 +}
+diff --git a/crates/engine/tests/integration/issue_2348_key_to_the_vault.rs b/crates/engine/tests/integration/issue_2348_key_to_the_vault.rs
+index d484554fd..f5e3475da 100644
+--- a/crates/engine/tests/integration/issue_2348_key_to_the_vault.rs
++++ b/crates/engine/tests/integration/issue_2348_key_to_the_vault.rs
+@@ -13,10 +13,10 @@ use engine::types::triggers::TriggerMode;
+ 
+ use super::rules::run_combat;
+ 
+-const KEY_ORACLE: &str = "Whenever equipped creature deals combat damage to a player, look at the \
+-top X cards of your library, where X is the amount of damage dealt. Exile a nonland card from \
+-among them. You may cast that card without paying its mana cost. Put the rest on the bottom of \
+-your library in a random order.\nEquip {3}{U}";
++const KEY_ORACLE: &str = "Whenever equipped creature deals combat damage to a player, look at that \
++many cards from the top of your library. You may exile a nonland card from among them. Put the rest \
++on the bottom of your library in a random order. You may cast the exiled card without paying its \
++mana cost.\nEquip {3}{U}";
+ 
+ #[test]
+ fn key_to_the_vault_parses_equipped_creature_combat_damage_trigger() {
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index b47af51a3..f2cdc772e 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -72,6 +72,7 @@ mod delayed_event_subject_anaphor_snapshot;
+ mod delayed_that_many_resolution_scope;
+ mod derived_target_carriers;
+ mod descendants_fury_sacrificed_referent_4795;
++mod dig_family_optional_exile;
+ mod do_this_only_once_each_turn;
+ mod doran_attack_block_pump;
+ mod double_strike_first_strike_trigger_removes_attacker;
 diff --git a/crates/phase-parser/src/parser/oracle_effect/sequence.rs b/crates/phase-parser/src/parser/oracle_effect/sequence.rs
-index 4297407e4..a209abb4a 100644
+index 74a3ede32..a209abb4a 100644
 --- a/crates/phase-parser/src/parser/oracle_effect/sequence.rs
 +++ b/crates/phase-parser/src/parser/oracle_effect/sequence.rs
-@@ -10063,17 +10063,16 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
+@@ -7926,10 +7926,14 @@ pub(super) fn parse_dig_from_among(
+         // (a public action) vs "put"/"return" (a private look) so the patch arm can
+         // promote the Dig to `reveal: true` even when the kept card routes to a
+         // fixed destination (Fertile Thicket).
++        let exile_verb = tag::<_, _, OracleError<'_>>("you may exile ")
++            .parse(before_from)
++            .is_ok();
+         let (after_put, reveal_verb) = alt((
+             value(true, tag::<_, _, OracleError<'_>>("you may reveal ")),
+             value(false, tag("you may put ")),
+             value(false, tag("you may return ")),
++            value(false, tag("you may exile ")),
+             value(false, tag("put ")),
+             value(false, tag("puts ")),
+             value(true, tag("reveal ")),
+@@ -8011,7 +8015,11 @@ pub(super) fn parse_dig_from_among(
+         return Some(ContinuationAst::DigFromAmong {
+             quantity,
+             filter,
+-            destination,
++            destination: if exile_verb {
++                Some(Zone::Exile)
++            } else {
++                destination
++            },
+             rest_destination,
+             rest_split_top_count: None,
+             rest_order,
+@@ -9539,6 +9547,25 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
+                 rest_order: DigRestOrder::Preserve,
+             })
+         }
++        // CR 608.2c + CR 701.20e + CR 702.170c-d: a plotted-card permission
++        // may sit between the optional exile from a looked-at set and its
++        // remainder instruction (Make Your Own Luck). Bind that remainder to
++        // the preceding Dig instead of leaving it as a move from Exile.
++        Effect::GrantCastingPermission {
++            permission: CastingPermission::Plotted { .. },
++            ..
++        } if super::parse_put_rest_destination(&lower).is_some() => {
++            let destination =
++                super::parse_put_rest_destination(&lower).expect("guard parsed rest destination");
++            let rest_order = parse_put_rest_on_bottom_line(&lower)
++                .map(|(_, order)| order)
++                .unwrap_or_default();
++            Some(ContinuationAst::PutRest {
++                destination,
++                reorder_all: false,
++                rest_order,
++            })
++        }
+         // CR 406.3 + CR 701.20e: "[then] exile it/them [face down]" after a
+         // private `Dig` (the "look at the top N cards of <player>'s library"
+         // look step). This is the Gonti, Canny Acquisitor impulse idiom —
+@@ -10036,17 +10063,34 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
              Some(ContinuationAst::FaceDownProfileSpec { profile })
          }
          // "Put/return up to N [filter] from among them/those cards onto the
@@ -786,14 +684,6 @@ index 4297407e4..a209abb4a 100644
 +        // below. An optional exile from a mill is not a library Dig and may have
 +        // effect-outcome continuations that this generic route cannot represent.
 +        Effect::Dig { .. }
-             if (nom_primitives::scan_contains(&lower, "from among them")
-                 || nom_primitives::scan_contains(&lower, "from among those cards")
-                 || nom_primitives::scan_contains(&lower, "from among the milled cards")
-@@ -10091,6 +10090,23 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
-         {
-             parse_dig_from_among(&lower, text, ctx)
-         }
-+        Effect::Mill { .. }
 +            if (nom_primitives::scan_contains(&lower, "from among them")
 +                || nom_primitives::scan_contains(&lower, "from among those cards")
 +                || nom_primitives::scan_contains(&lower, "from among the milled cards")
@@ -805,19 +695,101 @@ index 4297407e4..a209abb4a 100644
 +                    || nom_primitives::scan_contains(&lower, "into your hand")
 +                    || nom_primitives::scan_contains(&lower, "into their hand")
 +                    || nom_primitives::scan_contains(&lower, "to your hand")
-+                    || nom_primitives::scan_contains(&lower, "to their hand"))
++                    || nom_primitives::scan_contains(&lower, "to their hand")
++                    || nom_primitives::scan_contains(&lower, "you may exile "))
 +                && !nom_primitives::scan_contains(&lower, "for each card type") =>
 +        {
 +            parse_dig_from_among(&lower, text, ctx)
 +        }
-         // CR 701.33: "[You may] reveal [up to] N <filter> cards from among
-         // them" after Dig — the reveal-only form where the kept cards are NOT
-         // immediately routed to a fixed destination. Used by cards like
++        Effect::Mill { .. }
+             if (nom_primitives::scan_contains(&lower, "from among them")
+                 || nom_primitives::scan_contains(&lower, "from among those cards")
+                 || nom_primitives::scan_contains(&lower, "from among the milled cards")
+@@ -10058,7 +10102,8 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
+                     || nom_primitives::scan_contains(&lower, "into your hand")
+                     || nom_primitives::scan_contains(&lower, "into their hand")
+                     || nom_primitives::scan_contains(&lower, "to your hand")
+-                    || nom_primitives::scan_contains(&lower, "to their hand")) =>
++                    || nom_primitives::scan_contains(&lower, "to their hand"))
++                && !nom_primitives::scan_contains(&lower, "for each card type") =>
+         {
+             parse_dig_from_among(&lower, text, ctx)
+         }
 diff --git a/crates/phase-parser/src/parser/oracle_effect/tests.rs b/crates/phase-parser/src/parser/oracle_effect/tests.rs
-index 3cf332acf..a7bf5c5a0 100644
+index a2b2683ba..a7bf5c5a0 100644
 --- a/crates/phase-parser/src/parser/oracle_effect/tests.rs
 +++ b/crates/phase-parser/src/parser/oracle_effect/tests.rs
-@@ -97756,6 +97756,66 @@ fn mill_from_among_never_gets_the_silent_remainder_rule() {
+@@ -31148,6 +31148,69 @@ fn parse_exile_card_from_among_them_then_it_becomes_plotted() {
+     );
+ }
+ 
++#[test]
++fn parse_optional_exile_from_dig_routes_random_library_remainder() {
++    let def = parse_effect_chain(
++        "Look at the top five cards of your library. You may exile a creature card from among them. Put the rest on the bottom of your library in a random order.",
++        AbilityKind::Spell,
++    );
++    let Effect::Dig {
++        count,
++        keep_count,
++        up_to,
++        destination,
++        rest_destination,
++        rest_order,
++        ..
++    } = def.effect.as_ref()
++    else {
++        panic!("expected a Dig effect, got {:?}", def.effect);
++    };
++    assert_eq!(*count, QuantityExpr::Fixed { value: 5 });
++    assert_eq!(*keep_count, Some(1));
++    assert!(*up_to);
++    assert_eq!(*destination, Some(Zone::Exile));
++    assert_eq!(*rest_destination, Some(Zone::Library));
++    assert_eq!(*rest_order, DigRestOrder::Random);
++    assert!(
++        def.sub_ability.is_none(),
++        "the exile selection and random remainder belong to the Dig effect"
++    );
++}
++
++#[test]
++fn parse_optional_exile_from_dig_routes_unselected_cards_to_hand() {
++    let def = parse_effect_chain(
++        "Look at the top three cards of your library. You may exile a nonland card from among them. If you do, it becomes plotted. Put the rest into your hand.",
++        AbilityKind::Spell,
++    );
++    let Effect::Dig {
++        count,
++        keep_count,
++        up_to,
++        destination,
++        rest_destination,
++        ..
++    } = def.effect.as_ref()
++    else {
++        panic!("expected a Dig effect, got {:?}", def.effect);
++    };
++    assert_eq!(*count, QuantityExpr::Fixed { value: 3 });
++    assert_eq!(*keep_count, Some(1));
++    assert!(*up_to);
++    assert_eq!(*destination, Some(Zone::Exile));
++    assert_eq!(*rest_destination, Some(Zone::Hand));
++
++    let grant = def.sub_ability.as_deref().expect("plot grant sub-ability");
++    assert!(matches!(
++        grant.effect.as_ref(),
++        Effect::GrantCastingPermission {
++            permission: CastingPermission::Plotted { .. },
++            ..
++        }
++    ));
++}
++
+ /// CR 702.170c-d: the OTJ Plot-grant cards (Make Your Own Luck, Lilah,
+ /// Kellan Joins Up, Jace Reawakened) gate the grant behind "If you do," —
+ /// "You may exile a card. If you do, it becomes plotted." The optional
+@@ -97693,6 +97756,66 @@ fn mill_from_among_never_gets_the_silent_remainder_rule() {
      );
  }
  
@@ -884,48 +856,6 @@ index 3cf332acf..a7bf5c5a0 100644
  /// CR 701.20e + CR 608.2c — issue #7754: the STANDALONE entry point.
  ///
  /// `parse_effect_chain` assembles one effect body without the card pipeline
--- 
-2.56.0
-
-
-From 64e1c16a644a395d651637be3aa3d9a22ed62091 Mon Sep 17 00:00:00 2001
-From: kevinbrar2024 <kevinbrar2024@gmail.com>
-Date: Sat, 21 Nov 2026 14:34:32 +0000
-Subject: [PATCH 3/3] Format Durnan integration test
-
-Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
----
- .../tests/integration/dig_family_optional_exile.rs     | 10 ++++++++--
- 1 file changed, 8 insertions(+), 2 deletions(-)
-
-diff --git a/crates/engine/tests/integration/dig_family_optional_exile.rs b/crates/engine/tests/integration/dig_family_optional_exile.rs
-index 6777b9df6..d3379f4bb 100644
---- a/crates/engine/tests/integration/dig_family_optional_exile.rs
-+++ b/crates/engine/tests/integration/dig_family_optional_exile.rs
-@@ -265,7 +265,10 @@ fn durnan_exiled_creature_has_cast_permission_but_undaunted_applies_to_durnan()
-     if matches!(runner.state().waiting_for, WaitingFor::Priority { .. }) {
-         runner.pass_both_players();
-     }
--    if matches!(runner.state().waiting_for, WaitingFor::DeclareBlockers { .. }) {
-+    if matches!(
-+        runner.state().waiting_for,
-+        WaitingFor::DeclareBlockers { .. }
-+    ) {
-         runner
-             .act(GameAction::DeclareBlockers {
-                 assignments: vec![],
-@@ -294,7 +297,10 @@ fn durnan_exiled_creature_has_cast_permission_but_undaunted_applies_to_durnan()
-         .cast(exiled_creature)
-         .try_resolve()
-         .expect("the exile permission must allow casting the creature for its full cost");
--    assert_eq!(runner.state().objects[&exiled_creature].zone, Zone::Battlefield);
-+    assert_eq!(
-+        runner.state().objects[&exiled_creature].zone,
-+        Zone::Battlefield
-+    );
-     assert!(
-         runner.state().objects[&durnan]
-             .keywords
 -- 
 2.56.0
 

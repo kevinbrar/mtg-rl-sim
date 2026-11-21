@@ -111,3 +111,42 @@ all = [
   { zone = "hand", player = "P0", card = "Island", count = 1 },
   { zone = "hand", player = "P0", card = "Divination", count = 1 },
 ]
+
+[[scenarios]]
+name = "MYOL3 refuse to cast the plotted card during the same turn"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["plotted"] },
+  { action = "cast", player = "P0", card = "Make Your Own Luck" },
+  { action = "pass_until_resolved" },
+  { action = "cast", player = "P0", card = "plotted", from = "exile", expect = "refused" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Island" },
+  { label = "mana.3", card = "Plains" },
+  { label = "mana.4", card = "Swamp" },
+  { label = "mana.5", card = "Mountain" },
+]
+hand = ["Make Your Own Luck"]
+library_top = [
+  { label = "plotted", card = "Grizzly Bears" },
+  { label = "hand.nonland", card = "Divination" },
+  { label = "hand.land", card = "Mountain" },
+  { label = "draw.1", card = "Opt" },
+  { label = "draw.2", card = "Opt" },
+  { label = "draw.3", card = "Opt" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Grizzly Bears", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Grizzly Bears", count = 0 },
+  { zone = "hand", player = "P0", card = "Divination", count = 1 },
+  { zone = "hand", player = "P0", card = "Mountain", count = 1 },
+]
