@@ -1,0 +1,430 @@
+From 62023375ce95a7032924cb674ccd706033d0c1ce Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sat, 21 Nov 2026 04:49:18 +0000
+Subject: [PATCH] Test cause-tracked set identity and cleanup paths
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/analysis/resource.rs        |  57 +++++++++
+ crates/engine/src/game/effects/change_zone.rs |  18 ++-
+ crates/engine/src/game/effects/token.rs       |  64 ++++++++++
+ crates/engine/src/game/filter.rs              |  57 +++++++++
+ crates/engine/src/game/targeting.rs           |  26 +----
+ crates/engine/src/types/game_state.rs         | 109 ++++++++++++++++++
+ 6 files changed, 305 insertions(+), 26 deletions(-)
+
+diff --git a/crates/engine/src/analysis/resource.rs b/crates/engine/src/analysis/resource.rs
+index 2bfe9c8a9..16324ecf2 100644
+--- a/crates/engine/src/analysis/resource.rs
++++ b/crates/engine/src/analysis/resource.rs
+@@ -30665,4 +30665,61 @@ mod tests {
+             "unread last-known records for gone objects do not prevent history coverage"
+         );
+     }
++
++    #[test]
++    fn mind_roots_discard_placement_growth_compares_member_incarnations_at_the_window_floor() {
++        use crate::types::ability::{TargetFilter, ThisWayCause};
++        use crate::types::identifiers::TrackedSetId;
++
++        let mut prior = GameState::new_two_player(42);
++        let member = live_graveyard_object(&mut prior, "Member", 10);
++        let existing_set = TrackedSetId(1);
++        prior.tracked_object_sets.insert(existing_set, vec![member]);
++        prior.tracked_set_member_causes.insert(
++            existing_set,
++            [(member, ThisWayCause::Exiled)].into_iter().collect(),
++        );
++        prior
++            .tracked_set_member_incarnations
++            .insert(existing_set, [(member, 9)].into_iter().collect());
++        prior.next_tracked_set_id = 2;
++        prior
++            .delayed_triggers
++            .push(delayed_on(TargetFilter::TrackedSetFiltered {
++                id: existing_set,
++                filter: Box::new(TargetFilter::Any),
++                caused_by: Some(ThisWayCause::Exiled),
++            }));
++        assert!(
++            live_history_reads(&prior).reads(HistoryMember::TrackedSetMemberIncarnations),
++            "the delayed cause-filtered reader keeps member-incarnation state material"
++        );
++
++        let mut changed_existing_member = prior.clone();
++        changed_existing_member
++            .tracked_set_member_incarnations
++            .get_mut(&existing_set)
++            .unwrap()
++            .insert(member, 10);
++        assert!(
++            !eq_except_growable(&prior, &changed_existing_member, &HashSet::new()),
++            "a change to a set below the growth window remains material"
++        );
++
++        let mut grown = prior.clone();
++        let new_set = TrackedSetId(2);
++        grown.tracked_object_sets.insert(new_set, vec![member]);
++        grown.tracked_set_member_causes.insert(
++            new_set,
++            [(member, ThisWayCause::Exiled)].into_iter().collect(),
++        );
++        grown
++            .tracked_set_member_incarnations
++            .insert(new_set, [(member, 10)].into_iter().collect());
++        grown.next_tracked_set_id = 3;
++        assert!(
++            eq_except_growable(&prior, &grown, &HashSet::new()),
++            "a set allocated at the window floor is growth and is stripped before comparison"
++        );
++    }
+ }
+diff --git a/crates/engine/src/game/effects/change_zone.rs b/crates/engine/src/game/effects/change_zone.rs
+index ac2e53e5c..3aaffc604 100644
+--- a/crates/engine/src/game/effects/change_zone.rs
++++ b/crates/engine/src/game/effects/change_zone.rs
+@@ -11611,7 +11611,7 @@ mod tests {
+     /// emitted by the parser, which `resolve_all` must rebind to the most recent
+     /// populated tracked set — otherwise the exiled card is stranded in exile.
+     #[test]
+-    fn change_zone_all_resolves_tracked_set_sentinel_inline() {
++    fn mind_roots_discard_placement_change_zone_all_resolves_tracked_set_sentinel_inline() {
+         let mut state = GameState::new_two_player(42);
+         let exiled = create_object(
+             &mut state,
+@@ -11624,6 +11624,18 @@ mod tests {
+         let set_id = TrackedSetId(state.next_tracked_set_id);
+         state.next_tracked_set_id += 1;
+         state.tracked_object_sets.insert(set_id, vec![exiled]);
++        state.tracked_set_member_causes.insert(
++            set_id,
++            [(exiled, crate::types::ability::ThisWayCause::Exiled)]
++                .into_iter()
++                .collect(),
++        );
++        state.tracked_set_member_incarnations.insert(
++            set_id,
++            [(exiled, state.objects[&exiled].incarnation)]
++                .into_iter()
++                .collect(),
++        );
+ 
+         let ability = ResolvedAbility::new(
+             Effect::ChangeZoneAll {
+@@ -11653,6 +11665,10 @@ mod tests {
+             Zone::Battlefield,
+             "Exiled creature must return to the battlefield when TrackedSetId(0) is resolved"
+         );
++        assert!(
++            !state.tracked_set_member_incarnations.contains_key(&set_id),
++            "consuming the tracked set must also remove its member-incarnation snapshot"
++        );
+     }
+ 
+     /// Zimone's Experiment: tracked-set routing must scan the members' actual zone
+diff --git a/crates/engine/src/game/effects/token.rs b/crates/engine/src/game/effects/token.rs
+index 3748e4275..dc300523d 100644
+--- a/crates/engine/src/game/effects/token.rs
++++ b/crates/engine/src/game/effects/token.rs
+@@ -11365,6 +11365,70 @@ mod tests {
+         let (mut state, ability) = with_gear(attached_to_it);
+         assert_eq!(live_entry_counters(&mut state, &ability), vec![0, 0]);
+     }
++
++    #[test]
++    fn mind_roots_discard_placement_token_consumes_member_incarnation_snapshots() {
++        use crate::types::ability::{QuantityRef, ThisWayCause, TokenAttackDestination};
++        use crate::types::identifiers::TrackedSetId;
++
++        let mut state = GameState::new_two_player(42);
++        let source = create_object(
++            &mut state,
++            CardId(1),
++            PlayerId(0),
++            "Token Maker".to_string(),
++            Zone::Battlefield,
++        );
++        let member = create_object(
++            &mut state,
++            CardId(2),
++            PlayerId(0),
++            "Exiled Member".to_string(),
++            Zone::Exile,
++        );
++        let set = TrackedSetId(1);
++        state.tracked_object_sets.insert(set, vec![member]);
++        state
++            .tracked_set_member_causes
++            .insert(set, [(member, ThisWayCause::Exiled)].into_iter().collect());
++        state.tracked_set_member_incarnations.insert(
++            set,
++            [(member, state.objects[&member].incarnation)]
++                .into_iter()
++                .collect(),
++        );
++        state.next_tracked_set_id = 2;
++        let ability = ResolvedAbility::new(
++            Effect::Token {
++                name: "Goblin".to_string(),
++                power: PtValue::Fixed(1),
++                toughness: PtValue::Fixed(1),
++                types: vec!["Creature".to_string(), "Goblin".to_string()],
++                colors: vec![ManaColor::Red],
++                keywords: vec![],
++                tapped: false,
++                count: QuantityExpr::Ref {
++                    qty: QuantityRef::TrackedSetSize,
++                },
++                owner: TargetFilter::Controller,
++                attach_to: None,
++                enters_attacking: false,
++                attack_destination: TokenAttackDestination::ControllerChooses,
++                supertypes: vec![],
++                static_abilities: vec![],
++                enter_with_counters: vec![],
++            },
++            vec![],
++            source,
++            PlayerId(0),
++        );
++        let mut events = Vec::new();
++        resolve_with_host_override(&mut state, &ability, &mut events, None).unwrap();
++
++        assert_eq!(state.last_created_token_ids.len(), 1);
++        assert!(!state.tracked_object_sets.contains_key(&set));
++        assert!(!state.tracked_set_member_incarnations.contains_key(&set));
++    }
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/engine/src/game/filter.rs b/crates/engine/src/game/filter.rs
+index a01e9fe13..6485cdbd1 100644
+--- a/crates/engine/src/game/filter.rs
++++ b/crates/engine/src/game/filter.rs
+@@ -20302,6 +20302,63 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn mind_roots_discard_placement_filter_rejects_hidden_and_stale_members() {
++        use crate::types::identifiers::TrackedSetId;
++        let mut state = setup();
++        let public = add_creature(&mut state, PlayerId(0), "Public Member");
++        let hidden = create_object(
++            &mut state,
++            CardId(2),
++            PlayerId(0),
++            "Hidden Member".to_string(),
++            Zone::Library,
++        );
++        let stale = add_creature(&mut state, PlayerId(0), "Stale Member");
++        let set = TrackedSetId(1);
++        let members = vec![public, hidden, stale];
++        state.tracked_object_sets.insert(set, members.clone());
++        state.tracked_set_member_causes.insert(
++            set,
++            members
++                .iter()
++                .map(|member| (*member, ThisWayCause::Discarded))
++                .collect(),
++        );
++        state.tracked_set_member_incarnations.insert(
++            set,
++            members
++                .iter()
++                .map(|member| (*member, state.objects[member].incarnation))
++                .collect(),
++        );
++        state.objects.get_mut(&stale).unwrap().incarnation += 1;
++        let filter = TargetFilter::TrackedSetFiltered {
++            id: set,
++            filter: Box::new(TargetFilter::Any),
++            caused_by: Some(ThisWayCause::Discarded),
++        };
++
++        assert!(matches_target_filter(
++            &state,
++            public,
++            &filter,
++            ObjectId(100)
++        ));
++        assert!(!matches_target_filter(
++            &state,
++            hidden,
++            &filter,
++            ObjectId(100)
++        ));
++        assert!(!matches_target_filter(
++            &state,
++            stale,
++            &filter,
++            ObjectId(100)
++        ));
++    }
++
+     /// CR 608.2c + CR 701.26a: a merged chain set holding a destroyed member and
+     /// a tapped member serves "tapped this way" and "destroyed this way"
+     /// disjointly; the cause-agnostic read sees both.
+diff --git a/crates/engine/src/game/targeting.rs b/crates/engine/src/game/targeting.rs
+index eee8f4029..d2538bf8f 100644
+--- a/crates/engine/src/game/targeting.rs
++++ b/crates/engine/src/game/targeting.rs
+@@ -2327,34 +2327,10 @@ pub(crate) fn resolved_object_ids_for_filter_with_context(
+                     .unwrap_or_default(),
+                 _ => state.battlefield.iter().copied().collect(),
+             };
+-            let cause_tracked_set = match &effective_filter {
+-                TargetFilter::TrackedSetFiltered {
+-                    id,
+-                    caused_by: Some(_),
+-                    ..
+-                } => Some(*id),
+-                _ => None,
+-            };
+             target_ids
+                 .into_iter()
+                 .filter(|id| {
+-                    // CR 400.7j + CR 608.2c: follow the object only while it
+-                    // remains the same object in a public zone.
+-                    let same_public_object = cause_tracked_set.is_none_or(|set_id| {
+-                        state
+-                            .tracked_set_member_incarnations
+-                            .get(&set_id)
+-                            .and_then(|members| members.get(id))
+-                            .is_some_and(|incarnation| {
+-                                ObjectIncarnationRef::of(*id, *incarnation).is_current(state)
+-                                    && state
+-                                        .objects
+-                                        .get(id)
+-                                        .is_some_and(|object| object.zone.is_public())
+-                            })
+-                    });
+-                    same_public_object
+-                        && super::filter::matches_target_filter(state, *id, &effective_filter, ctx)
++                    super::filter::matches_target_filter(state, *id, &effective_filter, ctx)
+                 })
+                 .collect()
+         }
+diff --git a/crates/engine/src/types/game_state.rs b/crates/engine/src/types/game_state.rs
+index 71bee3a3b..ef5589840 100644
+--- a/crates/engine/src/types/game_state.rs
++++ b/crates/engine/src/types/game_state.rs
+@@ -49189,6 +49189,115 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn mind_roots_discard_placement_game_state_equality_compares_member_incarnations() {
++        use crate::types::ability::ThisWayCause;
++        use crate::types::identifiers::TrackedSetId;
++
++        let mut prior = GameState::new_two_player(42);
++        let member = crate::game::zones::create_object(
++            &mut prior,
++            CardId(1),
++            PlayerId(0),
++            "Member".to_string(),
++            Zone::Graveyard,
++        );
++        let set = TrackedSetId(1);
++        prior.tracked_object_sets.insert(set, vec![member]);
++        prior.tracked_set_member_causes.insert(
++            set,
++            [(member, ThisWayCause::Discarded)].into_iter().collect(),
++        );
++        prior.next_tracked_set_id = 2;
++        let mut current = prior.clone();
++        current.tracked_set_member_incarnations.insert(
++            set,
++            [(member, current.objects[&member].incarnation)]
++                .into_iter()
++                .collect(),
++        );
++
++        assert_ne!(
++            prior, current,
++            "otherwise identical states differ when a cause-tracked member identity is recorded"
++        );
++    }
++
++    #[test]
++    fn mind_roots_discard_placement_loop_normalization_ranks_member_incarnations() {
++        use crate::types::ability::{
++            Effect, QuantityExpr, ResolvedAbility, TargetFilter, ThisWayCause,
++        };
++        use crate::types::identifiers::TrackedSetId;
++
++        fn state_with_incarnation(
++            current_incarnation: u64,
++            snapshot_incarnation: u64,
++        ) -> GameState {
++            let mut state = GameState::new_two_player(7);
++            let member = crate::game::zones::create_object(
++                &mut state,
++                CardId(1),
++                PlayerId(0),
++                "Member".to_string(),
++                Zone::Graveyard,
++            );
++            state.objects.get_mut(&member).unwrap().incarnation = current_incarnation;
++            let set = TrackedSetId(1);
++            state.tracked_object_sets.insert(set, vec![member]);
++            state.tracked_set_member_causes.insert(
++                set,
++                [(member, ThisWayCause::Discarded)].into_iter().collect(),
++            );
++            state
++                .tracked_set_member_incarnations
++                .insert(set, [(member, snapshot_incarnation)].into_iter().collect());
++            state.next_tracked_set_id = 2;
++
++            let ability = ResolvedAbility::new(
++                Effect::Draw {
++                    count: QuantityExpr::Fixed { value: 1 },
++                    target: TargetFilter::TrackedSetFiltered {
++                        id: set,
++                        filter: Box::new(TargetFilter::Any),
++                        caused_by: Some(ThisWayCause::Discarded),
++                    },
++                },
++                vec![],
++                ObjectId(5),
++                PlayerId(0),
++            );
++            state.stack.push_back(StackEntry {
++                id: ObjectId(20),
++                source_id: ObjectId(5),
++                controller: PlayerId(0),
++                kind: StackEntryKind::TriggeredAbility {
++                    source_id: ObjectId(5),
++                    ability: Box::new(ability),
++                    condition: None,
++                    trigger_event: None,
++                    description: None,
++                    source_name: String::new(),
++                    subject_match_count: None,
++                    die_result: None,
++                    provenance: None,
++                },
++            });
++            state
++        }
++
++        let prior = state_with_incarnation(10, 9);
++        let current = state_with_incarnation(100, 99);
++        assert!(crate::analysis::resource::live_history_reads(&prior)
++            .reads(crate::analysis::resource::HistoryMember::TrackedSetMemberIncarnations));
++        assert_ne!(prior, current);
++        assert_eq!(
++            prior.normalize_for_loop(),
++            current.normalize_for_loop(),
++            "monotone incarnation numbers are canonicalized by their relative identity"
++        );
++    }
++
+     /// CR 104.4b: a replacement-paused counted cost move keeps its earlier
+     /// action fragments' events in `PendingCostMoveResume::Cast`. Those events
+     /// can name an LKI incarnation, so the loop-state normalization must visit
+-- 
+2.56.0
+

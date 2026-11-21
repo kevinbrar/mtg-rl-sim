@@ -25,6 +25,19 @@
   `mind_roots_discard_placement.rs`; runtime-only, so no card-data export or pin
   change. Evidence: `runs/card-scenarios/mind-roots-final/verification-summary.md`.
 
+## Patch 0040 — cause-tracked set mutation regressions
+
+- Exercise the tracked-set comparison window, member-incarnation loop
+  canonicalization, `GameState` equality, and consumed-set cleanup paths with
+  tests selected by the Mind Roots Mutants filter.
+- Remove the duplicate public-object prefilter in target resolution: every
+  candidate already passes through `matches_target_filter`, whose
+  `TrackedSetFiltered` branch is the authority for current identity, public
+  zone, and cause.
+- The direct filter regression covers a current public member, a hidden-zone
+  member, and a stale incarnation. No parser or card-data change is involved.
+  Evidence: `runs/card-scenarios/mind-roots-final/verification-summary.md`.
+
 # Local phase-rs fixes
 
 The phase submodule remains pinned at `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
