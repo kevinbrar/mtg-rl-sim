@@ -1,19 +1,18 @@
-From e417eb21e2ef18594bbca0317d86b5bed5dfe184 Mon Sep 17 00:00:00 2001
+From 4a0b7a788fe53ea5efb5f25d904ae450b41131c7 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
-Date: Sat, 21 Nov 2026 12:20:19 +0000
-Subject: [PATCH] Fix Dig-family optional exile resolution
+Date: Sat, 21 Nov 2026 10:28:39 +0000
+Subject: [PATCH 1/3] Fix Dig-family optional exile resolution
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
- .../engine/src/game/effects/cast_from_zone.rs |  88 ++++---
+ .../engine/src/game/effects/cast_from_zone.rs |  88 +++++-----
  crates/engine/src/game/engine.rs              |  11 +-
- .../src/game/engine_resolution_choices.rs     |  42 +++-
- .../integration/dig_family_optional_exile.rs  | 218 ++++++++++++++++++
+ .../integration/dig_family_optional_exile.rs  | 164 ++++++++++++++++++
  .../issue_2348_key_to_the_vault.rs            |   8 +-
  crates/engine/tests/integration/main.rs       |   1 +
- .../src/parser/oracle_effect/sequence.rs      |  33 ++-
- .../src/parser/oracle_effect/tests.rs         |  63 +++++
- 8 files changed, 399 insertions(+), 65 deletions(-)
+ .../src/parser/oracle_effect/sequence.rs      |  33 +++-
+ .../src/parser/oracle_effect/tests.rs         |  63 +++++++
+ 7 files changed, 308 insertions(+), 60 deletions(-)
  create mode 100644 crates/engine/tests/integration/dig_family_optional_exile.rs
 
 diff --git a/crates/engine/src/game/effects/cast_from_zone.rs b/crates/engine/src/game/effects/cast_from_zone.rs
@@ -166,86 +165,12 @@ index ee2abb204..a969c9b53 100644
               readers={readers:#?}"
          );
          assert_eq!(
-diff --git a/crates/engine/src/game/engine_resolution_choices.rs b/crates/engine/src/game/engine_resolution_choices.rs
-index 3d5b9b736..25f6e98a2 100644
---- a/crates/engine/src/game/engine_resolution_choices.rs
-+++ b/crates/engine/src/game/engine_resolution_choices.rs
-@@ -6,10 +6,10 @@ use std::collections::{HashMap, HashSet};
- use rand::seq::SliceRandom;
- 
- use crate::types::ability::{
--    AbilityCost, ChoiceType, ChosenAttribute, CostPaidObjectSnapshot, DigRestOrder,
--    DigRestSplitScope, Effect, EffectKind, ForwardedResultContext, GuessOutcome, LibraryPosition,
--    ParentTargetMissingReason, QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole,
--    ResolvedAbility, TapCreaturesSelectionMode, TargetRef,
-+    effect_requires_parent_target_object, AbilityCost, ChoiceType, ChosenAttribute,
-+    CostPaidObjectSnapshot, DigRestOrder, DigRestSplitScope, Effect, EffectKind,
-+    ForwardedResultContext, GuessOutcome, LibraryPosition, ParentTargetMissingReason, QuantityExpr,
-+    QuantityRef, ReciprocalZoneChoiceRole, ResolvedAbility, TapCreaturesSelectionMode, TargetRef,
- };
- use crate::types::actions::{GameAction, LearnOption, OutsideGameSelection};
- use crate::types::events::GameEvent;
-@@ -75,6 +75,24 @@ fn bind_dig_continuation_targets(chain: &mut ResolvedAbility, selected: &[Object
-     if !node_has_stack_target_declaration(chain) {
-         chain.set_unpinned_targets(selected.iter().copied().map(TargetRef::Object).collect());
-     }
-+    bind_dig_parent_target_availability(
-+        chain,
-+        selected
-+            .is_empty()
-+            .then_some(ParentTargetMissingReason::Dig),
-+    );
-+}
-+
-+fn bind_dig_parent_target_availability(
-+    ability: &mut ResolvedAbility,
-+    missing: Option<ParentTargetMissingReason>,
-+) {
-+    if effect_requires_parent_target_object(&ability.effect) {
-+        ability.parent_target_missing_reason = missing;
-+    }
-+    for (_, child) in ability.child_links_mut() {
-+        bind_dig_parent_target_availability(child, missing);
-+    }
- }
- 
- /// A fresh mass library-order prompt is valid only for
-@@ -5348,6 +5366,8 @@ pub(super) fn handle_resolution_choice(
-                 // conditionals on the kept card) bind to the kept selection.
-                 // Hand/bottom/exile tails route via TrackedSetFiltered instead.
-                 bind_dig_continuation_targets(&mut frame.pending.chain, &kept);
-+                frame.pending.chain.parent_target_missing_reason =
-+                    kept.is_empty().then_some(ParentTargetMissingReason::Dig);
-                 if let Some(snapshot) = effect_context_snapshot {
-                     frame
-                         .pending
-@@ -12505,7 +12525,19 @@ mod tests {
-         let declared_chain = owning_head.clone();
-         for result in [vec![ObjectId(10)], vec![]] {
-             bind_dig_continuation_targets(&mut owning_head, &result);
--            assert_eq!(owning_head, declared_chain);
-+            assert_eq!(owning_head.targets, declared_chain.targets);
-+            assert_eq!(
-+                owning_head.sub_ability.as_deref().unwrap().targets,
-+                declared_chain.sub_ability.as_deref().unwrap().targets
-+            );
-+            assert_eq!(
-+                owning_head
-+                    .sub_ability
-+                    .as_deref()
-+                    .unwrap()
-+                    .parent_target_missing_reason,
-+                result.is_empty().then_some(ParentTargetMissingReason::Dig)
-+            );
-         }
-         let mut delegated = child.clone();
-         delegated.condition = Some(AbilityCondition::AdditionalCostPaidInstead);
 diff --git a/crates/engine/tests/integration/dig_family_optional_exile.rs b/crates/engine/tests/integration/dig_family_optional_exile.rs
 new file mode 100644
-index 000000000..bff10c784
+index 000000000..68fa42196
 --- /dev/null
 +++ b/crates/engine/tests/integration/dig_family_optional_exile.rs
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,164 @@
 +//! Regression coverage for optional exile picks from looked-at cards.
 +
 +use engine::game::scenario::{GameScenario, P0};
@@ -408,60 +333,6 @@ index 000000000..bff10c784
 +    assert!(
 +        matches!(state.waiting_for, WaitingFor::OptionalEffectChoice { .. }),
 +        "the next optional prompt should be the separate cast decision"
-+    );
-+}
-+
-+#[test]
-+fn key_declining_optional_exile_does_not_offer_a_cast_decision() {
-+    let mut scenario = GameScenario::new();
-+    scenario.at_phase(Phase::PreCombatMain);
-+    let attacker = scenario.add_creature(P0, "Vault Bearer", 3, 3).id();
-+    let key = scenario
-+        .add_creature(P0, "The Key to the Vault", 0, 0)
-+        .as_artifact()
-+        .with_subtypes(vec!["Equipment"])
-+        .from_oracle_text(KEY_ORACLE)
-+        .id();
-+    let cards = [
-+        scenario.add_spell_to_library_top(P0, "Opt", true).id(),
-+        scenario
-+            .add_spell_to_library_top(P0, "Divination", false)
-+            .id(),
-+        scenario.add_land_to_library_top(P0, "Island").id(),
-+    ];
-+    let mut runner = scenario.build();
-+    engine::game::effects::attach::attach_to(runner.state_mut(), key, attacker);
-+    engine::game::layers::evaluate_layers(runner.state_mut());
-+
-+    run_combat(&mut runner, vec![attacker], vec![]);
-+    runner.advance_until_stack_empty();
-+    assert!(matches!(
-+        runner.state().waiting_for,
-+        WaitingFor::DigChoice { .. }
-+    ));
-+    runner
-+        .act(GameAction::SelectCards { cards: vec![] })
-+        .expect("an empty selection declines the optional exile");
-+    runner.advance_until_stack_empty();
-+
-+    let state = runner.state();
-+    assert!(cards
-+        .iter()
-+        .all(|id| state.objects[id].zone == Zone::Library));
-+    let optional_frame = state.active_optional_effect_frame().map(|frame| {
-+        (
-+            &frame.ability.effect,
-+            frame.ability.parent_target_missing_reason,
-+        )
-+    });
-+    assert!(
-+        matches!(
-+            state.waiting_for,
-+            WaitingFor::Priority { player } if player == P0
-+        ),
-+        "expected priority after declining Key's exile choice, got {:?} with frame {:?}",
-+        state.waiting_for,
-+        optional_frame
 +    );
 +}
 diff --git a/crates/engine/tests/integration/issue_2348_key_to_the_vault.rs b/crates/engine/tests/integration/issue_2348_key_to_the_vault.rs
@@ -638,6 +509,423 @@ index a2b2683ba..3cf332acf 100644
  /// CR 702.170c-d: the OTJ Plot-grant cards (Make Your Own Luck, Lilah,
  /// Kellan Joins Up, Jace Reawakened) gate the grant behind "If you do," —
  /// "You may exile a card. If you do, it becomes plotted." The optional
+-- 
+2.56.0
+
+
+From 0b5f733e07fd762ea75008c6918773fe6e3181da Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sat, 21 Nov 2026 13:33:54 +0000
+Subject: [PATCH 2/3] Narrow optional Dig exile continuation
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../src/game/engine_resolution_choices.rs     |  42 +++++-
+ .../integration/dig_family_optional_exile.rs  | 140 ++++++++++++++++++
+ .../src/parser/oracle_effect/sequence.rs      |  28 +++-
+ .../src/parser/oracle_effect/tests.rs         |  60 ++++++++
+ 4 files changed, 259 insertions(+), 11 deletions(-)
+
+diff --git a/crates/engine/src/game/engine_resolution_choices.rs b/crates/engine/src/game/engine_resolution_choices.rs
+index 3d5b9b736..25f6e98a2 100644
+--- a/crates/engine/src/game/engine_resolution_choices.rs
++++ b/crates/engine/src/game/engine_resolution_choices.rs
+@@ -6,10 +6,10 @@ use std::collections::{HashMap, HashSet};
+ use rand::seq::SliceRandom;
+ 
+ use crate::types::ability::{
+-    AbilityCost, ChoiceType, ChosenAttribute, CostPaidObjectSnapshot, DigRestOrder,
+-    DigRestSplitScope, Effect, EffectKind, ForwardedResultContext, GuessOutcome, LibraryPosition,
+-    ParentTargetMissingReason, QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole,
+-    ResolvedAbility, TapCreaturesSelectionMode, TargetRef,
++    effect_requires_parent_target_object, AbilityCost, ChoiceType, ChosenAttribute,
++    CostPaidObjectSnapshot, DigRestOrder, DigRestSplitScope, Effect, EffectKind,
++    ForwardedResultContext, GuessOutcome, LibraryPosition, ParentTargetMissingReason, QuantityExpr,
++    QuantityRef, ReciprocalZoneChoiceRole, ResolvedAbility, TapCreaturesSelectionMode, TargetRef,
+ };
+ use crate::types::actions::{GameAction, LearnOption, OutsideGameSelection};
+ use crate::types::events::GameEvent;
+@@ -75,6 +75,24 @@ fn bind_dig_continuation_targets(chain: &mut ResolvedAbility, selected: &[Object
+     if !node_has_stack_target_declaration(chain) {
+         chain.set_unpinned_targets(selected.iter().copied().map(TargetRef::Object).collect());
+     }
++    bind_dig_parent_target_availability(
++        chain,
++        selected
++            .is_empty()
++            .then_some(ParentTargetMissingReason::Dig),
++    );
++}
++
++fn bind_dig_parent_target_availability(
++    ability: &mut ResolvedAbility,
++    missing: Option<ParentTargetMissingReason>,
++) {
++    if effect_requires_parent_target_object(&ability.effect) {
++        ability.parent_target_missing_reason = missing;
++    }
++    for (_, child) in ability.child_links_mut() {
++        bind_dig_parent_target_availability(child, missing);
++    }
+ }
+ 
+ /// A fresh mass library-order prompt is valid only for
+@@ -5348,6 +5366,8 @@ pub(super) fn handle_resolution_choice(
+                 // conditionals on the kept card) bind to the kept selection.
+                 // Hand/bottom/exile tails route via TrackedSetFiltered instead.
+                 bind_dig_continuation_targets(&mut frame.pending.chain, &kept);
++                frame.pending.chain.parent_target_missing_reason =
++                    kept.is_empty().then_some(ParentTargetMissingReason::Dig);
+                 if let Some(snapshot) = effect_context_snapshot {
+                     frame
+                         .pending
+@@ -12505,7 +12525,19 @@ mod tests {
+         let declared_chain = owning_head.clone();
+         for result in [vec![ObjectId(10)], vec![]] {
+             bind_dig_continuation_targets(&mut owning_head, &result);
+-            assert_eq!(owning_head, declared_chain);
++            assert_eq!(owning_head.targets, declared_chain.targets);
++            assert_eq!(
++                owning_head.sub_ability.as_deref().unwrap().targets,
++                declared_chain.sub_ability.as_deref().unwrap().targets
++            );
++            assert_eq!(
++                owning_head
++                    .sub_ability
++                    .as_deref()
++                    .unwrap()
++                    .parent_target_missing_reason,
++                result.is_empty().then_some(ParentTargetMissingReason::Dig)
++            );
+         }
+         let mut delegated = child.clone();
+         delegated.condition = Some(AbilityCondition::AdditionalCostPaidInstead);
+diff --git a/crates/engine/tests/integration/dig_family_optional_exile.rs b/crates/engine/tests/integration/dig_family_optional_exile.rs
+index 68fa42196..6777b9df6 100644
+--- a/crates/engine/tests/integration/dig_family_optional_exile.rs
++++ b/crates/engine/tests/integration/dig_family_optional_exile.rs
+@@ -3,6 +3,9 @@
+ use engine::game::scenario::{GameScenario, P0};
+ use engine::types::actions::GameAction;
+ use engine::types::game_state::WaitingFor;
++use engine::types::identifiers::ObjectId;
++use engine::types::keywords::Keyword;
++use engine::types::mana::{ManaCost, ManaCostShard, ManaType, ManaUnit};
+ use engine::types::phase::Phase;
+ use engine::types::zones::Zone;
+ 
+@@ -21,6 +24,11 @@ many cards from the top of your library. You may exile a nonland card from among
+ on the bottom of your library in a random order. You may cast the exiled card without paying its \
+ mana cost. Equip {3}{U}";
+ 
++const DURNAN_ORACLE: &str = "Whenever Durnan attacks, look at the top four cards of your library. \
++You may exile a creature card from among them. Put the rest on the bottom of your library in any \
++order. For as long as that card remains exiled, you may cast it. That spell has undaunted. (It costs \
++{1} less to cast for each opponent.)";
++
+ #[test]
+ fn feral_encounter_offers_only_creatures_and_randomly_bottoms_the_rest() {
+     let mut scenario = GameScenario::new();
+@@ -162,3 +170,135 @@ fn key_optional_exile_uses_dig_choice_before_the_cast_decision() {
+         "the next optional prompt should be the separate cast decision"
+     );
+ }
++
++#[test]
++fn key_declining_optional_exile_does_not_offer_a_cast_decision() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let attacker = scenario.add_creature(P0, "Vault Bearer", 3, 3).id();
++    let key = scenario
++        .add_creature(P0, "The Key to the Vault", 0, 0)
++        .as_artifact()
++        .with_subtypes(vec!["Equipment"])
++        .from_oracle_text(KEY_ORACLE)
++        .id();
++    let cards = [
++        scenario.add_spell_to_library_top(P0, "Opt", true).id(),
++        scenario
++            .add_spell_to_library_top(P0, "Divination", false)
++            .id(),
++        scenario.add_land_to_library_top(P0, "Island").id(),
++    ];
++    let mut runner = scenario.build();
++    engine::game::effects::attach::attach_to(runner.state_mut(), key, attacker);
++    engine::game::layers::evaluate_layers(runner.state_mut());
++
++    run_combat(&mut runner, vec![attacker], vec![]);
++    runner.advance_until_stack_empty();
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::DigChoice { .. }
++    ));
++    runner
++        .act(GameAction::SelectCards { cards: vec![] })
++        .expect("an empty selection declines the optional exile");
++    runner.advance_until_stack_empty();
++
++    let state = runner.state();
++    assert!(cards
++        .iter()
++        .all(|id| state.objects[id].zone == Zone::Library));
++    let optional_frame = state.active_optional_effect_frame().map(|frame| {
++        (
++            &frame.ability.effect,
++            frame.ability.parent_target_missing_reason,
++        )
++    });
++    assert!(
++        matches!(
++            state.waiting_for,
++            WaitingFor::Priority { player } if player == P0
++        ),
++        "expected priority after declining Key's exile choice, got {:?} with frame {:?}",
++        state.waiting_for,
++        optional_frame
++    );
++}
++
++#[test]
++fn durnan_exiled_creature_has_cast_permission_but_undaunted_applies_to_durnan() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let durnan = scenario
++        .add_creature(P0, "Durnan of the Yawning Portal", 3, 3)
++        .from_oracle_text(DURNAN_ORACLE)
++        .id();
++    let exiled_creature = scenario
++        .add_spell_to_library_top(P0, "Grizzly Bears", false)
++        .as_creature()
++        .with_mana_cost(ManaCost::Cost {
++            shards: vec![ManaCostShard::Green],
++            generic: 1,
++        })
++        .id();
++    let mut runner = scenario.build();
++
++    run_combat(&mut runner, vec![durnan], vec![]);
++    runner.advance_until_stack_empty();
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::DigChoice { .. }
++    ));
++    runner
++        .act(GameAction::SelectCards {
++            cards: vec![exiled_creature],
++        })
++        .expect("selecting Durnan's creature card must succeed");
++    if let WaitingFor::DigBottomOrder { cards, .. } = runner.state().waiting_for.clone() {
++        runner
++            .act(GameAction::SelectCards { cards })
++            .expect("ordering Durnan's remaining cards must succeed");
++    }
++    runner.advance_until_stack_empty();
++    assert_eq!(runner.state().objects[&exiled_creature].zone, Zone::Exile);
++
++    if matches!(runner.state().waiting_for, WaitingFor::Priority { .. }) {
++        runner.pass_both_players();
++    }
++    if matches!(runner.state().waiting_for, WaitingFor::DeclareBlockers { .. }) {
++        runner
++            .act(GameAction::DeclareBlockers {
++                assignments: vec![],
++            })
++            .expect("the opponent has no blockers");
++    }
++    if matches!(runner.state().waiting_for, WaitingFor::Priority { .. }) {
++        runner.pass_both_players();
++    }
++    runner.advance_to_phase(Phase::PostCombatMain);
++    assert_eq!(runner.state().phase, Phase::PostCombatMain);
++    runner.state_mut().add_mana_to_pool(
++        P0,
++        ManaUnit::new(ManaType::Green, ObjectId(0), false, vec![]),
++    );
++    let underfunded = runner.cast(exiled_creature).try_resolve();
++    assert!(
++        underfunded.is_err(),
++        "Durnan's parsed Undaunted grant currently does not reduce the spell's generic cost"
++    );
++    runner.state_mut().add_mana_to_pool(
++        P0,
++        ManaUnit::new(ManaType::Green, ObjectId(0), false, vec![]),
++    );
++    runner
++        .cast(exiled_creature)
++        .try_resolve()
++        .expect("the exile permission must allow casting the creature for its full cost");
++    assert_eq!(runner.state().objects[&exiled_creature].zone, Zone::Battlefield);
++    assert!(
++        runner.state().objects[&durnan]
++            .keywords
++            .contains(&Keyword::Undaunted),
++        "the current parser applies Durnan's Undaunted grant to Durnan"
++    );
++}
+diff --git a/crates/phase-parser/src/parser/oracle_effect/sequence.rs b/crates/phase-parser/src/parser/oracle_effect/sequence.rs
+index 4297407e4..a209abb4a 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/sequence.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/sequence.rs
+@@ -10063,17 +10063,16 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
+             Some(ContinuationAst::FaceDownProfileSpec { profile })
+         }
+         // "Put/return up to N [filter] from among them/those cards onto the
+-        // battlefield/into your hand/to your hand"
++        // battlefield/into your hand/to your hand" after a look or mill.
+         // and "put N of them into your hand [and the rest on the bottom]"
+         // after Dig — patches keep_count, filter, destination on the preceding Dig effect.
+         //
+         // CR 701.17c: An effect that refers to a milled card finds it in the
+         // zone it moved to. "...from among the milled cards" after a `Mill`
+-        // is the same "from among [a prior selection set]" continuation as the
+-        // Dig form — `parse_dig_from_among` returns a `DigFromAmong`
+-        // continuation which, in `apply_clause_continuation`, pushes a
+-        // `TrackedSetFiltered`-targeted sub-ability when the source is a `Mill`.
+-        Effect::Dig { .. } | Effect::Mill { .. }
++        // with a hand/battlefield destination uses the tracked-set continuation
++        // below. An optional exile from a mill is not a library Dig and may have
++        // effect-outcome continuations that this generic route cannot represent.
++        Effect::Dig { .. }
+             if (nom_primitives::scan_contains(&lower, "from among them")
+                 || nom_primitives::scan_contains(&lower, "from among those cards")
+                 || nom_primitives::scan_contains(&lower, "from among the milled cards")
+@@ -10091,6 +10090,23 @@ pub(super) fn parse_followup_continuation_ast_with_search_destination(
+         {
+             parse_dig_from_among(&lower, text, ctx)
+         }
++        Effect::Mill { .. }
++            if (nom_primitives::scan_contains(&lower, "from among them")
++                || nom_primitives::scan_contains(&lower, "from among those cards")
++                || nom_primitives::scan_contains(&lower, "from among the milled cards")
++                || nom_primitives::scan_contains(&lower, "milled this way")
++                || nom_primitives::scan_contains(&lower, "of them")
++                || nom_primitives::scan_contains(&lower, "of those cards")
++                || nom_primitives::scan_contains(&lower, "of those"))
++                && (nom_primitives::scan_contains(&lower, "onto the battlefield")
++                    || nom_primitives::scan_contains(&lower, "into your hand")
++                    || nom_primitives::scan_contains(&lower, "into their hand")
++                    || nom_primitives::scan_contains(&lower, "to your hand")
++                    || nom_primitives::scan_contains(&lower, "to their hand"))
++                && !nom_primitives::scan_contains(&lower, "for each card type") =>
++        {
++            parse_dig_from_among(&lower, text, ctx)
++        }
+         // CR 701.33: "[You may] reveal [up to] N <filter> cards from among
+         // them" after Dig — the reveal-only form where the kept cards are NOT
+         // immediately routed to a fixed destination. Used by cards like
+diff --git a/crates/phase-parser/src/parser/oracle_effect/tests.rs b/crates/phase-parser/src/parser/oracle_effect/tests.rs
+index 3cf332acf..a7bf5c5a0 100644
+--- a/crates/phase-parser/src/parser/oracle_effect/tests.rs
++++ b/crates/phase-parser/src/parser/oracle_effect/tests.rs
+@@ -97756,6 +97756,66 @@ fn mill_from_among_never_gets_the_silent_remainder_rule() {
+     );
+ }
+ 
++#[test]
++fn shadow_kin_milled_card_exile_remains_unimplemented() {
++    fn collect<'a>(
++        def: &'a crate::types::ability::AbilityDefinition,
++        out: &mut Vec<&'a crate::types::ability::AbilityDefinition>,
++    ) {
++        out.push(def);
++        if let Some(sub) = def.sub_ability.as_deref() {
++            collect(sub, out);
++        }
++    }
++
++    let parsed = crate::parser::oracle::parse_oracle_text(
++        "Flash\nAt the beginning of your upkeep, each player mills three cards. You may exile a \
++         creature card from among the cards milled this way. If you do, this creature becomes a \
++         copy of that card, except it has this ability.",
++        "Shadow Kin",
++        &[],
++        &["Creature".to_string()],
++        &["Shapeshifter".to_string()],
++    );
++    assert!(
++        parsed.parse_warnings.is_empty(),
++        "the existing partial lowering must not swallow clauses: {:?}",
++        parsed.parse_warnings
++    );
++
++    let execute = parsed.triggers[0]
++        .execute
++        .as_deref()
++        .expect("Shadow Kin's upkeep trigger must have an effect");
++    let mut chain = Vec::new();
++    collect(execute, &mut chain);
++    assert_eq!(chain.len(), 3, "unexpected trigger chain: {chain:#?}");
++    assert!(matches!(&*chain[0].effect, Effect::Mill { .. }));
++    assert!(
++        matches!(
++            &*chain[1].effect,
++            Effect::Unimplemented { name, description }
++                if name == "unparsed_verb_arguments"
++                    && description.as_deref()
++                        == Some("exile a creature card from among the cards milled this way")
++        ),
++        "the milled-card clause should remain at its prior unsupported lowering: {:#?}",
++        chain[1].effect
++    );
++    assert!(chain[1].optional, "preserve the printed may");
++    assert!(matches!(&*chain[2].effect, Effect::BecomeCopy { .. }));
++    assert!(
++        !chain.iter().any(|def| matches!(
++            &*def.effect,
++            Effect::ChangeZone {
++                destination: Zone::Hand | Zone::Exile,
++                ..
++            }
++        )),
++        "the unsupported clause must not move milled cards: {chain:#?}"
++    );
++}
++
+ /// CR 701.20e + CR 608.2c — issue #7754: the STANDALONE entry point.
+ ///
+ /// `parse_effect_chain` assembles one effect body without the card pipeline
+-- 
+2.56.0
+
+
+From 64e1c16a644a395d651637be3aa3d9a22ed62091 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sat, 21 Nov 2026 14:34:32 +0000
+Subject: [PATCH 3/3] Format Durnan integration test
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../tests/integration/dig_family_optional_exile.rs     | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/crates/engine/tests/integration/dig_family_optional_exile.rs b/crates/engine/tests/integration/dig_family_optional_exile.rs
+index 6777b9df6..d3379f4bb 100644
+--- a/crates/engine/tests/integration/dig_family_optional_exile.rs
++++ b/crates/engine/tests/integration/dig_family_optional_exile.rs
+@@ -265,7 +265,10 @@ fn durnan_exiled_creature_has_cast_permission_but_undaunted_applies_to_durnan()
+     if matches!(runner.state().waiting_for, WaitingFor::Priority { .. }) {
+         runner.pass_both_players();
+     }
+-    if matches!(runner.state().waiting_for, WaitingFor::DeclareBlockers { .. }) {
++    if matches!(
++        runner.state().waiting_for,
++        WaitingFor::DeclareBlockers { .. }
++    ) {
+         runner
+             .act(GameAction::DeclareBlockers {
+                 assignments: vec![],
+@@ -294,7 +297,10 @@ fn durnan_exiled_creature_has_cast_permission_but_undaunted_applies_to_durnan()
+         .cast(exiled_creature)
+         .try_resolve()
+         .expect("the exile permission must allow casting the creature for its full cost");
+-    assert_eq!(runner.state().objects[&exiled_creature].zone, Zone::Battlefield);
++    assert_eq!(
++        runner.state().objects[&exiled_creature].zone,
++        Zone::Battlefield
++    );
+     assert!(
+         runner.state().objects[&durnan]
+             .keywords
 -- 
 2.56.0
 
