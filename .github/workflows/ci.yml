@@ -567,13 +567,17 @@ jobs:
           path: runs/
           if-no-files-found: warn
 
-  mutants:
+  mutants-shard:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     env:
       CARGO_INCREMENTAL: 0
-      CARGO_BUILD_JOBS: 2
+      CARGO_BUILD_JOBS: 1
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_PROFILE_TEST_DEBUG: 0
       MUTANTS_THRESHOLD_FILE: ${{ github.workspace }}/ci/mutants-threshold.txt
@@ -699,7 +703,8 @@ jobs:
             --colors=never \
             --in-diff "$RUNNER_TEMP/engine-changes.diff" \
             -p phase-engine \
-            --jobs 2 \
+            --jobs 1 \
+            --shard "${{ matrix.shard }}/4" \
             --timeout 60 \
             --build-timeout 1200 \
             --output "$RUNNER_TEMP/mutants.out" \
@@ -739,12 +744,27 @@ jobs:
         if: always() && steps.patch-changes.outputs.changed == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: changed-line-mutation-results
+          name: changed-line-mutation-results-${{ matrix.shard }}-of-4
           path: |
             ${{ runner.temp }}/mutants.out/
             ${{ runner.temp }}/mutants.log
             ${{ runner.temp }}/mutants-summary.log
           if-no-files-found: ignore
+
+  mutants:
+    if: always() && github.event_name == 'pull_request'
+    needs: mutants-shard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce the zero-missed result across all shards
+        env:
+          SHARD_RESULT: ${{ needs.mutants-shard.result }}
+        run: |
+          if [[ "$SHARD_RESULT" != "success" ]]; then
+            echo "::error::Mutants shards did not all pass (matrix result: $SHARD_RESULT)."
+            exit 1
+          fi
+          echo "All Mutants shards passed their per-shard zero-missed gate."
 
   packet-lint:
     if: github.event_name == 'pull_request'
