@@ -38,6 +38,21 @@
   member, and a stale incarnation. No parser or card-data change is involved.
   Evidence: `runs/card-scenarios/mind-roots-final/verification-summary.md`.
 
+## Patch 0041 — Dig-family optional exile resolution
+
+- Parse optional exile-from-among clauses into `Dig` with the card filter,
+  one-card selection, and the printed remainder destination. Random-order
+  library remainders shuffle without a player-order choice.
+- Add parser and engine regressions for Feral Encounter, Make Your Own Luck,
+  and The Key to the Vault, including the separate Key cast decision.
+- A/B export used the same MTGJSON and bracket-list inputs as the prior pin.
+  Changed faces: Feral Encounter, Make Your Own Luck, The Key to the Vault
+  (expected); Djeru and Hazoret, Durnan of the Yawning Portal, Keldon
+  Flamesage, and Shadow Kin (non-Standard). Portent of Calamity is unchanged.
+  A: `2cb0b8987a42d0f920c16f5b4bd5981cbae33ace54e74ccb069fff1eab24ece7`;
+  B: `4eb51556ce1f72a55642a0062620c0d0325fd447d37c84485af2fd2b3009fc85`.
+  Evidence: `runs/card-scenarios/dig-family/card-data-ab/`.
+
 # Local phase-rs fixes
 
 The phase submodule remains pinned at `988bc3412f5d4e475c1837fbc88062b14d1f5489`.

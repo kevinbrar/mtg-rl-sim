@@ -1,0 +1,263 @@
+[[scenarios]]
+name = "F1 exile a creature and cast it"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["selected"] },
+  { action = "cast", player = "P0", card = "Feral Encounter" },
+  { action = "pass_until_resolved" },
+  { action = "cast", player = "P0", card = "selected", from = "exile" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Forest" },
+  { label = "mana.3", card = "Forest" },
+  { label = "mana.4", card = "Forest" },
+]
+hand = ["Feral Encounter"]
+library_top = [
+  { label = "selected", card = "Grizzly Bears" },
+  { label = "rest", card = "Opt" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Grizzly Bears", count = 1 },
+  { zone = "library", player = "P0", card = "Opt", count = 1 },
+]
+
+[[scenarios]]
+name = "F2 decline the optional creature exile"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = [] },
+  { action = "cast", player = "P0", card = "Feral Encounter" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Forest" },
+]
+hand = ["Feral Encounter"]
+library_top = [{ label = "top", card = "Grizzly Bears" }]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "library", player = "P0", card = "Grizzly Bears", count = 1 },
+  { zone = "exile", player = "P0", card = "Grizzly Bears", count = 0 },
+]
+
+[[scenarios]]
+name = "F3 exile one creature with two cards put on the bottom in random order"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["selected"] },
+  { action = "cast", player = "P0", card = "Feral Encounter" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Forest" },
+]
+hand = ["Feral Encounter"]
+library_top = [
+  { label = "selected", card = "Grizzly Bears" },
+  { label = "bottom.one", card = "Opt" },
+  { label = "bottom.two", card = "Opt" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Grizzly Bears", count = 1 },
+  { zone = "library", player = "P0", card = "Opt", count = 2 },
+]
+
+[[scenarios]]
+name = "F4 no creatures among the top five"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", player = "P0", card = "Feral Encounter" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Forest" },
+]
+hand = ["Feral Encounter"]
+library_top = ["Opt", "Opt", "Opt", "Opt", "Opt"]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "library", player = "P0", card = "Opt", count = 5 },
+  { zone = "exile", player = "P0", card = "Opt", count = 0 },
+]
+
+[[scenarios]]
+name = "F5 Feral Encounter deals damage to both scripted targets"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["look.creature"] },
+  { action = "cast", player = "P0", card = "Feral Encounter" },
+  { action = "pass_until_resolved" },
+  { action = "trigger_targets", targets = ["source", "opponent"] },
+  { action = "attack", attackers = ["source"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "source", card = "Grizzly Bears" },
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Forest" },
+]
+hand = ["Feral Encounter"]
+library_top = [
+  { label = "look.creature", card = "Llanowar Elves" },
+  { label = "look.1", card = "Opt" },
+  { label = "look.2", card = "Opt" },
+  { label = "look.3", card = "Opt" },
+  { label = "look.4", card = "Opt" },
+]
+
+[scenarios.setup.P1]
+battlefield = [{ label = "opponent", card = "Hill Giant" }]
+library_top = ["Opt"]
+
+[scenarios.reach]
+all = [
+  { player = "P1", life = 18 },
+  { zone = "battlefield", player = "P1", card = "Hill Giant", count = 1, damage = 2 },
+  { zone = "battlefield", player = "P0", card = "Grizzly Bears", count = 1 },
+  { zone = "exile", player = "P0", card = "Llanowar Elves", count = 1 },
+]
+
+[[scenarios]]
+name = "F6 Feral Encounter declines its optional second combat target"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", player = "P0", card = "Feral Encounter" },
+  { action = "pass_until_resolved" },
+  { action = "trigger_targets", targets = ["source", "@skip"] },
+  { action = "attack", attackers = ["source"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "source", card = "Grizzly Bears" },
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Forest" },
+]
+hand = ["Feral Encounter"]
+library_top = [
+  "Opt",
+  "Opt",
+  "Opt",
+  "Opt",
+  "Opt",
+]
+
+[scenarios.setup.P1]
+battlefield = [{ label = "opponent", card = "Hill Giant" }]
+library_top = ["Opt"]
+
+[scenarios.reach]
+all = [
+  { player = "P1", life = 18 },
+  { zone = "battlefield", player = "P1", card = "Hill Giant", count = 1, damage = 0 },
+  { zone = "battlefield", player = "P0", card = "Grizzly Bears", count = 1 },
+]
+
+[[scenarios]]
+name = "F7 no combat phase this turn means no Feral Encounter trigger"
+active_player = 0
+step = "postcombat_main"
+script = [
+  { action = "cast", player = "P0", card = "Feral Encounter" },
+  { action = "pass_until_resolved" },
+  { action = "next_turn" },
+  { action = "next_turn" },
+  { action = "attack", attackers = ["attacker"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "attacker", card = "Grizzly Bears" },
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Forest" },
+]
+hand = ["Feral Encounter"]
+library_top = ["Opt", "Opt", "Opt", "Opt", "Opt"]
+
+[scenarios.setup.P1]
+battlefield = [{ label = "opponent", card = "Grizzly Bears" }]
+library_top = ["Opt", "Opt", "Opt", "Opt", "Opt"]
+
+[scenarios.reach]
+all = [
+  { player = "P1", life = 18 },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", count = 1, damage = 0 },
+  { zone = "battlefield", player = "P0", card = "Grizzly Bears", count = 1 },
+]
+
+[[scenarios]]
+name = "F8 refuse an exile cast after Feral Encounter's permission expires"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["selected"] },
+  { action = "cast", player = "P0", card = "Feral Encounter" },
+  { action = "pass_until_resolved" },
+  { action = "next_turn" },
+  { action = "next_turn" },
+  { action = "cast", player = "P0", card = "selected", from = "exile", expect = "refused" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Forest" },
+  { label = "mana.3", card = "Forest" },
+  { label = "mana.4", card = "Forest" },
+]
+hand = ["Feral Encounter"]
+library_top = [
+  { label = "selected", card = "Grizzly Bears" },
+  { label = "rest.1", card = "Opt" },
+  { label = "rest.2", card = "Opt" },
+  { label = "rest.3", card = "Opt" },
+  { label = "rest.4", card = "Opt" },
+  { label = "draw", card = "Opt" },
+]
+
+[scenarios.setup.P1]
+library_top = ["Opt", "Opt"]
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Grizzly Bears", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Grizzly Bears", count = 0 },
+]

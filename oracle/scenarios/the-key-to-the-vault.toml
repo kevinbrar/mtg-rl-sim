@@ -1,0 +1,167 @@
+[[scenarios]]
+name = "KV1 exile a nonland card and free-cast it"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "activate", source = "key", ability = "Equip {2}{U}", targets = ["attacker"] },
+  { action = "pass_until_resolved" },
+  { action = "choose_cards", cards = ["selected"] },
+  { action = "choose_optional", source = "key", answers = ["yes"] },
+  { action = "attack", attackers = ["attacker"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "key", card = "The Key to the Vault" },
+  { label = "attacker", card = "Grizzly Bears" },
+  { label = "mana.1", card = "Island" },
+  { label = "mana.2", card = "Island" },
+  { label = "mana.3", card = "Island" },
+]
+library_top = [
+  { label = "selected", card = "Divination" },
+  { label = "bottom", card = "Island" },
+  { label = "draw.one", card = "Forest" },
+  { label = "draw.two", card = "Mountain" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { player = "P1", life = 18 },
+  { player = "P0", zone = "battlefield", card = "The Key to the Vault", attached_to = "attacker", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Divination", count = 1 },
+  { zone = "library", player = "P0", card = "Island", count = 1 },
+]
+
+[[scenarios]]
+name = "KV2 exile a nonland card and decline the free-cast"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "activate", source = "key", ability = "Equip {2}{U}", targets = ["attacker"] },
+  { action = "pass_until_resolved" },
+  { action = "choose_cards", cards = ["selected"] },
+  { action = "choose_optional", source = "key", answers = ["no"] },
+  { action = "attack", attackers = ["attacker"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "key", card = "The Key to the Vault" },
+  { label = "attacker", card = "Grizzly Bears" },
+  { label = "mana.1", card = "Island" },
+  { label = "mana.2", card = "Island" },
+  { label = "mana.3", card = "Island" },
+]
+library_top = [{ label = "selected", card = "Opt" }, { label = "bottom", card = "Island" }]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { player = "P1", life = 18 },
+  { player = "P0", zone = "battlefield", card = "The Key to the Vault", attached_to = "attacker", count = 1 },
+  { zone = "exile", player = "P0", card = "Opt", count = 1 },
+  { zone = "library", player = "P0", card = "Island", count = 1 },
+]
+
+[[scenarios]]
+name = "KV3 decline the optional exile"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "activate", source = "key", ability = "Equip {2}{U}", targets = ["attacker"] },
+  { action = "pass_until_resolved" },
+  { action = "choose_cards", cards = [] },
+  { action = "attack", attackers = ["attacker"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "key", card = "The Key to the Vault" },
+  { label = "attacker", card = "Llanowar Elves" },
+  { label = "mana.1", card = "Island" },
+  { label = "mana.2", card = "Island" },
+  { label = "mana.3", card = "Island" },
+]
+library_top = [{ label = "bottom", card = "Opt" }]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { player = "P1", life = 19 },
+  { player = "P0", zone = "battlefield", card = "The Key to the Vault", attached_to = "attacker", count = 1 },
+  { zone = "library", player = "P0", card = "Opt", count = 1 },
+  { zone = "exile", player = "P0", card = "Opt", count = 0 },
+]
+
+[[scenarios]]
+name = "KV4 decline the optional exile with two cards put on the bottom in random order"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "activate", source = "key", ability = "Equip {2}{U}", targets = ["attacker"] },
+  { action = "pass_until_resolved" },
+  { action = "choose_cards", cards = [] },
+  { action = "attack", attackers = ["attacker"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "key", card = "The Key to the Vault" },
+  { label = "attacker", card = "Grizzly Bears" },
+  { label = "mana.1", card = "Island" },
+  { label = "mana.2", card = "Island" },
+  { label = "mana.3", card = "Island" },
+]
+library_top = [
+  { label = "bottom.one", card = "Opt" },
+  { label = "bottom.two", card = "Opt" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { player = "P1", life = 18 },
+  { player = "P0", zone = "battlefield", card = "The Key to the Vault", attached_to = "attacker", count = 1 },
+  { zone = "library", player = "P0", card = "Opt", count = 2 },
+]
+
+[[scenarios]]
+name = "KV5 no eligible nonland card among the looked-at cards"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "activate", source = "key", ability = "Equip {2}{U}", targets = ["attacker"] },
+  { action = "pass_until_resolved" },
+  { action = "attack", attackers = ["attacker"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "key", card = "The Key to the Vault" },
+  { label = "attacker", card = "Grizzly Bears" },
+  { label = "mana.1", card = "Island" },
+  { label = "mana.2", card = "Island" },
+  { label = "mana.3", card = "Island" },
+]
+library_top = ["Forest", "Forest", "Forest", "Forest", "Forest"]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { player = "P1", life = 18 },
+  { player = "P0", zone = "battlefield", card = "The Key to the Vault", attached_to = "attacker", count = 1 },
+  { zone = "library", player = "P0", card = "Forest", count = 5 },
+  { zone = "exile", player = "P0", card = "Forest", count = 0 },
+]

@@ -52,6 +52,7 @@ REACH_FIELDS = {
     "colors",
     "power",
     "toughness",
+    "damage",
     "power_is_null",
     "toughness_is_null",
     "creature",
@@ -108,6 +109,13 @@ def _validate_reach_fields(
         if reach.get("zone", "graveyard") != "battlefield":
             raise ValueError(
                 f"{name}: {path}.solved is only valid for battlefield Cases"
+            )
+    if "damage" in reach:
+        if type(reach["damage"]) is not int or reach["damage"] < 0:
+            raise ValueError(f"{name}: {path}.damage must be a non-negative integer")
+        if reach.get("zone", "graveyard") != "battlefield":
+            raise ValueError(
+                f"{name}: {path}.damage is only valid for battlefield permanents"
             )
     if "life" in reach:
         if isinstance(reach["life"], bool) or not isinstance(reach["life"], int):
@@ -494,6 +502,8 @@ def validate_refusal_indices(
         name = scenario["name"]
         result = result_by_name.get(name)
         if result is None:
+            continue
+        if isinstance(result.get("error"), str):
             continue
         expected = [
             index
@@ -1107,6 +1117,30 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
             card = action.get("card")
             if not isinstance(card, str) or not card.strip():
                 raise ValueError(f"{context}.card must be a non-empty string")
+        if action.get("action") == "choose_optional":
+            context = f"{name}: script[{index}].choose_optional"
+            if oracle == "forge":
+                raise ValueError(
+                    f"{context} is unsupported by the Forge scenario runner"
+                )
+            unknown = action.keys() - {"action", "answers", "source"}
+            if unknown:
+                raise ValueError(f"{context}.{min(unknown)} is unsupported")
+            source = action.get("source")
+            if source is not None and (
+                not isinstance(source, str) or not source.strip()
+            ):
+                raise ValueError(f"{context}.source must be a non-empty label")
+            answers = action.get("answers")
+            if not isinstance(answers, list) or not answers:
+                raise ValueError(f"{context}.answers must be a non-empty array")
+            if any(
+                not isinstance(answer, str) or answer not in {"yes", "no"}
+                for answer in answers
+            ):
+                raise ValueError(
+                    f"{context}.answers entries must be exactly 'yes' or 'no'"
+                )
         if "behold" in action and action.get("action") != "play_land":
             raise ValueError(
                 f"{name}: script[{index}].behold is only valid for play_land actions"
@@ -1134,6 +1168,10 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
         if "description" in action and action.get("action") != "choose_replacement":
             raise ValueError(
                 f"{name}: script[{index}].description is only valid for choose_replacement actions"
+            )
+        if "answers" in action and action.get("action") != "choose_optional":
+            raise ValueError(
+                f"{name}: script[{index}].answers is only valid for choose_optional actions"
             )
         if "sacrifice" in action:
             context = f"{name}: script[{index}].sacrifice"
@@ -1313,17 +1351,22 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
             if action.get("action") != "cast":
                 raise ValueError(f"{context} is only valid for cast actions")
             source = action["from"]
-            if not isinstance(source, str) or source not in {"hand", "graveyard"}:
-                raise ValueError(f"{context} must be hand or graveyard")
-            if source == "graveyard":
+            if not isinstance(source, str) or source not in {
+                "hand",
+                "graveyard",
+                "exile",
+            }:
+                raise ValueError(f"{context} must be hand, graveyard, or exile")
+            if source in {"graveyard", "exile"}:
                 card_label = action.get("card")
                 if not isinstance(card_label, str) or card_label not in label_locations:
                     raise ValueError(
                         f"{name}: script[{index}].card must be a setup label"
                     )
                 if (
-                    action.get("expect") != "refused"
-                    and label_locations[card_label][1] != "graveyard"
+                    source == "graveyard"
+                    and action.get("expect") != "refused"
+                    and (label_locations[card_label][1] != "graveyard")
                 ):
                     raise ValueError(
                         f"{name}: script[{index}].card must be a graveyard setup label"

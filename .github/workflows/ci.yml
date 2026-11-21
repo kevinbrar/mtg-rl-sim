@@ -714,6 +714,18 @@ jobs:
             2>&1 | tee "$RUNNER_TEMP/mutants.log"
           mutants_status=${PIPESTATUS[0]}
           set -e
+          # A shard can legitimately be empty when the diff has fewer mutants
+          # than shards. Pass it only if the unsharded diff does have mutants.
+          if [[ "$mutants_status" == 0 ]] && grep -q '^Found 0 mutants to test' "$RUNNER_TEMP/mutants.log"; then
+            total_mutants="$(cargo mutants --colors=never --list \
+              --in-diff "$RUNNER_TEMP/engine-changes.diff" -p phase-engine | grep -c .)" || total_mutants=0
+            if [[ "$total_mutants" -gt 0 ]]; then
+              echo "Shard ${{ matrix.shard }}/4 is empty; the diff has $total_mutants mutants in other shards."
+              exit 0
+            fi
+            echo "::error::No mutants found in the whole diff; refusing to pass an empty mutation run."
+            exit 1
+          fi
           threshold="$(tr -d '[:space:]' < "$MUTANTS_THRESHOLD_FILE")"
           if [[ ! "$threshold" =~ ^[0-9]+$ ]]; then
             echo "::error::ci/mutants-threshold.txt must contain one non-negative integer"

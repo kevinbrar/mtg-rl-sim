@@ -71,6 +71,35 @@ replacement candidates require an exact scripted selection. These scripted
 choices are FIFO and fail closed when absent, ambiguous, ineligible, or
 unconsumed.
 
+`choose_cards` also scripts optional card picks from looked-at or revealed
+cards: an empty group declines, and a non-empty group accepts and selects the
+listed card(s). XMage maps `LookLibraryAndPickControllerEffect`'s `chooseUse`
+prompt from the acting player's next card-choice group, and a non-empty group
+is consumed by its subsequent `TargetCard` selection; Phase maps the
+corresponding `DigChoice` from that group. Neither runner consumes a
+`choose_optional` answer for this decision. XMage's
+`isLookLibraryAndPickPrompt` hook currently treats every `chooseUse` on an
+ability containing `LookLibraryAndPickControllerEffect` as this pick; an
+ability with a second independent "you may" decision needs a narrower match.
+When no looked-at card matches, script no `choose_cards` group because no choice exists (CR 701.20e, 608.2c); XMage skips its prompt, and Phase auto-answers a `DigChoice` only when its selectable set is empty.
+
+`choose_optional` queues non-empty FIFO answers of exact `"yes"` or `"no"` for
+the acting player when a decision has no associated card-choice group, such as
+whether to cast an exiled card. An optional `source` label binds the answers to
+that prompt's source; a mismatch fails closed without consuming the answer.
+Phase consumes them for other `OptionalEffectChoice` and `OpponentMayChoice`
+prompts; XMage maps them to `chooseUse`'s literal `Yes`/`No`. Missing,
+wrong-player, wrong-source, and unconsumed answers fail closed. Forge rejects
+this action as unsupported.
+
+In Phase and XMage, `trigger_targets` queues one labeled target group per
+triggered-target prompt. It may be scripted before `attack` when a delayed or
+beginning-of-combat trigger asks for targets while the runner advances to
+declare attackers. Use `@skip` only for an optional target slot; required
+targets, illegal labels, and unconsumed groups fail closed.
+`reach.damage` checks marked damage on a battlefield permanent; Feral F5
+asserts that the target receives damage equal to the source's power.
+
 Uldaros Theorix scenarios use `graveyard_targets` to choose up to one card for
 each card-type slot, `choose_copies` to select which copies to cast and their
 order, and `copy_targets` to script targets for copied spells. Both runners
@@ -97,6 +126,9 @@ Cast `targets` accepts setup labels, `@skip` for an optional target slot, and
 the reserved player tokens `@P0` and `@P1`. Player tokens name the scenario's
 two players and must match a legal player target; unknown, illegal, or missing
 targets fail closed in Phase, XMage, and Forge.
+`cast.from` accepts `hand`, `graveyard`, or `exile`. Graveyard and exile casts
+identify the exact setup-labeled card, and the selected engine must offer that
+object as a legal cast from the requested zone.
 
 `expect = "refused"` is valid only on `cast` and `activate` steps. The runners
 preserve normal label, priority, zone, and ability preconditions, attempt the

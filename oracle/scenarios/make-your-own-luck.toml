@@ -1,0 +1,152 @@
+[[scenarios]]
+name = "MYOL1 exile and plot a nonland card"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["plotted"] },
+  { action = "cast", player = "P0", card = "Make Your Own Luck" },
+  { action = "pass_until_resolved" },
+  { action = "next_turn" },
+  { action = "next_turn" },
+  { action = "cast", player = "P0", card = "plotted", from = "exile" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Island" },
+  { label = "mana.3", card = "Plains" },
+  { label = "mana.4", card = "Swamp" },
+  { label = "mana.5", card = "Mountain" },
+]
+hand = ["Make Your Own Luck"]
+library_top = [
+  { label = "plotted", card = "Grizzly Bears" },
+  { label = "hand.land", card = "Island" },
+  { label = "hand.nonland", card = "Divination" },
+  { label = "draw.one", card = "Mountain" },
+  { label = "draw.two", card = "Plains" },
+  { label = "draw.three", card = "Forest" },
+  { label = "draw.four", card = "Island" },
+  { label = "draw.five", card = "Swamp" },
+  { label = "draw.six", card = "Mountain" },
+  { label = "draw.seven", card = "Plains" },
+]
+
+[scenarios.setup.P1]
+library_top = [
+  { label = "opponent.draw.one", card = "Forest" },
+  { label = "opponent.draw.two", card = "Island" },
+  { label = "opponent.draw.three", card = "Plains" },
+  { label = "opponent.draw.four", card = "Swamp" },
+  { label = "opponent.draw.five", card = "Mountain" },
+  { label = "opponent.draw.six", card = "Forest" },
+  { label = "opponent.draw.seven", card = "Island" },
+  { label = "opponent.draw.eight", card = "Plains" },
+  { label = "opponent.draw.nine", card = "Swamp" },
+  { label = "opponent.draw.ten", card = "Mountain" },
+  { label = "opponent.draw.eleven", card = "Forest" },
+  { label = "opponent.draw.twelve", card = "Island" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Grizzly Bears", count = 1 },
+  { zone = "hand", player = "P0", card = "Island", count = 1 },
+  { zone = "hand", player = "P0", card = "Divination", count = 1 },
+]
+
+[[scenarios]]
+name = "MYOL2 decline the optional nonland exile"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = [] },
+  { action = "cast", player = "P0", card = "Make Your Own Luck" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Island" },
+  { label = "mana.3", card = "Plains" },
+  { label = "mana.4", card = "Swamp" },
+  { label = "mana.5", card = "Mountain" },
+]
+hand = ["Make Your Own Luck"]
+library_top = [
+  { label = "hand.nonland.one", card = "Opt" },
+  { label = "hand.land", card = "Island" },
+  { label = "hand.nonland.two", card = "Divination" },
+  { label = "draw.one", card = "Forest" },
+  { label = "draw.two", card = "Plains" },
+  { label = "draw.three", card = "Swamp" },
+  { label = "draw.four", card = "Mountain" },
+  { label = "draw.five", card = "Island" },
+  { label = "draw.six", card = "Forest" },
+  { label = "draw.seven", card = "Plains" },
+]
+
+[scenarios.setup.P1]
+library_top = [
+  { label = "opponent.draw.one", card = "Forest" },
+  { label = "opponent.draw.two", card = "Island" },
+  { label = "opponent.draw.three", card = "Plains" },
+  { label = "opponent.draw.four", card = "Swamp" },
+  { label = "opponent.draw.five", card = "Mountain" },
+  { label = "opponent.draw.six", card = "Forest" },
+  { label = "opponent.draw.seven", card = "Island" },
+  { label = "opponent.draw.eight", card = "Plains" },
+  { label = "opponent.draw.nine", card = "Swamp" },
+  { label = "opponent.draw.ten", card = "Mountain" },
+  { label = "opponent.draw.eleven", card = "Forest" },
+  { label = "opponent.draw.twelve", card = "Island" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Opt", count = 1 },
+  { zone = "hand", player = "P0", card = "Island", count = 1 },
+  { zone = "hand", player = "P0", card = "Divination", count = 1 },
+]
+
+[[scenarios]]
+name = "MYOL3 refuse to cast the plotted card during the same turn"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_cards", cards = ["plotted"] },
+  { action = "cast", player = "P0", card = "Make Your Own Luck" },
+  { action = "pass_until_resolved" },
+  { action = "cast", player = "P0", card = "plotted", from = "exile", expect = "refused" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Island" },
+  { label = "mana.3", card = "Plains" },
+  { label = "mana.4", card = "Swamp" },
+  { label = "mana.5", card = "Mountain" },
+]
+hand = ["Make Your Own Luck"]
+library_top = [
+  { label = "plotted", card = "Grizzly Bears" },
+  { label = "hand.nonland", card = "Divination" },
+  { label = "hand.land", card = "Mountain" },
+  { label = "draw.1", card = "Opt" },
+  { label = "draw.2", card = "Opt" },
+  { label = "draw.3", card = "Opt" },
+]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Grizzly Bears", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Grizzly Bears", count = 0 },
+  { zone = "hand", player = "P0", card = "Divination", count = 1 },
+  { zone = "hand", player = "P0", card = "Mountain", count = 1 },
+]
