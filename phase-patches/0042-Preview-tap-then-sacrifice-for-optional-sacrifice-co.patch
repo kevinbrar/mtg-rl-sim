@@ -1,0 +1,368 @@
+From 6f57ab805201d6e85f8d395a9c4b79b6cd1b4cd3 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sat, 21 Nov 2026 20:50:45 +0000
+Subject: [PATCH] Preview tap-then-sacrifice for optional sacrifice cost
+ reductions
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/casting_costs.rs       | 114 +++++++++----
+ ...e_2415_rottenmouth_viper_sacrifice_cost.rs | 154 ++++++++++++++++--
+ 2 files changed, 225 insertions(+), 43 deletions(-)
+
+diff --git a/crates/engine/src/game/casting_costs.rs b/crates/engine/src/game/casting_costs.rs
+index 0ac8bdfcb..237304b91 100644
+--- a/crates/engine/src/game/casting_costs.rs
++++ b/crates/engine/src/game/casting_costs.rs
+@@ -3927,32 +3927,46 @@ fn validate_deferred_spell_sacrifices_at_commit(
+                 continue;
+             }
+         };
+-        let obj = state.objects.get(&id).ok_or_else(|| {
+-            EngineError::InvalidAction("Deferred sacrifice permanent not found".to_string())
+-        })?;
+-        if obj.zone != Zone::Battlefield || obj.controller != player {
+-            return Err(EngineError::ActionNotAllowed(
+-                "Deferred sacrifice permanent is no longer on the battlefield under your control"
+-                    .to_string(),
+-            ));
+-        }
+-        if super::static_abilities::player_cant_sacrifice_as_cost(state, player, id) {
+-            return Err(EngineError::ActionNotAllowed(
+-                "Deferred sacrifice permanent cannot be sacrificed as a cost".to_string(),
+-            ));
+-        }
+-        if !super::filter::matches_target_filter(
+-            state,
+-            id,
+-            filter,
+-            // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
+-            // activated ability).
+-            &super::filter::FilterContext::from_source_with_controller(pending.object_id, player),
+-        ) {
+-            return Err(EngineError::ActionNotAllowed(
+-                "Deferred sacrifice permanent no longer matches the sacrifice cost".to_string(),
+-            ));
+-        }
++        validate_deferred_spell_sacrifice_selection(state, player, pending.object_id, id, filter)?;
++    }
++    Ok(())
++}
++
++/// CR 601.2h: A selected sacrifice is payable only while the permanent is
++/// still on the battlefield under the payer's control, may be sacrificed as a
++/// cost, and still matches the cost's filter.
++fn validate_deferred_spell_sacrifice_selection(
++    state: &GameState,
++    player: PlayerId,
++    spell_id: ObjectId,
++    id: ObjectId,
++    filter: &TargetFilter,
++) -> Result<(), EngineError> {
++    let obj = state.objects.get(&id).ok_or_else(|| {
++        EngineError::InvalidAction("Deferred sacrifice permanent not found".to_string())
++    })?;
++    if obj.zone != Zone::Battlefield || obj.controller != player {
++        return Err(EngineError::ActionNotAllowed(
++            "Deferred sacrifice permanent is no longer on the battlefield under your control"
++                .to_string(),
++        ));
++    }
++    if super::static_abilities::player_cant_sacrifice_as_cost(state, player, id) {
++        return Err(EngineError::ActionNotAllowed(
++            "Deferred sacrifice permanent cannot be sacrificed as a cost".to_string(),
++        ));
++    }
++    if !super::filter::matches_target_filter(
++        state,
++        id,
++        filter,
++        // "You" in a cost is the cost's payer (CR 109.5 when paying for a spell or an
++        // activated ability).
++        &super::filter::FilterContext::from_source_with_controller(spell_id, player),
++    ) {
++        return Err(EngineError::ActionNotAllowed(
++            "Deferred sacrifice permanent no longer matches the sacrifice cost".to_string(),
++        ));
+     }
+     Ok(())
+ }
+@@ -13063,7 +13077,7 @@ fn any_number_this_way_cost_makes_payable(
+ 
+     // CR 601.2g + CR 601.2h: Prefer choices absent from auto-tap's live source
+     // collection, then remove chosen permanents before feasibility so they cannot
+-    // supply mana too. This conservative preview may undercount tap-then-sacrifice.
++    // supply mana too; `mana_before_sacrifice_pays` covers tap-then-sacrifice.
+     let mana_source_ids: HashSet<_> =
+         collect_sorted_auto_tap_source_options(state, player, None, &HashSet::new(), None)
+             .into_iter()
+@@ -13093,13 +13107,57 @@ fn any_number_this_way_cost_makes_payable(
+                 object.zone = Zone::Graveyard;
+             }
+         }
+-        if can_pay(&scratch, &reduced) {
++        if can_pay(&scratch, &reduced)
++            || mana_before_sacrifice_pays(state, player, spell_id, cost_filter, chosen, &reduced)
++        {
+             return true;
+         }
+     }
+     false
+ }
+ 
++/// CR 601.2g + CR 601.2h: Mana abilities are activated before costs are paid,
++/// so a chosen permanent may tap for mana and then be sacrificed. Mirrors
++/// `auto_activate_spell_mana_abilities_before_deferred_sacrifice`: the cast is
++/// payable when the Auto payer covers `reduced` and every chosen permanent is
++/// still a live sacrifice afterwards.
++fn mana_before_sacrifice_pays(
++    state: &GameState,
++    player: PlayerId,
++    spell_id: ObjectId,
++    cost_filter: &TargetFilter,
++    chosen: &[ObjectId],
++    reduced: &ManaCost,
++) -> bool {
++    if cost_has_x(reduced)
++        || !super::casting::can_pay_cost_after_auto_tap(state, player, spell_id, reduced)
++    {
++        return false;
++    }
++    let mut simulated = state.clone();
++    let mut events = Vec::new();
++    let spell_meta = super::casting::build_spell_meta(&simulated, player, spell_id);
++    let spell_ctx = spell_meta.as_ref().map(PaymentContext::Spell);
++    auto_tap_mana_sources_with_context_and_resume(
++        &mut simulated,
++        player,
++        reduced,
++        &mut events,
++        Some(spell_id),
++        spell_ctx.as_ref(),
++        None,
++    );
++    if super::casting::mana_ability_cost_payment_is_paused(&simulated) {
++        return false;
++    }
++    // CR 605.4a: triggered mana abilities from those taps resolve immediately.
++    super::triggers::resolve_tap_mana_triggers_inline(&mut simulated, &mut events, 0);
++    chosen.iter().all(|&id| {
++        validate_deferred_spell_sacrifice_selection(&simulated, player, spell_id, id, cost_filter)
++            .is_ok()
++    }) && super::casting::can_pay_cost_after_auto_tap(&simulated, player, spell_id, reduced)
++}
++
+ pub(super) fn optional_any_number_this_way_cost_makes_payable(
+     state: &GameState,
+     player: PlayerId,
+diff --git a/crates/engine/tests/integration/issue_2415_rottenmouth_viper_sacrifice_cost.rs b/crates/engine/tests/integration/issue_2415_rottenmouth_viper_sacrifice_cost.rs
+index 69a9db411..c62b893ef 100644
+--- a/crates/engine/tests/integration/issue_2415_rottenmouth_viper_sacrifice_cost.rs
++++ b/crates/engine/tests/integration/issue_2415_rottenmouth_viper_sacrifice_cost.rs
+@@ -50,6 +50,15 @@ fn build_scenario_with_land_count(
+     (runner, viper, lands, fodder)
+ }
+ 
++fn viper_cast_is_offered(
++    runner: &engine::game::scenario::GameRunner,
++    viper: engine::types::identifiers::ObjectId,
++) -> bool {
++    engine::ai_support::legal_actions(runner.state())
++        .iter()
++        .any(|action| matches!(action, GameAction::CastSpell { object_id, .. } if *object_id == viper))
++}
++
+ fn build_scenario_with_counts(
+     land_count: usize,
+     fodder_count: usize,
+@@ -427,26 +436,79 @@ fn rottenmouth_viper_does_not_count_sacrificed_treasures_as_mana_sources() {
+ }
+ 
+ #[test]
+-fn rottenmouth_viper_tap_then_sacrifice_sources_are_not_previewed_as_payable() {
+-    let (control, viper, _, dorks, _) = build_scenario_with_counts(4, 0, 0, 2);
++fn rottenmouth_viper_taps_mana_creatures_before_sacrificing_them() {
++    // CR 601.2g + CR 601.2h: mana abilities are activated before costs are
++    // paid, so both Birds tap for mana and are then sacrificed for {3}{B}.
++    let (mut runner, viper, lands, dorks, _) = build_scenario_with_counts(2, 0, 0, 2);
+     assert_eq!(dorks.len(), 2);
+     assert!(
+-        engine::ai_support::legal_actions(control.state())
+-            .iter()
+-            .any(|action| matches!(action, GameAction::CastSpell { object_id, .. } if *object_id == viper)),
+-        "the Birds of Paradise control verifies their mana abilities are available"
++        viper_cast_is_offered(&runner, viper),
++        "two Swamps plus two Birds of Paradise pay {{3}}{{B}} before the Birds are sacrificed"
+     );
+-
+-    let (runner, viper, _, dorks, _) = build_scenario_with_counts(2, 0, 0, 2);
+-    assert_eq!(dorks.len(), 2);
++    let card_id = runner.state().objects[&viper].card_id;
++    runner
++        .act(GameAction::CastSpell {
++            object_id: viper,
++            card_id,
++            targets: vec![],
++            payment_mode: CastPaymentMode::Auto,
++        })
++        .expect("two Swamps plus two Birds must begin the cast");
++    runner
++        .act(GameAction::DecideOptionalCost { pay: true })
++        .expect("accept optional sacrifice cost");
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::ChooseXValue { max: 2, .. }
++    ));
++    runner
++        .act(GameAction::ChooseX { value: 2 })
++        .expect("choose both Birds");
++    runner
++        .act(GameAction::SelectCards {
++            cards: dorks.clone(),
++        })
++        .expect("sacrifice both Birds after tapping them for mana");
++    assert_eq!(tapped_land_count(&runner, &lands), 2);
+     assert!(
+-        !engine::ai_support::legal_actions(runner.state())
++        runner.state().stack.iter().any(|entry| entry.id == viper),
++        "Viper must reach the stack"
++    );
++    assert!(
++        dorks
+             .iter()
+-            .any(|action| matches!(action, GameAction::CastSpell { object_id, .. } if *object_id == viper)),
+-        "after sacrificing both mana creatures, two Swamps cannot pay the reduced {{3}}{{B}} cost"
++            .all(|id| runner.state().players[P0.0 as usize].graveyard.contains(id)),
++        "both Birds must be in P0's graveyard"
++    );
++    assert_eq!(
++        runner.state().players[P0.0 as usize].mana_pool.total(),
++        0,
++        "all four mana is spent on the reduced cost"
+     );
+ }
+ 
++#[test]
++fn rottenmouth_viper_tap_then_sacrifice_still_needs_enough_mana() {
++    // One Swamp plus two Birds makes three mana; the cheapest total is {3}{B}.
++    let (runner, viper, _, _, _) = build_scenario_with_counts(1, 0, 0, 2);
++    assert!(!viper_cast_is_offered(&runner, viper));
++}
++
++#[test]
++fn rottenmouth_viper_summoning_sick_mana_creatures_cannot_tap_before_sacrifice() {
++    // CR 302.6: a summoning-sick Birds can be sacrificed but not tapped for mana.
++    let (mut runner, viper, _, dorks, _) = build_scenario_with_counts(2, 0, 0, 2);
++    for id in &dorks {
++        runner
++            .state_mut()
++            .objects
++            .get_mut(id)
++            .unwrap()
++            .summoning_sick = true;
++    }
++    assert!(!viper_cast_is_offered(&runner, viper));
++}
++
+ #[test]
+ fn rottenmouth_viper_remains_castable_with_six_lands_and_no_fodder() {
+     let (mut runner, viper, lands, fodder, _) = build_scenario_with_counts(6, 0, 0, 0);
+@@ -783,7 +845,9 @@ fn fixed_count_optional_sacrifice_does_not_offer_a_partial_count() {
+     let oracle = "As an additional cost to cast this spell, you may sacrifice two nonland permanents. This spell costs {1} less to cast for each permanent sacrificed this way.";
+     let mut scenario = GameScenario::new();
+     scenario.at_phase(Phase::PreCombatMain);
+-    scenario.add_basic_land(P0, ManaColor::Black);
++    for _ in 0..3 {
++        scenario.add_basic_land(P0, ManaColor::Black);
++    }
+     let spell = scenario
+         .add_spell_to_hand_from_oracle(P0, "Fixed Count Spell", true, oracle)
+         .with_mana_cost(ManaCost::Cost {
+@@ -792,7 +856,6 @@ fn fixed_count_optional_sacrifice_does_not_offer_a_partial_count() {
+         })
+         .id();
+     scenario.add_creature(P0, "Memnite", 1, 1);
+-    scenario.add_artifact_from_oracle(P0, "Sol Ring", "{T}: Add {C}{C}.");
+     let mut runner = scenario.build();
+     assert!(matches!(
+         &runner.state().objects[&spell].additional_cost,
+@@ -806,7 +869,7 @@ fn fixed_count_optional_sacrifice_does_not_offer_a_partial_count() {
+         !engine::ai_support::legal_actions(runner.state())
+             .iter()
+             .any(|action| matches!(action, GameAction::CastSpell { object_id, .. } if *object_id == spell)),
+-        "the required two-permanent sacrifice removes the two-mana source"
++        "one sacrifice would make {{2}}{{B}} payable, but the cost requires two permanents"
+     );
+     let card_id = runner.state().objects[&spell].card_id;
+     let error = runner
+@@ -824,6 +887,67 @@ fn fixed_count_optional_sacrifice_does_not_offer_a_partial_count() {
+     ));
+ }
+ 
++#[test]
++fn fixed_count_optional_sacrifice_taps_a_chosen_mana_rock_first() {
++    // CR 601.2g + CR 601.2h: Sol Ring taps for {C}{C} and is then one of the
++    // two sacrificed permanents; Swamp + Sol Ring pay the reduced {2}{B}.
++    let oracle = "As an additional cost to cast this spell, you may sacrifice two nonland permanents. This spell costs {1} less to cast for each permanent sacrificed this way.";
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    scenario.add_basic_land(P0, ManaColor::Black);
++    let spell = scenario
++        .add_spell_to_hand_from_oracle(P0, "Fixed Count Spell", true, oracle)
++        .with_mana_cost(ManaCost::Cost {
++            shards: vec![ManaCostShard::Black],
++            generic: 4,
++        })
++        .id();
++    let memnite = scenario.add_creature(P0, "Memnite", 1, 1).id();
++    let sol_ring = scenario
++        .add_artifact_from_oracle(P0, "Sol Ring", "{T}: Add {C}{C}.")
++        .id();
++    let mut runner = scenario.build();
++    assert!(
++        engine::ai_support::legal_actions(runner.state())
++            .iter()
++            .any(|action| matches!(action, GameAction::CastSpell { object_id, .. } if *object_id == spell)),
++        "Sol Ring taps for mana before it is sacrificed"
++    );
++    let card_id = runner.state().objects[&spell].card_id;
++    runner
++        .act(GameAction::CastSpell {
++            object_id: spell,
++            card_id,
++            targets: vec![],
++            payment_mode: CastPaymentMode::Auto,
++        })
++        .expect("begin the cast");
++    runner
++        .act(GameAction::DecideOptionalCost { pay: true })
++        .expect("accept optional sacrifice cost");
++    if matches!(
++        runner.state().waiting_for,
++        WaitingFor::PayCost {
++            kind: PayCostKind::Sacrifice,
++            ..
++        }
++    ) {
++        runner
++            .act(GameAction::SelectCards {
++                cards: vec![memnite, sol_ring],
++            })
++            .expect("sacrifice Memnite and the tapped Sol Ring");
++    }
++    assert!(runner.state().stack.iter().any(|entry| entry.id == spell));
++    for id in [memnite, sol_ring] {
++        assert_eq!(
++            runner.state().objects[&id].zone,
++            engine::types::zones::Zone::Graveyard
++        );
++    }
++    assert_eq!(runner.state().players[P0.0 as usize].mana_pool.total(), 0);
++}
++
+ #[test]
+ fn march_exile_reduction_pins_maximum_x() {
+     const ORACLE: &str = "As an additional cost to cast this spell, you may exile any number of white cards from your hand. This spell costs {2} less to cast for each card exiled this way.\nExile target artifact, creature, or enchantment with mana value X or less.";
+-- 
+2.56.0
+

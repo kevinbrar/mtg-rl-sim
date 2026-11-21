@@ -222,3 +222,59 @@ all = [
   { zone = "graveyard", player = "P0", card = "Memnite", count = 2 },
   { zone = "battlefield", player = "P0", card = "Swamp", tapped = true, count = 4 },
 ]
+
+[[scenarios]]
+# CR 601.2g-h: mana abilities are activated before costs are paid, so both
+# Elves tap for mana and are then sacrificed to reduce the cost to {3}{B}.
+name = "R8 two Swamps and two Llanowar Elves pay, then the Elves are sacrificed"
+active_player = 0
+script = [
+  { action = "cast", card = "Rottenmouth Viper", sacrifice = ["elves-1", "elves-2"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "swamp-1", card = "Swamp" },
+  { label = "swamp-2", card = "Swamp" },
+  { label = "elves-1", card = "Llanowar Elves" },
+  { label = "elves-2", card = "Llanowar Elves" },
+]
+hand = ["Rottenmouth Viper"]
+
+[scenarios.setup.P1]
+life = 20
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Rottenmouth Viper", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Llanowar Elves", count = 2 },
+  { zone = "battlefield", player = "P0", card = "Swamp", tapped = true, count = 2 },
+]
+
+[[scenarios]]
+# One Swamp and two Elves make three mana; the cheapest total is {3}{B}.
+name = "R9 one Swamp and two Llanowar Elves cannot pay even with tap-then-sacrifice"
+active_player = 0
+script = [
+  { action = "cast", card = "Rottenmouth Viper", expect = "refused" },
+]
+
+[scenarios.setup.P0]
+life = 20
+battlefield = [
+  { label = "swamp-1", card = "Swamp" },
+  { label = "elves-1", card = "Llanowar Elves" },
+  { label = "elves-2", card = "Llanowar Elves" },
+]
+hand = ["Rottenmouth Viper"]
+
+[scenarios.setup.P1]
+life = 20
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Rottenmouth Viper", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Llanowar Elves", count = 2 },
+]
