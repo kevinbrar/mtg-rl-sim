@@ -574,6 +574,8 @@ jobs:
     env:
       CARGO_INCREMENTAL: 0
       CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
       MUTANTS_THRESHOLD_FILE: ${{ github.workspace }}/ci/mutants-threshold.txt
     steps:
       - uses: actions/checkout@v4
