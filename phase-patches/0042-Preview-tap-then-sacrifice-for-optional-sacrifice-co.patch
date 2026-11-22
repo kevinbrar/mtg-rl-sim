@@ -1,4 +1,4 @@
-From 61a590746f68d71ad13ab6d6fc5b444f4fbf079f Mon Sep 17 00:00:00 2001
+From f7774fe74127f866aa8a0334c1e4681b9960d382 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Sat, 21 Nov 2026 20:50:45 +0000
 Subject: [PATCH] Preview tap-then-sacrifice for optional sacrifice cost
@@ -6,9 +6,9 @@ Subject: [PATCH] Preview tap-then-sacrifice for optional sacrifice cost
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
- crates/engine/src/game/casting_costs.rs       | 176 +++++++++--
- ...e_2415_rottenmouth_viper_sacrifice_cost.rs | 273 +++++++++++++++++-
- 2 files changed, 406 insertions(+), 43 deletions(-)
+ crates/engine/src/game/casting_costs.rs       | 176 ++++++++--
+ ...e_2415_rottenmouth_viper_sacrifice_cost.rs | 327 +++++++++++++++++-
+ 2 files changed, 461 insertions(+), 42 deletions(-)
 
 diff --git a/crates/engine/src/game/casting_costs.rs b/crates/engine/src/game/casting_costs.rs
 index 0ac8bdfcb..79022083c 100644
@@ -223,7 +223,7 @@ index 0ac8bdfcb..79022083c 100644
 +    }
  }
 diff --git a/crates/engine/tests/integration/issue_2415_rottenmouth_viper_sacrifice_cost.rs b/crates/engine/tests/integration/issue_2415_rottenmouth_viper_sacrifice_cost.rs
-index 69a9db411..e3845cb38 100644
+index 69a9db411..1d519bb32 100644
 --- a/crates/engine/tests/integration/issue_2415_rottenmouth_viper_sacrifice_cost.rs
 +++ b/crates/engine/tests/integration/issue_2415_rottenmouth_viper_sacrifice_cost.rs
 @@ -50,6 +50,15 @@ fn build_scenario_with_land_count(
@@ -242,7 +242,7 @@ index 69a9db411..e3845cb38 100644
  fn build_scenario_with_counts(
      land_count: usize,
      fodder_count: usize,
-@@ -427,26 +436,175 @@ fn rottenmouth_viper_does_not_count_sacrificed_treasures_as_mana_sources() {
+@@ -427,24 +436,229 @@ fn rottenmouth_viper_does_not_count_sacrificed_treasures_as_mana_sources() {
  }
  
  #[test]
@@ -255,15 +255,9 @@ index 69a9db411..e3845cb38 100644
      assert_eq!(dorks.len(), 2);
      assert!(
 -        engine::ai_support::legal_actions(control.state())
--            .iter()
--            .any(|action| matches!(action, GameAction::CastSpell { object_id, .. } if *object_id == viper)),
--        "the Birds of Paradise control verifies their mana abilities are available"
 +        viper_cast_is_offered(&runner, viper),
 +        "two Swamps plus two Birds of Paradise pay {{3}}{{B}} before the Birds are sacrificed"
-     );
--
--    let (runner, viper, _, dorks, _) = build_scenario_with_counts(2, 0, 0, 2);
--    assert_eq!(dorks.len(), 2);
++    );
 +    let card_id = runner.state().objects[&viper].card_id;
 +    runner
 +        .act(GameAction::CastSpell {
@@ -289,8 +283,7 @@ index 69a9db411..e3845cb38 100644
 +        })
 +        .expect("sacrifice both Birds after tapping them for mana");
 +    assert_eq!(tapped_land_count(&runner, &lands), 2);
-     assert!(
--        !engine::ai_support::legal_actions(runner.state())
++    assert!(
 +        runner.state().stack.iter().any(|entry| entry.id == viper),
 +        "Viper must reach the stack"
 +    );
@@ -298,17 +291,21 @@ index 69a9db411..e3845cb38 100644
 +        dorks
              .iter()
 -            .any(|action| matches!(action, GameAction::CastSpell { object_id, .. } if *object_id == viper)),
--        "after sacrificing both mana creatures, two Swamps cannot pay the reduced {{3}}{{B}} cost"
+-        "the Birds of Paradise control verifies their mana abilities are available"
 +            .all(|id| runner.state().players[P0.0 as usize].graveyard.contains(id)),
 +        "both Birds must be in P0's graveyard"
-+    );
+     );
 +    assert_eq!(
 +        runner.state().players[P0.0 as usize].mana_pool.total(),
 +        0,
 +        "all four mana is spent on the reduced cost"
-     );
- }
++    );
++}
  
+-    let (runner, viper, _, dorks, _) = build_scenario_with_counts(2, 0, 0, 2);
+-    assert_eq!(dorks.len(), 2);
+-    assert!(
+-        !engine::ai_support::legal_actions(runner.state())
 +#[test]
 +fn rottenmouth_viper_tap_then_sacrifice_ignores_battlefield_order_of_a_cracked_treasure() {
 +    // CR 601.2g + CR 601.2h: one Swamp, a Treasure and two Birds make the four
@@ -352,7 +349,9 @@ index 69a9db411..e3845cb38 100644
 +        assert!(runner.state().stack.iter().any(|entry| entry.id == viper));
 +        assert!(!runner.state().battlefield.contains(&treasure));
 +        assert!(dorks
-+            .iter()
+             .iter()
+-            .any(|action| matches!(action, GameAction::CastSpell { object_id, .. } if *object_id == viper)),
+-        "after sacrificing both mana creatures, two Swamps cannot pay the reduced {{3}}{{B}} cost"
 +            .all(|id| runner.state().players[P0.0 as usize].graveyard.contains(id)));
 +    }
 +}
@@ -406,6 +405,62 @@ index 69a9db411..e3845cb38 100644
 +}
 +
 +#[test]
++fn rottenmouth_viper_commit_rejects_a_chosen_sacrifice_that_left_the_battlefield() {
++    // CR 601.2h: a chosen sacrifice that is gone when costs are paid cannot pay
++    // the cost, so the manual payment must not commit the cast.
++    let (mut runner, viper, lands, fodder, _) = build_scenario_with_counts(4, 2, 0, 0);
++    let card_id = runner.state().objects[&viper].card_id;
++    runner
++        .act(GameAction::CastSpell {
++            object_id: viper,
++            card_id,
++            targets: vec![],
++            payment_mode: CastPaymentMode::Manual,
++        })
++        .expect("begin the cast");
++    runner
++        .act(GameAction::DecideOptionalCost { pay: true })
++        .expect("accept optional sacrifice cost");
++    runner
++        .act(GameAction::ChooseX { value: 2 })
++        .expect("choose two sacrifices");
++    runner
++        .act(GameAction::SelectCards {
++            cards: fodder.clone(),
++        })
++        .expect("select both Memnites");
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::ManaPayment { .. }
++    ));
++    for land in &lands {
++        let (_, _, grouped) = engine::ai_support::legal_actions_full(runner.state());
++        let action = grouped
++            .get(land)
++            .into_iter()
++            .flatten()
++            .next()
++            .cloned()
++            .expect("the engine offers the Swamp while paying");
++        runner.act(action).expect("tap the Swamp");
++    }
++    // The engine reserves chosen sacrifices, so remove one behind its back.
++    let gone = fodder[0];
++    let state = runner.state_mut();
++    state.battlefield.retain(|id| *id != gone);
++    state.objects.get_mut(&gone).unwrap().zone = engine::types::zones::Zone::Exile;
++
++    let error = runner
++        .act(GameAction::PassPriority)
++        .expect_err("a missing chosen sacrifice must fail the commit");
++    assert!(
++        format!("{error:?}").contains("Deferred sacrifice permanent"),
++        "the commit-time sacrifice validation must be what rejects the payment: {error:?}"
+     );
++    assert!(runner.state().battlefield.contains(&fodder[1]));
++}
++
++#[test]
 +fn rottenmouth_viper_tap_then_sacrifice_still_needs_enough_mana() {
 +    // One Swamp plus two Birds makes three mana; the cheapest total is {3}{B}.
 +    let (runner, viper, _, _, _) = build_scenario_with_counts(1, 0, 0, 2);
@@ -425,12 +480,10 @@ index 69a9db411..e3845cb38 100644
 +            .summoning_sick = true;
 +    }
 +    assert!(!viper_cast_is_offered(&runner, viper));
-+}
-+
+ }
+ 
  #[test]
- fn rottenmouth_viper_remains_castable_with_six_lands_and_no_fodder() {
-     let (mut runner, viper, lands, fodder, _) = build_scenario_with_counts(6, 0, 0, 0);
-@@ -783,7 +941,9 @@ fn fixed_count_optional_sacrifice_does_not_offer_a_partial_count() {
+@@ -783,7 +997,9 @@ fn fixed_count_optional_sacrifice_does_not_offer_a_partial_count() {
      let oracle = "As an additional cost to cast this spell, you may sacrifice two nonland permanents. This spell costs {1} less to cast for each permanent sacrificed this way.";
      let mut scenario = GameScenario::new();
      scenario.at_phase(Phase::PreCombatMain);
@@ -441,7 +494,7 @@ index 69a9db411..e3845cb38 100644
      let spell = scenario
          .add_spell_to_hand_from_oracle(P0, "Fixed Count Spell", true, oracle)
          .with_mana_cost(ManaCost::Cost {
-@@ -792,7 +952,6 @@ fn fixed_count_optional_sacrifice_does_not_offer_a_partial_count() {
+@@ -792,7 +1008,6 @@ fn fixed_count_optional_sacrifice_does_not_offer_a_partial_count() {
          })
          .id();
      scenario.add_creature(P0, "Memnite", 1, 1);
@@ -449,7 +502,7 @@ index 69a9db411..e3845cb38 100644
      let mut runner = scenario.build();
      assert!(matches!(
          &runner.state().objects[&spell].additional_cost,
-@@ -806,7 +965,7 @@ fn fixed_count_optional_sacrifice_does_not_offer_a_partial_count() {
+@@ -806,7 +1021,7 @@ fn fixed_count_optional_sacrifice_does_not_offer_a_partial_count() {
          !engine::ai_support::legal_actions(runner.state())
              .iter()
              .any(|action| matches!(action, GameAction::CastSpell { object_id, .. } if *object_id == spell)),
@@ -458,7 +511,7 @@ index 69a9db411..e3845cb38 100644
      );
      let card_id = runner.state().objects[&spell].card_id;
      let error = runner
-@@ -824,6 +983,90 @@ fn fixed_count_optional_sacrifice_does_not_offer_a_partial_count() {
+@@ -824,6 +1039,90 @@ fn fixed_count_optional_sacrifice_does_not_offer_a_partial_count() {
      ));
  }
  

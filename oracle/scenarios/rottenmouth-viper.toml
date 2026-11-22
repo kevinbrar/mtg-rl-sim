@@ -280,10 +280,10 @@ all = [
 ]
 
 [[scenarios]]
-# CR 601.2g-h: Swamp, Blood Pet and both Elves make the four mana for {3}{B}.
+# CR 601.2g-h: Forest, Blood Pet and both Elves make the four mana for {3}{B}.
 # The Pet is sacrificed for mana, so the Elves are the two sacrifices whatever
 # the battlefield order (Pet first).
-name = "R10 Swamp, Blood Pet and two Llanowar Elves pay with the Pet ahead of the Elves"
+name = "R10 Forest, Blood Pet and two Llanowar Elves pay with the Pet ahead of the Elves"
 active_player = 0
 script = [
   { action = "cast", card = "Rottenmouth Viper", sacrifice = ["elves-1", "elves-2"] },
@@ -293,7 +293,7 @@ script = [
 [scenarios.setup.P0]
 life = 20
 battlefield = [
-  { label = "swamp-1", card = "Swamp" },
+  { label = "forest-1", card = "Forest" },
   { label = "pet", card = "Blood Pet" },
   { label = "elves-1", card = "Llanowar Elves" },
   { label = "elves-2", card = "Llanowar Elves" },
@@ -308,14 +308,14 @@ all = [
   { zone = "battlefield", player = "P0", card = "Rottenmouth Viper", count = 1 },
   { zone = "graveyard", player = "P0", card = "Llanowar Elves", count = 2 },
   { zone = "graveyard", player = "P0", card = "Blood Pet", count = 1 },
-  { zone = "battlefield", player = "P0", card = "Swamp", tapped = true, count = 1 },
+  { zone = "battlefield", player = "P0", card = "Forest", tapped = true, count = 1 },
 ]
 
 [[scenarios]]
-# CR 601.2g-h: Swamp, Blood Pet and both Elves make the four mana for {3}{B}.
+# CR 601.2g-h: Forest, Blood Pet and both Elves make the four mana for {3}{B}.
 # The Pet is sacrificed for mana, so the Elves are the two sacrifices whatever
 # the battlefield order (Pet last).
-name = "R11 Swamp, Blood Pet and two Llanowar Elves pay with the Pet behind the Elves"
+name = "R11 Forest, Blood Pet and two Llanowar Elves pay with the Pet behind the Elves"
 active_player = 0
 script = [
   { action = "cast", card = "Rottenmouth Viper", sacrifice = ["elves-1", "elves-2"] },
@@ -325,7 +325,7 @@ script = [
 [scenarios.setup.P0]
 life = 20
 battlefield = [
-  { label = "swamp-1", card = "Swamp" },
+  { label = "forest-1", card = "Forest" },
   { label = "elves-1", card = "Llanowar Elves" },
   { label = "elves-2", card = "Llanowar Elves" },
   { label = "pet", card = "Blood Pet" },
@@ -340,5 +340,5 @@ all = [
   { zone = "battlefield", player = "P0", card = "Rottenmouth Viper", count = 1 },
   { zone = "graveyard", player = "P0", card = "Llanowar Elves", count = 2 },
   { zone = "graveyard", player = "P0", card = "Blood Pet", count = 1 },
-  { zone = "battlefield", player = "P0", card = "Swamp", tapped = true, count = 1 },
+  { zone = "battlefield", player = "P0", card = "Forest", tapped = true, count = 1 },
 ]
