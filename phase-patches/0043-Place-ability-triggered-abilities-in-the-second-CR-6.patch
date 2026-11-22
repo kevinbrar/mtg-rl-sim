@@ -1,0 +1,277 @@
+From 72c8b76ade8330e25877c9516afb9bccb2591871 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sun, 22 Nov 2026 22:16:16 +0000
+Subject: [PATCH] Place ability-triggered abilities in the second CR 603.3b
+ part
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/triggers.rs            | 39 +++++++-
+ .../tests/integration/firebender_ascension.rs | 98 ++++++++-----------
+ 2 files changed, 76 insertions(+), 61 deletions(-)
+
+diff --git a/crates/engine/src/game/triggers.rs b/crates/engine/src/game/triggers.rs
+index 200a2f76c..bd79d5b18 100644
+--- a/crates/engine/src/game/triggers.rs
++++ b/crates/engine/src/game/triggers.rs
+@@ -4630,6 +4630,30 @@ fn apnap_rank(order: &[PlayerId], controller: PlayerId) -> usize {
+         .unwrap_or(order.len())
+ }
+ 
++/// CR 603.3b: the part of the two-part stack-placement process a triggered
++/// ability belongs to. Abilities whose trigger condition isn't another ability
++/// triggering are placed first; all remaining abilities are placed second, so
++/// they sit above every first-part ability regardless of controller.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
++enum StackPlacementPart {
++    First,
++    Remaining,
++}
++
++/// CR 603.3b: classify a pending trigger by whether its trigger condition is
++/// another ability triggering.
++fn stack_placement_part(ctx: &PendingTriggerContext) -> StackPlacementPart {
++    let trigger_event = ctx
++        .pending
++        .trigger_event
++        .as_ref()
++        .or_else(|| ctx.trigger_events.first());
++    match trigger_event {
++        Some(GameEvent::AbilityTriggered { .. }) => StackPlacementPart::Remaining,
++        _ => StackPlacementPart::First,
++    }
++}
++
+ fn trigger_apnap_rank(state: &GameState, controller: PlayerId) -> usize {
+     if state.format_config.topology().has_shared_team_turns() {
+         super::topology::apnap_team_rank(state, controller)
+@@ -7497,6 +7521,7 @@ fn collect_pending_triggers_with_collection(
+     // preserving the real trigger controller on each pending trigger.
+     pending.sort_by_key(|t| {
+         (
++            stack_placement_part(t),
+             trigger_apnap_rank(state, t.pending.controller),
+             t.pending.timestamp,
+         )
+@@ -8722,6 +8747,7 @@ fn normalize_deferred_trigger_order(state: &GameState, pending: &mut [PendingTri
+             Some(ctx.pending.timestamp)
+         };
+         (
++            stack_placement_part(ctx),
+             trigger_apnap_rank(state, ctx.pending.controller),
+             collection_order,
+         )
+@@ -8879,9 +8905,13 @@ fn begin_trigger_ordering(
+     // trigger. Deliberately not updated by a triggered-mana context: an echo
+     // group is invisible to CR 603.3b grouping, while an ordinary group of a
+     // different controller still ends the previous controller's APNAP run.
+-    let mut last_ordinary_group: Option<(PlayerId, usize)> = None;
++    //
++    // CR 603.3b: a controller orders the abilities of each placement part
++    // separately, so a part boundary also ends the run.
++    let mut last_ordinary_group: Option<(PlayerId, StackPlacementPart, usize)> = None;
+     for ctx in pending {
+         let controller = trigger_order_controller(state, ctx.pending.controller);
++        let part = stack_placement_part(&ctx);
+         let trigger_event = ctx
+             .pending
+             .trigger_event
+@@ -8890,8 +8920,8 @@ fn begin_trigger_ordering(
+         let is_triggered_mana =
+             super::mana_abilities::is_triggered_mana_ability(&ctx.pending.ability, trigger_event);
+         if !is_triggered_mana {
+-            if let Some((group_controller, index)) = last_ordinary_group {
+-                if group_controller == controller {
++            if let Some((group_controller, group_part, index)) = last_ordinary_group {
++                if group_controller == controller && group_part == part {
+                     groups[index].triggers.push(ctx);
+                     continue;
+                 }
+@@ -8903,7 +8933,7 @@ fn begin_trigger_ordering(
+             ordered: is_triggered_mana,
+         });
+         if !is_triggered_mana {
+-            last_ordinary_group = Some((controller, groups.len() - 1));
++            last_ordinary_group = Some((controller, part, groups.len() - 1));
+         }
+     }
+ 
+@@ -16175,6 +16205,7 @@ fn collect_pending_and_delayed_triggers_reporting_terminalized(
+     contexts.extend(delayed_pending);
+     contexts.sort_by_key(|ctx| {
+         (
++            stack_placement_part(ctx),
+             trigger_apnap_rank(state, ctx.pending.controller),
+             ctx.pending.timestamp,
+         )
+diff --git a/crates/engine/tests/integration/firebender_ascension.rs b/crates/engine/tests/integration/firebender_ascension.rs
+index 2afa95e69..d05ecf0a1 100644
+--- a/crates/engine/tests/integration/firebender_ascension.rs
++++ b/crates/engine/tests/integration/firebender_ascension.rs
+@@ -78,42 +78,30 @@ fn advance_to_declare_blockers(runner: &mut GameRunner) {
+     panic!("never reached the declare-blockers prompt");
+ }
+ 
+-fn declare_and_order_firebending(
++fn declare_firebending_attack(
+     runner: &mut GameRunner,
+     firebender: ObjectId,
+     attacker: ObjectId,
+     defender: engine::types::player::PlayerId,
+-    firebender_resolves_first: bool,
+ ) {
+     runner
+         .declare_attackers(&[(attacker, AttackTarget::Player(defender))])
+         .expect("attacker declaration succeeds");
+ 
+-    let WaitingFor::OrderTriggers { player, triggers } = runner.state().waiting_for.clone() else {
+-        panic!(
+-            "Firebending and Firebender Ascension triggers must be ordered together; got {:?}",
+-            runner.state().waiting_for
+-        );
+-    };
+-    assert_eq!(player, runner.state().active_player);
+-    assert_eq!(triggers.len(), 2);
+-    let firebending_index = triggers
+-        .iter()
+-        .position(|trigger| trigger.source_id == attacker)
+-        .expect("the Soldier's Firebending trigger is present");
+-    let firebender_index = triggers
+-        .iter()
+-        .position(|trigger| trigger.source_id == firebender)
+-        .expect("Firebender Ascension's trigger is present");
+-
+-    let order = if firebender_resolves_first {
+-        vec![firebending_index, firebender_index]
+-    } else {
+-        vec![firebender_index, firebending_index]
+-    };
+-    runner
+-        .act(GameAction::OrderTriggers { order })
+-        .expect("Firebender Ascension is placed above the Firebending trigger");
++    // CR 603.3b: Firebender Ascension's trigger condition is another ability
++    // triggering, so it is placed in the second part, above the Firebending
++    // ability, and the controller has no order to choose between the two.
++    assert!(
++        !matches!(runner.state().waiting_for, WaitingFor::OrderTriggers { .. }),
++        "no order may be offered between an ability and the ability it caused to trigger; got {:?}",
++        runner.state().waiting_for
++    );
++    assert_eq!(runner.state().stack.len(), 2);
++    assert_eq!(
++        runner.state().stack.last().map(|entry| entry.source_id),
++        Some(firebender),
++        "Firebender Ascension's ability is on top of the ability that caused it to trigger"
++    );
+ 
+     let original = runner
+         .state()
+@@ -172,7 +160,7 @@ fn pass_until_optional_effect(runner: &mut GameRunner) {
+ #[test]
+ fn firebending_attack_increments_quest_and_does_not_copy_before_four() {
+     let (mut runner, firebender, soldier) = firebending_board(0, P0);
+-    declare_and_order_firebending(&mut runner, firebender, soldier, P1, true);
++    declare_firebending_attack(&mut runner, firebender, soldier, P1);
+     runner.advance_until_stack_empty();
+ 
+     assert_eq!(quest_count(runner.state(), firebender), 1);
+@@ -187,7 +175,7 @@ fn firebending_attack_increments_quest_and_does_not_copy_before_four() {
+ #[test]
+ fn fourth_quest_counter_can_copy_the_attack_trigger() {
+     let (mut runner, firebender, soldier) = firebending_board(3, P0);
+-    declare_and_order_firebending(&mut runner, firebender, soldier, P1, true);
++    declare_firebending_attack(&mut runner, firebender, soldier, P1);
+     pass_until_optional_effect(&mut runner);
+ 
+     runner
+@@ -202,7 +190,7 @@ fn fourth_quest_counter_can_copy_the_attack_trigger() {
+ #[test]
+ fn declining_the_fourth_quest_counter_copy_keeps_only_original_effect() {
+     let (mut runner, firebender, soldier) = firebending_board(3, P0);
+-    declare_and_order_firebending(&mut runner, firebender, soldier, P1, true);
++    declare_firebending_attack(&mut runner, firebender, soldier, P1);
+     pass_until_optional_effect(&mut runner);
+ 
+     runner
+@@ -217,11 +205,15 @@ fn declining_the_fourth_quest_counter_copy_keeps_only_original_effect() {
+ #[test]
+ fn copy_of_an_attack_trigger_that_left_the_stack_is_a_noop() {
+     let (mut runner, firebender, soldier) = firebending_board(3, P0);
+-    declare_and_order_firebending(&mut runner, firebender, soldier, P1, false);
++    declare_firebending_attack(&mut runner, firebender, soldier, P1);
+ 
+-    runner.resolve_top();
++    // The original ability leaves the stack before Firebender Ascension's
++    // ability resolves, as when it is countered.
++    runner
++        .state_mut()
++        .stack
++        .retain(|entry| entry.source_id != soldier);
+     assert_eq!(runner.state().stack.len(), 1);
+-    assert_eq!(red_count(runner.state(), P0.0 as usize), 1);
+     pass_until_optional_effect(&mut runner);
+     runner
+         .act(GameAction::DecideOptionalEffect { accept: true })
+@@ -229,7 +221,7 @@ fn copy_of_an_attack_trigger_that_left_the_stack_is_a_noop() {
+     runner.advance_until_stack_empty();
+ 
+     assert_eq!(quest_count(runner.state(), firebender), 4);
+-    assert_eq!(red_count(runner.state(), P0.0 as usize), 1);
++    assert_eq!(red_count(runner.state(), P0.0 as usize), 0);
+ }
+ 
+ #[test]
+@@ -277,7 +269,7 @@ fn opponent_firebending_attacker_does_not_count() {
+ }
+ 
+ #[test]
+-fn attack_triggers_are_placed_in_apnap_order() {
++fn ability_triggered_abilities_are_placed_after_every_other_trigger() {
+     let mut scenario = GameScenario::new();
+     scenario.at_phase(Phase::PreCombatMain);
+     let firebender = scenario
+@@ -296,27 +288,19 @@ fn attack_triggers_are_placed_in_apnap_order() {
+         .declare_attackers(&[(soldier, AttackTarget::Player(P1))])
+         .expect("attacker declaration succeeds");
+ 
+-    let WaitingFor::OrderTriggers { player, triggers } = runner.state().waiting_for.clone() else {
+-        panic!("active player's simultaneous triggers must be ordered");
+-    };
+-    assert_eq!(player, P0);
+-    let firebending_index = triggers
+-        .iter()
+-        .position(|trigger| trigger.source_id == soldier)
+-        .expect("Firebending trigger is present");
+-    let firebender_index = triggers
+-        .iter()
+-        .position(|trigger| trigger.source_id == firebender)
+-        .expect("Firebender Ascension trigger is present");
+-    runner
+-        .act(GameAction::OrderTriggers {
+-            order: vec![firebending_index, firebender_index],
+-        })
+-        .expect("active player's trigger order succeeds");
+-
+-    assert_eq!(
+-        runner.state().stack.last().map(|entry| entry.source_id),
+-        Some(opponent_trigger),
+-        "nonactive player's trigger is placed above active player's triggers"
++    // CR 603.3b: first part, in APNAP order: P0's Firebending ability, then
++    // P1's attack trigger. Second part: Firebender Ascension's ability, whose
++    // trigger condition is another ability triggering, above both.
++    assert!(
++        !matches!(runner.state().waiting_for, WaitingFor::OrderTriggers { .. }),
++        "one ability per player per part leaves no order to choose; got {:?}",
++        runner.state().waiting_for
+     );
++    let sources: Vec<ObjectId> = runner
++        .state()
++        .stack
++        .iter()
++        .map(|entry| entry.source_id)
++        .collect();
++    assert_eq!(sources, vec![soldier, opponent_trigger, firebender]);
+ }
+-- 
+2.56.0
+

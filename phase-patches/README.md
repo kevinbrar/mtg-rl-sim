@@ -438,3 +438,15 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
   `runs/card-scenarios/urgent-necropsy-20261113/patch0033-mutants-per-worktree/mutants.out/mutants.out/outcomes.json`,
   `runs/card-scenarios/urgent-necropsy-20261113/necropsy-xmage-0033-final/known-diffs-report.json`,
   `runs/card-scenarios/urgent-necropsy-20261113/full-known-diffs-0033-final/known-diffs-report.json`.
+
+## Patch 0043 — two-part trigger placement (CR 603.3b)
+
+- Classify each pending trigger by `StackPlacementPart`: `Remaining` when its
+  trigger event is `GameEvent::AbilityTriggered`, `First` otherwise. The three
+  simultaneous-trigger sorts key on the part before APNAP rank, and
+  `begin_trigger_ordering` ends a controller's group at a part boundary.
+- Firebender Ascension's ability is placed above the ability that caused it to
+  trigger with no `OrderTriggers` prompt (2025-10-02 ruling). The integration
+  tests in `firebender_ascension.rs` assert the absence of the prompt and the
+  stack order, including with an opponent's first-part trigger.
+- Runtime-only; no parser or card-data change.
