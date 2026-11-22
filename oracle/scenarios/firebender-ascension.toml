@@ -22,6 +22,7 @@ all = [
 name = "F2 attack trigger below four quest counters does not offer a copy"
 active_player = 0
 script = [
+  { action = "order_triggers", player = "P0", resolve = ["whenever a creature you control attacking", "whenever ~ attacks"], only = "phase" },
   { action = "attack", attackers = ["pulse"] },
   { action = "pass_until_resolved" },
 ]
@@ -45,6 +46,7 @@ name = "F3 accept a Pulse Tracker ability copy"
 active_player = 0
 script = [
   { action = "copy_choice", player = "P0", decision = "accept" },
+  { action = "order_triggers", player = "P0", resolve = ["whenever a creature you control attacking", "whenever ~ attacks"], only = "phase" },
   { action = "attack", attackers = ["pulse"] },
   { action = "pass_until_resolved" },
 ]
@@ -68,6 +70,7 @@ name = "F4 decline a Pulse Tracker ability copy"
 active_player = 0
 script = [
   { action = "copy_choice", player = "P0", decision = "decline" },
+  { action = "order_triggers", player = "P0", resolve = ["whenever a creature you control attacking", "whenever ~ attacks"], only = "phase" },
   { action = "attack", attackers = ["pulse"] },
   { action = "pass_until_resolved" },
 ]
@@ -92,6 +95,7 @@ active_player = 0
 script = [
   { action = "trigger_targets", targets = ["defender-a"] },
   { action = "copy_choice", player = "P0", decision = "accept", new_targets = ["defender-b"] },
+  { action = "order_triggers", player = "P0", resolve = ["whenever a creature you control attacking", "whenever ~ attacks"], only = "phase" },
   { action = "attack", attackers = ["spring"] },
   { action = "pass_until_resolved" },
 ]
@@ -120,6 +124,7 @@ active_player = 0
 script = [
   { action = "trigger_targets", targets = ["defender-a"] },
   { action = "copy_choice", player = "P0", decision = "accept", new_targets = "keep" },
+  { action = "order_triggers", player = "P0", resolve = ["whenever a creature you control attacking", "whenever ~ attacks"], only = "phase" },
   { action = "attack", attackers = ["spring"] },
   { action = "pass_until_resolved" },
 ]
@@ -173,6 +178,7 @@ active_player = 0
 script = [
   { action = "copy_choice", player = "P0", decision = "accept", new_targets = ["defender-b"] },
   { action = "trigger_targets", targets = ["defender-a"] },
+  { action = "order_triggers", player = "P0", resolve = ["whenever a creature you control attacking", "whenever ~ attacks"], only = "phase" },
   { action = "attack", attackers = ["spring"] },
   { action = "pass_until_resolved" },
 ]

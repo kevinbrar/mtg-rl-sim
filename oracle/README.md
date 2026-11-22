@@ -97,6 +97,15 @@ triggered-target prompt. It may be scripted before `attack` when a delayed or
 beginning-of-combat trigger asks for targets while the runner advances to
 declare attackers. Use `@skip` only for an optional target slot; required
 targets, illegal labels, and unconsumed groups fail closed.
+`order_triggers` (`player`, `resolve`) scripts the order of non-identical
+simultaneous triggers (CR 603.3b) in Phase and XMage. `resolve` lists
+ability-text prefixes, first to resolve first, matched against the lower-cased
+rules text with the source written as `~`. Prefixes are matched from the last
+to resolve backwards, each against the triggers not yet placed. Identical
+triggers need no entry; any other unscripted order, a wrong count, an unmatched
+or ambiguous prefix, and an unconsumed entry fail closed. `only = "xmage"` or
+`only = "phase"` marks a prompt that just one engine asks; the other engine
+skips the entry, and each use must be backed by a `STATUS.md` entry. Forge rejects this action as unsupported.
 `reach.damage` checks marked damage on a battlefield permanent; Feral F5
 asserts that the target receives damage equal to the source's power.
 

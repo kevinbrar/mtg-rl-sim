@@ -1,0 +1,152 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sun, 22 Nov 2026 22:30:00 +0000
+Subject: [PATCH] Script the order of non-identical triggers
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../java/org/mage/test/player/TestPlayer.java | 58 +++++++++++++++++++
+ .../testapi/CardScenarioProjectionTest.java   | 30 +++++++++
+ 2 files changed, 88 insertions(+)
+
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+index 23eb63a..ea9e34d 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -139,6 +139,10 @@ public class TestPlayer implements Player {
+     //   (example: card call TestPlayer's choice, but it uses another choices, see docs in TestComputerPlayer)
+     private boolean strictChooseMode = false;
+     private boolean autoOrderIdenticalTriggers = false;
++    // Scripted orders for non-identical triggers; each group lists rule prefixes, first to resolve first.
++    private final Deque<List<String>> scenarioTriggerOrders = new ArrayDeque<>();
++    // Remaining prefixes of the group in progress, in stack placement order (last to resolve first).
++    private final Deque<String> activeTriggerPlacement = new ArrayDeque<>();
+     private boolean strictTargetQueue = false;
+     private boolean strictCardChoiceQueue = false;
+ 
+@@ -199,6 +203,8 @@ public class TestPlayer implements Player {
+         this.isSkipAllNextChooseCommands = testPlayer.isSkipAllNextChooseCommands;
+         this.strictChooseMode = testPlayer.strictChooseMode;
+         this.autoOrderIdenticalTriggers = testPlayer.autoOrderIdenticalTriggers;
++        this.scenarioTriggerOrders.addAll(testPlayer.scenarioTriggerOrders);
++        this.activeTriggerPlacement.addAll(testPlayer.activeTriggerPlacement);
+         this.strictTargetQueue = testPlayer.strictTargetQueue;
+         this.strictCardChoiceQueue = testPlayer.strictCardChoiceQueue;
+     }
+@@ -398,6 +404,36 @@ public class TestPlayer implements Player {
+                 && message.toLowerCase(java.util.Locale.ROOT).contains("behold");
+     }
+ 
++    public void addScenarioTriggerOrder(List<String> resolveOrder) {
++        scenarioTriggerOrders.addLast(new ArrayList<>(resolveOrder));
++    }
++
++    public void assertNoScenarioTriggerOrders() {
++        if (!scenarioTriggerOrders.isEmpty() || !activeTriggerPlacement.isEmpty()) {
++            throw new IllegalStateException("order_triggers entry(s) were unconsumed: "
++                    + scenarioTriggerOrders + " " + activeTriggerPlacement);
++        }
++    }
++
++    // Same form as the Phase runner: lower case, with the source written as "~".
++    private static String triggerOrderText(String text) {
++        return normalizeAbilityText(text).toLowerCase(Locale.ROOT).replace("{this}", "~");
++    }
++
++    private TriggeredAbility takeScriptedTrigger(List<TriggeredAbility> abilities, Game game) {
++        String prefix = triggerOrderText(activeTriggerPlacement.removeFirst());
++        List<TriggeredAbility> matches = abilities.stream()
++                .filter(ability -> triggerOrderText(ability.getRule()).startsWith(prefix))
++                .collect(Collectors.toList());
++        if (matches.isEmpty() || matches.stream().anyMatch(ability ->
++                !ability.getRule().equals(matches.get(0).getRule()))) {
++            throw new IllegalStateException("order_triggers prefix \"" + prefix + "\" matches "
++                    + matches.size() + " of the pending triggers:\n" + abilities.stream()
++                    .map(ability -> getInfo(ability, game)).collect(Collectors.joining("\n")));
++        }
++        return matches.get(0);
++    }
++
+     public void assertNoCardChoiceGroups() {
+         if (!cardChoiceGroups.isEmpty()) {
+             throw new IllegalStateException("card choice group(s) were unconsumed: " + cardChoiceGroups);
+@@ -3123,6 +3159,28 @@ public class TestPlayer implements Player {
+                     return first;
+                 }
+             }
++            if (activeTriggerPlacement.isEmpty() && !scenarioTriggerOrders.isEmpty()) {
++                List<String> resolveOrder = scenarioTriggerOrders.removeFirst();
++                if (resolveOrder.size() != abilities.size()) {
++                    throw new IllegalStateException("order_triggers lists " + resolveOrder.size()
++                            + " abilities but " + abilities.size() + " triggers are being ordered:\n"
++                            + abilities.stream().map(ability -> getInfo(ability, game))
++                            .collect(Collectors.joining("\n")));
++                }
++                for (String prefix : resolveOrder) {
++                    activeTriggerPlacement.addFirst(prefix);
++                }
++            }
++            if (!activeTriggerPlacement.isEmpty()) {
++                TriggeredAbility chosen = takeScriptedTrigger(abilities, game);
++                if (abilities.size() == 2) {
++                    // XMage places the last trigger without asking; check it against the script.
++                    List<TriggeredAbility> rest = new ArrayList<>(abilities);
++                    rest.remove(chosen);
++                    takeScriptedTrigger(rest, game);
++                }
++                return chosen;
++            }
+             throw new IllegalStateException("Cannot auto-order non-identical triggered abilities:\n"
+                     + abilities.stream()
+                     .map(ability -> "Source: " + ability.getSourceId() + "\n" + getInfo(ability, game))
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+index 3bb43ee..cb0c063 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -136,6 +136,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             player(index).assertNoPendingRottenmouthUnlessChoices();
+             player(index).assertNoPendingFirebenderCopyChoices();
+             player(index).assertNoScenarioOptionalAnswers();
++            player(index).assertNoScenarioTriggerOrders();
+         }
+         if (!refusalExecutions.equals(expectedRefusalIndices)
+                 || !refusals.equals(expectedRefusalIndices)) {
+@@ -489,6 +490,35 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                         actingPlayer.addTarget(target);
+                     }
+                 }
++                case "order_triggers" -> {
++                    rejectUnknownKeys(action, Set.of("action", "player", "resolve", "only"),
++                            "script.order_triggers");
++                    String orderer = requiredString(action, "player");
++                    if (!orderer.equals("P0") && !orderer.equals("P1")) {
++                        throw new IllegalArgumentException("order_triggers.player must be P0 or P1");
++                    }
++                    if (!action.has("resolve") || !action.get("resolve").isJsonArray()
++                            || action.getAsJsonArray("resolve").size() < 2) {
++                        throw new IllegalArgumentException(
++                                "order_triggers.resolve must list at least two ability text prefixes");
++                    }
++                    List<String> resolveOrder = new ArrayList<>();
++                    for (JsonElement entry : action.getAsJsonArray("resolve")) {
++                        if (!entry.isJsonPrimitive() || entry.getAsString().isBlank()) {
++                            throw new IllegalArgumentException(
++                                    "order_triggers.resolve entries must be non-empty strings");
++                        }
++                        resolveOrder.add(entry.getAsString());
++                    }
++                    String only = action.has("only") ? requiredString(action, "only") : "xmage";
++                    if (!only.equals("xmage") && !only.equals("phase")) {
++                        throw new IllegalArgumentException("order_triggers.only must be phase or xmage");
++                    }
++                    // only = "phase": XMage does not ask for this order, so a prompt fails as unscripted.
++                    if (only.equals("xmage")) {
++                        player(orderer.equals("P0") ? 0 : 1).addScenarioTriggerOrder(resolveOrder);
++                    }
++                }
+                 case "copy_choice" -> {
+                     rejectUnknownKeys(action, Set.of("action", "player", "decision", "new_targets"),
+                             "script.copy_choice");
+-- 
+2.43.0
+

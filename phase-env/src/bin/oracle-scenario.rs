@@ -9,7 +9,7 @@ use engine::game::game_object::GameObject;
 use engine::game::mana_abilities::is_mana_ability;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::game::scenario_db::GameScenarioDbExt;
-use engine::types::ability::{AdditionalCost, ReplacementMode};
+use engine::types::ability::{AdditionalCost, EffectKind, ReplacementMode};
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::{
     actions::{GameAction, OutsideGameSelection, UnlessCostBranch},
@@ -765,9 +765,104 @@ fn consume_resolved_discard_choices(
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TriggerOrderChoice {
+    player: PlayerId,
+    /// Normalized description prefixes, first to resolve first.
+    resolve: Vec<String>,
+}
+
+/// `only = "xmage"` records that Phase does not ask for this order (a logged
+/// difference). Such an entry is validated but not queued, so a prompt that
+/// does appear fails as unscripted and the field must be removed.
+fn parse_trigger_order(action: &Value) -> Result<Option<TriggerOrderChoice>, String> {
+    let fields = action.as_object().ok_or("order_triggers must be a table")?;
+    if fields
+        .keys()
+        .any(|key| !["action", "player", "resolve", "only"].contains(&key.as_str()))
+    {
+        return Err("order_triggers supports only player, resolve, and only".to_string());
+    }
+    let queued = match action.get("only").map(Value::as_str) {
+        None | Some(Some("phase")) => true,
+        Some(Some("xmage")) => false,
+        Some(_) => return Err("order_triggers.only must be phase or xmage".to_string()),
+    };
+    let player = match action.get("player").and_then(Value::as_str) {
+        Some("P0") => PlayerId(0),
+        Some("P1") => PlayerId(1),
+        _ => return Err("order_triggers.player must be P0 or P1".to_string()),
+    };
+    let resolve = action
+        .get("resolve")
+        .and_then(Value::as_array)
+        .filter(|entries| entries.len() >= 2)
+        .ok_or("order_triggers.resolve must list at least two ability text prefixes")?
+        .iter()
+        .map(|entry| {
+            entry
+                .as_str()
+                .map(normalize_ability_text)
+                .filter(|prefix| !prefix.is_empty())
+                .ok_or("order_triggers.resolve entries must be non-empty strings".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(queued.then_some(TriggerOrderChoice { player, resolve }))
+}
+
+/// CR 603.3b: map a scripted resolve order onto the engine's placement order.
+/// `descriptions` are the prompted triggers; the result lists prompt indices,
+/// first placed first (so it resolves last, CR 405.3).
+fn trigger_placement_order(
+    resolve: &[String],
+    descriptions: &[String],
+) -> Result<Vec<usize>, String> {
+    if resolve.len() != descriptions.len() {
+        return Err(format!(
+            "order_triggers lists {} abilities but {} triggers are being ordered: {descriptions:?}",
+            resolve.len(),
+            descriptions.len()
+        ));
+    }
+    let mut placement = Vec::with_capacity(resolve.len());
+    for prefix in resolve.iter().rev() {
+        let mut matches = descriptions
+            .iter()
+            .enumerate()
+            .filter(|(index, description)| {
+                !placement.contains(index) && description.starts_with(prefix.as_str())
+            })
+            .map(|(index, _)| index);
+        let index = matches.next().ok_or_else(|| {
+            format!("order_triggers prefix {prefix:?} matches no trigger in {descriptions:?}")
+        })?;
+        if matches
+            .next()
+            .is_some_and(|other| descriptions[other] != descriptions[index])
+        {
+            return Err(format!(
+                "order_triggers prefix {prefix:?} is ambiguous in {descriptions:?}"
+            ));
+        }
+        placement.push(index);
+    }
+    Ok(placement)
+}
+
+fn ensure_trigger_orders_consumed(orders: &VecDeque<TriggerOrderChoice>) -> Result<(), String> {
+    if orders.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} order_triggers entry(s) were unconsumed when the script ended",
+        orders.len()
+    ))
+}
+
 #[derive(Default)]
 struct DiscardChoiceReconciler {
     pending_events: Vec<GameEvent>,
+    trigger_orders: VecDeque<TriggerOrderChoice>,
 }
 
 enum ClassifiedActError {
@@ -832,10 +927,12 @@ impl DiscardChoiceReconciler {
         choices: &mut [VecDeque<DiscardScriptChoice>; 2],
         labels: &HashMap<ObjectId, String>,
     ) -> Result<(), ClassifiedActError> {
-        let events = runner
+        let mut events = runner
             .act(action)
             .map_err(|error| ClassifiedActError::Engine(error.to_string()))?
             .events;
+        self.order_pending_triggers(runner, &mut events)
+            .map_err(ClassifiedActError::Harness)?;
         let events = events
             .into_iter()
             .filter(|event| {
@@ -855,8 +952,89 @@ impl DiscardChoiceReconciler {
         choices: &mut [VecDeque<DiscardScriptChoice>; 2],
         labels: &HashMap<ObjectId, String>,
     ) -> Result<(), String> {
-        let events = runner.advance_until_stack_empty_with_events();
+        // Mirrors `GameRunner::advance_until_stack_empty_with_events`, except that
+        // trigger-order prompts are answered from the script instead of by identity.
+        let mut events = Vec::new();
+        for _ in 0..40 {
+            if matches!(runner.state().waiting_for, WaitingFor::OrderTriggers { .. }) {
+                self.order_pending_triggers(runner, &mut events)?;
+                continue;
+            }
+            if let WaitingFor::EffectZoneChoice {
+                cards,
+                count,
+                min_count,
+                up_to,
+                effect_kind,
+                ..
+            } = &runner.state().waiting_for
+            {
+                if *effect_kind != EffectKind::PutAtLibraryPosition
+                    || *up_to
+                    || cards.len() < *min_count
+                    || cards.len() < *count
+                {
+                    break;
+                }
+                let chosen = cards.iter().take(*count).copied().collect();
+                match runner.act(GameAction::SelectCards { cards: chosen }) {
+                    Ok(result) => events.extend(result.events),
+                    Err(_) => break,
+                }
+                continue;
+            }
+            if runner.state().stack.is_empty() {
+                break;
+            }
+            match runner.act(GameAction::PassPriority) {
+                Ok(result) => events.extend(result.events),
+                Err(_) => break,
+            }
+        }
         consume_resolved_discard_choices(&mut self.pending_events, events, choices, labels)
+    }
+
+    /// CR 603.3b: answer every pending trigger-order prompt. Triggers with the
+    /// same source and text need no script; any other set must be scripted.
+    fn order_pending_triggers(
+        &mut self,
+        runner: &mut GameRunner,
+        events: &mut Vec<GameEvent>,
+    ) -> Result<(), String> {
+        for _ in 0..16 {
+            let WaitingFor::OrderTriggers { player, triggers } = &runner.state().waiting_for else {
+                return Ok(());
+            };
+            let identical = triggers.windows(2).all(|pair| {
+                pair[0].source_id == pair[1].source_id && pair[0].description == pair[1].description
+            });
+            let order = if identical {
+                (0..triggers.len()).collect()
+            } else {
+                let descriptions = triggers
+                    .iter()
+                    .map(|trigger| normalize_ability_text(&trigger.description))
+                    .collect::<Vec<_>>();
+                let Some(choice) = self.trigger_orders.pop_front() else {
+                    return Err(format!(
+                        "unscripted order for non-identical triggers of P{}: {descriptions:?}",
+                        player.0
+                    ));
+                };
+                if choice.player != *player {
+                    return Err(format!(
+                        "order_triggers was scripted for P{} but P{} is ordering triggers",
+                        choice.player.0, player.0
+                    ));
+                }
+                trigger_placement_order(&choice.resolve, &descriptions)?
+            };
+            let result = runner
+                .act(GameAction::OrderTriggers { order })
+                .map_err(|error| format!("OrderTriggers was rejected: {error}"))?;
+            events.extend(result.events);
+        }
+        Err("too many trigger-order prompts".to_string())
     }
 }
 
@@ -4598,6 +4776,11 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
             "copy_choice" => {
                 copy_choices.push_back(parse_copy_choice(action, &labels)?);
             }
+            "order_triggers" => {
+                discard_reconciler
+                    .trigger_orders
+                    .extend(parse_trigger_order(action)?);
+            }
             "choose_optional" => {
                 let answers = parse_optional_answers(action, &labels)?;
                 optional_choice_groups[runner.state().active_player.0 as usize].extend(answers);
@@ -4712,6 +4895,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     ensure_outside_game_choices_consumed(&outside_game_choices)?;
     ensure_mana_choices_consumed(&mana_choice_groups)?;
     ensure_copy_choices_consumed(&copy_choices)?;
+    ensure_trigger_orders_consumed(&discard_reconciler.trigger_orders)?;
     ensure_optional_choices_consumed(&optional_choice_groups)?;
     ensure_unless_choice_groups_consumed(&unless_choice_groups)?;
     if attack_needs_resolution {
@@ -7377,6 +7561,76 @@ mod tests {
     }
 
     #[test]
+    fn non_identical_triggers_without_a_scripted_order_fail_the_run() {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let _draw_trigger = scenario
+                    .add_creature_from_oracle(
+                        PlayerId(0),
+                        "Draw Trigger Creature",
+                        0,
+                        2,
+                        "Whenever you draw a card, you gain 2 life.",
+                    )
+                    .id();
+                let _second_draw_trigger = scenario
+                    .add_creature_from_oracle(
+                        PlayerId(0),
+                        "Second Draw Trigger Creature",
+                        0,
+                        2,
+                        "Whenever you draw a card, you gain 3 life.",
+                    )
+                    .id();
+                scenario.with_library_top(PlayerId(0), &["P0 draw"]);
+                scenario.with_library_top(PlayerId(1), &["P1 draw"]);
+                let mut runner = scenario.build();
+                let turn = runner.state().turn_number;
+
+                let (mut discard_reconciler, mut discard_choices) = empty_discard_context();
+                advance_to_next_turn(
+                    &mut runner,
+                    true,
+                    &HashMap::new(),
+                    &mut discard_reconciler,
+                    &mut discard_choices,
+                )
+                .unwrap();
+
+                assert_ne!(runner.state().turn_number, turn);
+                assert_eq!(runner.state().active_player, PlayerId(1));
+                assert_eq!(runner.state().phase, Phase::PreCombatMain);
+                assert_eq!(runner.state().players[1].hand.len(), 1);
+
+                let unscripted = advance_to_next_turn(
+                    &mut runner,
+                    true,
+                    &HashMap::new(),
+                    &mut discard_reconciler,
+                    &mut discard_choices,
+                )
+                .unwrap_err();
+                assert!(unscripted.contains("unscripted order for non-identical triggers of P0"));
+                discard_reconciler
+                    .trigger_orders
+                    .push_back(TriggerOrderChoice {
+                        player: PlayerId(1),
+                        resolve: vec!["whenever you draw".to_string(), "whenever".to_string()],
+                    });
+                let wrong_player = discard_reconciler
+                    .order_pending_triggers(&mut runner, &mut Vec::new())
+                    .unwrap_err();
+                assert!(wrong_player.contains("scripted for P1 but P0 is ordering"));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
     fn end_turn_reaches_precombat_main_after_draw_and_trigger_resolution() {
         std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
@@ -7421,6 +7675,16 @@ mod tests {
                 assert_eq!(runner.state().phase, Phase::PreCombatMain);
                 assert_eq!(runner.state().players[1].hand.len(), 1);
 
+                // The two draw triggers differ, so their order must be scripted.
+                discard_reconciler
+                    .trigger_orders
+                    .push_back(TriggerOrderChoice {
+                        player: PlayerId(0),
+                        resolve: vec![
+                            "whenever you draw a card, you gain 3".to_string(),
+                            "whenever you draw a card, you gain 2".to_string(),
+                        ],
+                    });
                 advance_to_next_turn(
                     &mut runner,
                     true,
@@ -7434,6 +7698,7 @@ mod tests {
                 assert_eq!(runner.state().phase, Phase::PreCombatMain);
                 assert_eq!(runner.state().players[0].hand.len(), 1);
                 assert_eq!(runner.state().players[0].life, 25);
+                assert!(discard_reconciler.trigger_orders.is_empty());
             })
             .unwrap()
             .join()
@@ -7943,5 +8208,96 @@ mod combat_damage_card_choice_tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod trigger_order_tests {
+    use super::*;
+
+    fn texts(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn resolve_order_is_reversed_into_stack_placement() {
+        let pending = texts(&["whenever you attack, a", "whenever ~ attacks, b", "at c"]);
+        assert_eq!(
+            trigger_placement_order(
+                &texts(&["whenever ~ attacks", "at c", "whenever you"]),
+                &pending
+            ),
+            Ok(vec![0, 2, 1])
+        );
+    }
+
+    #[test]
+    fn identical_descriptions_are_each_used_once() {
+        let pending = texts(&["draw a card", "gain 1 life", "draw a card"]);
+        assert_eq!(
+            trigger_placement_order(&texts(&["draw", "gain", "draw"]), &pending),
+            Ok(vec![0, 1, 2])
+        );
+    }
+
+    #[test]
+    fn wrong_count_missing_and_ambiguous_prefixes_are_rejected() {
+        let pending = texts(&["whenever you attack", "whenever you discard"]);
+        let error =
+            |resolve: &[&str]| trigger_placement_order(&texts(resolve), &pending).unwrap_err();
+        assert!(error(&["whenever you attack"]).contains("lists 1 abilities but 2"));
+        assert!(error(&["whenever you attack", "when you do"]).contains("matches no trigger"));
+        assert!(error(&["whenever you attack", "whenever you"]).contains("is ambiguous"));
+        assert!(
+            error(&["whenever you attack", "whenever you attack"]).contains("matches no trigger")
+        );
+    }
+
+    #[test]
+    fn order_triggers_is_parsed_and_validated() {
+        let parsed = parse_trigger_order(&json!({
+            "action": "order_triggers",
+            "player": "P1",
+            "resolve": ["Whenever {this} attacks", "Put a"],
+        }));
+        assert_eq!(
+            parsed,
+            Ok(Some(TriggerOrderChoice {
+                player: PlayerId(1),
+                resolve: texts(&["whenever ~ attacks", "put a"]),
+            }))
+        );
+        let unprompted = json!({
+            "action": "order_triggers", "player": "P0", "resolve": ["a", "b"],
+            "only": "xmage",
+        });
+        assert_eq!(parse_trigger_order(&unprompted), Ok(None));
+        let phase_only = json!({
+            "action": "order_triggers", "player": "P0", "resolve": ["a", "b"],
+            "only": "phase",
+        });
+        assert!(matches!(parse_trigger_order(&phase_only), Ok(Some(_))));
+        for invalid in [
+            json!({"action": "order_triggers", "player": "P2", "resolve": ["a", "b"]}),
+            json!({"action": "order_triggers", "player": "P0", "resolve": ["a"]}),
+            json!({"action": "order_triggers", "player": "P0", "resolve": ["a", " "]}),
+            json!({"action": "order_triggers", "player": "P0", "resolve": ["a", "b"], "x": 1}),
+            json!({"action": "order_triggers", "player": "P0", "resolve": ["a", "b"],
+                "only": "forge"}),
+        ] {
+            assert!(parse_trigger_order(&invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn leftover_trigger_orders_fail_the_script() {
+        assert_eq!(ensure_trigger_orders_consumed(&VecDeque::new()), Ok(()));
+        let leftover = VecDeque::from([TriggerOrderChoice {
+            player: PlayerId(0),
+            resolve: texts(&["a", "b"]),
+        }]);
+        assert!(ensure_trigger_orders_consumed(&leftover)
+            .unwrap_err()
+            .contains("1 order_triggers entry(s) were unconsumed"));
     }
 }
