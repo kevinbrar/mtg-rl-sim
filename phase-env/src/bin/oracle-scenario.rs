@@ -1947,6 +1947,7 @@ fn ensure_copy_target_choice_consumed(
     Ok(())
 }
 
+#[cfg(test)]
 fn declare_attackers(
     runner: &mut GameRunner,
     labels: &HashMap<ObjectId, String>,
