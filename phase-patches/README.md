@@ -449,4 +449,7 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
   trigger with no `OrderTriggers` prompt (2025-10-02 ruling). The integration
   tests in `firebender_ascension.rs` assert the absence of the prompt and the
   stack order, including with an opponent's first-part trigger.
+- `normalize_deferred_trigger_order` recognizes a parked chosen-order
+  remainder per controller and part, matching the one ephemeral order template
+  recorded per ordered group.
 - Runtime-only; no parser or card-data change.

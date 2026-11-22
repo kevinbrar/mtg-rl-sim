@@ -1,4 +1,4 @@
-From 72c8b76ade8330e25877c9516afb9bccb2591871 Mon Sep 17 00:00:00 2001
+From b0f77b15e2af5eac96208151118c9f1a663bba66 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Sun, 22 Nov 2026 22:16:16 +0000
 Subject: [PATCH] Place ability-triggered abilities in the second CR 603.3b
@@ -6,12 +6,12 @@ Subject: [PATCH] Place ability-triggered abilities in the second CR 603.3b
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
- crates/engine/src/game/triggers.rs            | 39 +++++++-
- .../tests/integration/firebender_ascension.rs | 98 ++++++++-----------
- 2 files changed, 76 insertions(+), 61 deletions(-)
+ crates/engine/src/game/triggers.rs            | 148 ++++++++++++++++--
+ .../tests/integration/firebender_ascension.rs |  98 +++++-------
+ 2 files changed, 178 insertions(+), 68 deletions(-)
 
 diff --git a/crates/engine/src/game/triggers.rs b/crates/engine/src/game/triggers.rs
-index 200a2f76c..bd79d5b18 100644
+index 200a2f76c..9422ee434 100644
 --- a/crates/engine/src/game/triggers.rs
 +++ b/crates/engine/src/game/triggers.rs
 @@ -4630,6 +4630,30 @@ fn apnap_rank(order: &[PlayerId], controller: PlayerId) -> usize {
@@ -53,15 +53,56 @@ index 200a2f76c..bd79d5b18 100644
              trigger_apnap_rank(state, t.pending.controller),
              t.pending.timestamp,
          )
-@@ -8722,6 +8747,7 @@ fn normalize_deferred_trigger_order(state: &GameState, pending: &mut [PendingTri
+@@ -8692,20 +8717,26 @@ fn queued_triggers_continue_chosen_order(
+ /// remainder of an order a controller already chose keeps that chosen order:
+ /// re-sorting it would move triggers the player has already placed.
+ fn normalize_deferred_trigger_order(state: &GameState, pending: &mut [PendingTriggerContext]) {
+-    let mut controllers: Vec<PlayerId> = Vec::new();
++    // CR 603.3b: a controller chooses one order per placement part, so a
++    // remainder is recognized per (controller, part).
++    let mut order_groups: Vec<(PlayerId, StackPlacementPart)> = Vec::new();
+     for ctx in pending.iter() {
+-        let controller = trigger_order_controller(state, ctx.pending.controller);
+-        if !controllers.contains(&controller) {
+-            controllers.push(controller);
++        let group = (
++            trigger_order_controller(state, ctx.pending.controller),
++            stack_placement_part(ctx),
++        );
++        if !order_groups.contains(&group) {
++            order_groups.push(group);
+         }
+     }
+-    let chosen_remainders: Vec<PlayerId> = controllers
++    let chosen_remainders: Vec<(PlayerId, StackPlacementPart)> = order_groups
+         .into_iter()
+-        .filter(|controller| {
++        .filter(|(controller, part)| {
+             let queued: Vec<_> = pending
+                 .iter()
+                 .filter(|ctx| {
+                     trigger_order_controller(state, ctx.pending.controller) == *controller
++                        && stack_placement_part(ctx) == *part
+                 })
+                 .map(thisobject_order_source)
+                 .collect();
+@@ -8716,12 +8747,14 @@ fn normalize_deferred_trigger_order(state: &GameState, pending: &mut [PendingTri
+     // its queued order within its controller's APNAP slot.
+     pending.sort_by_key(|ctx| {
+         let controller = trigger_order_controller(state, ctx.pending.controller);
+-        let collection_order = if chosen_remainders.contains(&controller) {
++        let part = stack_placement_part(ctx);
++        let collection_order = if chosen_remainders.contains(&(controller, part)) {
+             None
+         } else {
              Some(ctx.pending.timestamp)
          };
          (
-+            stack_placement_part(ctx),
++            part,
              trigger_apnap_rank(state, ctx.pending.controller),
              collection_order,
          )
-@@ -8879,9 +8905,13 @@ fn begin_trigger_ordering(
+@@ -8879,9 +8912,13 @@ fn begin_trigger_ordering(
      // trigger. Deliberately not updated by a triggered-mana context: an echo
      // group is invisible to CR 603.3b grouping, while an ordinary group of a
      // different controller still ends the previous controller's APNAP run.
@@ -76,7 +117,7 @@ index 200a2f76c..bd79d5b18 100644
          let trigger_event = ctx
              .pending
              .trigger_event
-@@ -8890,8 +8920,8 @@ fn begin_trigger_ordering(
+@@ -8890,8 +8927,8 @@ fn begin_trigger_ordering(
          let is_triggered_mana =
              super::mana_abilities::is_triggered_mana_ability(&ctx.pending.ability, trigger_event);
          if !is_triggered_mana {
@@ -87,7 +128,7 @@ index 200a2f76c..bd79d5b18 100644
                      groups[index].triggers.push(ctx);
                      continue;
                  }
-@@ -8903,7 +8933,7 @@ fn begin_trigger_ordering(
+@@ -8903,7 +8940,7 @@ fn begin_trigger_ordering(
              ordered: is_triggered_mana,
          });
          if !is_triggered_mana {
@@ -96,7 +137,7 @@ index 200a2f76c..bd79d5b18 100644
          }
      }
  
-@@ -16175,6 +16205,7 @@ fn collect_pending_and_delayed_triggers_reporting_terminalized(
+@@ -16175,6 +16212,7 @@ fn collect_pending_and_delayed_triggers_reporting_terminalized(
      contexts.extend(delayed_pending);
      contexts.sort_by_key(|ctx| {
          (
@@ -104,6 +145,101 @@ index 200a2f76c..bd79d5b18 100644
              trigger_apnap_rank(state, ctx.pending.controller),
              ctx.pending.timestamp,
          )
+@@ -56660,6 +56698,94 @@ pub mod tests {
+         normalize_deferred_trigger_order(&unmarked, &mut fresh);
+         assert_eq!(sources(&fresh), vec![3, 2]);
+     }
++
++    /// CR 603.3b: a controller chooses one order per placement part, so the
++    /// parked remainders of both parts keep their chosen orders, and abilities
++    /// triggered by another ability triggering stay after every other trigger.
++    #[test]
++    fn deferred_drain_keeps_chosen_order_remainders_of_both_placement_parts() {
++        let context = |source: u64, timestamp: u32, ability_triggered: bool| {
++            let controller = PlayerId(0);
++            let trigger_event = ability_triggered.then(|| GameEvent::AbilityTriggered {
++                trigger_instance: ObjectId(100 + source),
++                source: ObjectId(50),
++                controller,
++                cause: Box::new(GameEvent::AttackersDeclared {
++                    attacker_ids: vec![ObjectId(50)],
++                    defending_player: PlayerId(1),
++                    attacks: Vec::new(),
++                    declaration_records: Vec::new(),
++                }),
++            });
++            PendingTriggerContext::single(PendingTrigger {
++                source_id: ObjectId(source),
++                controller,
++                condition: None,
++                ability: Box::new(ResolvedAbility::new(
++                    Effect::Draw {
++                        count: QuantityExpr::Fixed { value: 1 },
++                        target: TargetFilter::Controller,
++                    },
++                    Vec::new(),
++                    ObjectId(source),
++                    controller,
++                )),
++                timestamp,
++                target_constraints: Vec::new(),
++                distribute: None,
++                trigger_event,
++                modal: None,
++                mode_abilities: Vec::new(),
++                description: None,
++                may_trigger_origin: None,
++                subject_match_count: None,
++                die_result: None,
++                provenance: None,
++            })
++        };
++        let sources = |pending: &[PendingTriggerContext]| -> Vec<u64> {
++            pending.iter().map(|ctx| ctx.pending.source_id.0).collect()
++        };
++        let mut state = setup();
++        state.active_player = PlayerId(0);
++        // Both chosen orders deliberately disagree with timestamp order.
++        let first = [
++            context(1, 5, false),
++            context(2, 9, false),
++            context(3, 1, false),
++        ];
++        let second = [context(4, 8, true), context(5, 2, true)];
++        let unmarked = state.clone();
++        state.set_trigger_order_template(build_ephemeral_order_template(PlayerId(0), &first));
++        state.set_trigger_order_template(build_ephemeral_order_template(PlayerId(0), &second));
++
++        let queue = || {
++            vec![
++                second[0].clone(),
++                first[1].clone(),
++                second[1].clone(),
++                first[2].clone(),
++            ]
++        };
++        let mut remainder = queue();
++        normalize_deferred_trigger_order(&state, &mut remainder);
++        assert_eq!(sources(&remainder), vec![2, 3, 4, 5]);
++
++        // Without chosen orders each part is normalized to timestamp order.
++        let mut fresh = queue();
++        normalize_deferred_trigger_order(&unmarked, &mut fresh);
++        assert_eq!(sources(&fresh), vec![3, 2, 5, 4]);
++
++        // A part whose queue is not a chosen remainder is normalized on its own.
++        let mut mixed = vec![
++            first[0].clone(),
++            first[2].clone(),
++            second[0].clone(),
++            second[1].clone(),
++        ];
++        normalize_deferred_trigger_order(&state, &mut mixed);
++        assert_eq!(sources(&mixed), vec![3, 1, 4, 5]);
++    }
+ }
+ 
+ /// Regression tests for the foundational trigger double-fire defect
 diff --git a/crates/engine/tests/integration/firebender_ascension.rs b/crates/engine/tests/integration/firebender_ascension.rs
 index 2afa95e69..d05ecf0a1 100644
 --- a/crates/engine/tests/integration/firebender_ascension.rs
