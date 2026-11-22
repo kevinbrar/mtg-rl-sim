@@ -1278,6 +1278,35 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                     raise ValueError(
                         f"{context}.cards label {label} must be in {player}'s graveyard"
                     )
+        if action.get("action") == "order_triggers":
+            context = f"{name}: script[{index}].order_triggers"
+            if oracle == "forge":
+                raise ValueError(
+                    f"{context} is unsupported by the Forge scenario runner"
+                )
+            unknown = action.keys() - {
+                "action",
+                "player",
+                "resolve",
+                "only",
+            }
+            if unknown:
+                raise ValueError(f"{context} has unknown keys: {sorted(unknown)}")
+            if action.get("player") not in {"P0", "P1"}:
+                raise ValueError(f"{context}.player must be P0 or P1")
+            if action.get("only", "phase") not in {"phase", "xmage"}:
+                raise ValueError(f"{context}.only must be phase or xmage")
+            resolve = action.get("resolve")
+            if (
+                not isinstance(resolve, list)
+                or len(resolve) < 2
+                or any(
+                    not isinstance(entry, str) or not entry.strip() for entry in resolve
+                )
+            ):
+                raise ValueError(
+                    f"{context}.resolve must list at least two ability text prefixes"
+                )
         if action.get("action") == "copy_choice":
             context = f"{name}: script[{index}].copy_choice"
             unknown = action.keys() - {"action", "player", "decision", "new_targets"}
@@ -1398,6 +1427,7 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
         "copy_choice",
         "copy_targets",
         "graveyard_targets",
+        "order_triggers",
         "trigger_targets",
         "unless_choices",
     }

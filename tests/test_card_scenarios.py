@@ -962,6 +962,72 @@ battlefield = [{ label = "defender-a", card = "Centaur Courser" }]
     assert loaded["scenarios"][0]["script"][1]["through"] == "damage"
 
 
+def test_normalize_projection_unifies_plus_one_counter_names() -> None:
+    phase = {"battlefield": [{"name": "Inti", "counters": {"P1P1": 1, "stun": 2}}]}
+    xmage = {"battlefield": [{"name": "Inti", "counters": {"+1/+1": 1, "stun": 2}}]}
+
+    assert normalize_projection(phase) == normalize_projection(xmage)
+    assert normalize_projection(phase)["battlefield"][0]["counters"] == {
+        "+1/+1": 1,
+        "stun": 2,
+    }
+    assert normalize_projection({"battlefield": [{"counters": {"M1M1": 1}}]}) != (
+        normalize_projection(xmage)
+    )
+    with pytest.raises(ValueError, match="counter names collide"):
+        normalize_projection({"battlefield": [{"counters": {"P1P1": 1, "+1/+1": 1}}]})
+
+
+def test_load_specs_rejects_order_triggers_for_forge(tmp_path: Path) -> None:
+    spec = tmp_path / "forge-order-triggers.toml"
+    spec.write_text(
+        """
+oracle = "forge"
+
+[[scenarios]]
+name = "Forge trigger order"
+script = [{ action = "order_triggers", player = "P0", resolve = ["a", "b"] }]
+
+[scenarios.setup.P0]
+
+[scenarios.setup.P1]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError, match="order_triggers is unsupported by the Forge scenario runner"
+    ):
+        load_specs([spec])
+
+
+def test_load_specs_accepts_order_triggers_script(tmp_path: Path) -> None:
+    spec = tmp_path / "order-triggers.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "ordered triggers"
+script = [
+  { action = "order_triggers", player = "P0", resolve = ["put a", "whenever you"] },
+  { action = "attack", attackers = ["attacker"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [{ label = "attacker", card = "Pulse Tracker" }]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+
+    assert loaded["scenarios"][0]["script"][0] == {
+        "action": "order_triggers",
+        "player": "P0",
+        "resolve": ["put a", "whenever you"],
+    }
+
+
 def test_load_specs_accepts_uldaros_target_and_copy_scripts(tmp_path: Path) -> None:
     spec = tmp_path / "uldaros-choices.toml"
     spec.write_text(
@@ -1076,6 +1142,31 @@ def test_load_specs_rejects_invalid_uldaros_choice_scripts(
             '{ action = "copy_choice", player = "P0", decision = "maybe" }',
             "[scenarios.setup.P0]",
             "decision must be accept or decline",
+        ),
+        (
+            '{ action = "order_triggers", player = "P2", resolve = ["a", "b"] }',
+            "[scenarios.setup.P0]",
+            "order_triggers.player must be P0 or P1",
+        ),
+        (
+            '{ action = "order_triggers", player = "P0", resolve = ["a"] }',
+            "[scenarios.setup.P0]",
+            "resolve must list at least two ability text prefixes",
+        ),
+        (
+            '{ action = "order_triggers", player = "P0", resolve = ["a", " "] }',
+            "[scenarios.setup.P0]",
+            "resolve must list at least two ability text prefixes",
+        ),
+        (
+            '{ action = "order_triggers", player = "P0", resolve = ["a", "b"], first = "a" }',
+            "[scenarios.setup.P0]",
+            "order_triggers has unknown keys",
+        ),
+        (
+            '{ action = "order_triggers", player = "P0", resolve = ["a", "b"], only = "forge" }',
+            "[scenarios.setup.P0]",
+            "only must be phase or xmage",
         ),
         (
             '{ action = "copy_choice", player = "P0", decision = "accept", new_targets = ["missing"] }',

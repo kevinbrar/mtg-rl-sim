@@ -3,10 +3,39 @@
 # on target attacking creature. It gains trample until end of turn.
 # Whenever you discard one or more cards, exile the top card of your library.
 # You may play that card until your next end step.
-#
-# Not covered: accepting the discard. It puts the reflexive trigger and the
-# discard trigger on the stack together, and the XMage runner cannot yet script
-# an order for non-identical triggers (see STATUS.md).
+
+[[scenarios]]
+# CR 603.12: the discard happens, so the reflexive trigger targets the attacker.
+# The discard also triggers Inti's second ability. XMage is told to resolve the
+# counter first; either order ends in the same state, so the order itself is
+# not observable here (N4 and N5 show an order being applied).
+# Phase does not ask for this order (STATUS.md), hence only = "xmage".
+name = "N1 discarding a card puts a +1/+1 counter on the attacker and exiles the top card"
+active_player = 0
+script = [
+  { action = "choose_optional", answers = ["yes"] },
+  { action = "choose_discard", player = "P0", cards = ["fodder"] },
+  { action = "trigger_targets", targets = ["inti"] },
+  { action = "order_triggers", player = "P0", resolve = ["put a +1/+1 counter", "whenever you discard"], only = "xmage" },
+  { action = "attack", attackers = ["inti"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+hand = [{ label = "fodder", card = "Opt" }]
+library_top = ["Mountain", "Island"]
+battlefield = [{ label = "inti", card = "Inti, Seneschal of the Sun" }]
+
+[scenarios.setup.P1]
+life = 20
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Inti, Seneschal of the Sun", count = 1, counters = { "+1/+1" = 1 } },
+  { zone = "graveyard", player = "P0", card = "Opt", count = 1 },
+  { zone = "exile", player = "P0", card = "Mountain", count = 1 },
+]
 
 [[scenarios]]
 # Declining keeps the card; no reflexive trigger and no discard trigger.
@@ -56,4 +85,69 @@ life = 20
 all = [
   { zone = "battlefield", player = "P0", card = "Inti, Seneschal of the Sun", count = 1, counters = {} },
   { zone = "library", player = "P0", card = "Mountain", count = 1 },
+]
+
+[[scenarios]]
+# CR 603.3b: the attacking player orders the two attack triggers. Inti's
+# resolves first with an empty hand, so no discard is possible; the card
+# Library Larcenist draws afterwards stays in hand.
+name = "N4 Inti's trigger ordered before a draw trigger finds no card to discard"
+active_player = 0
+script = [
+  { action = "order_triggers", player = "P0", resolve = ["whenever you attack", "whenever ~ attacks"] },
+  { action = "attack", attackers = ["inti", "larcenist"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+hand = []
+library_top = ["Mountain", "Island"]
+battlefield = [
+  { label = "inti", card = "Inti, Seneschal of the Sun" },
+  { label = "larcenist", card = "Library Larcenist" },
+]
+
+[scenarios.setup.P1]
+life = 20
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Inti, Seneschal of the Sun", count = 1, counters = {} },
+  { zone = "hand", player = "P0", card = "Mountain", count = 1 },
+  { zone = "library", player = "P0", card = "Island", count = 1 },
+]
+
+[[scenarios]]
+# The same attack with the draw ordered first: the drawn Mountain is discarded
+# to Inti, which gets the counter, and the discard trigger exiles the Island.
+name = "N5 a draw trigger ordered before Inti's trigger supplies the discard"
+active_player = 0
+script = [
+  { action = "order_triggers", player = "P0", resolve = ["whenever ~ attacks", "whenever you attack"] },
+  { action = "choose_optional", answers = ["yes"] },
+  { action = "choose_discard", player = "P0", cards = ["drawn"] },
+  { action = "trigger_targets", targets = ["inti"] },
+  { action = "order_triggers", player = "P0", resolve = ["put a +1/+1 counter", "whenever you discard"], only = "xmage" },
+  { action = "attack", attackers = ["inti", "larcenist"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+hand = []
+library_top = [{ label = "drawn", card = "Mountain" }, "Island"]
+battlefield = [
+  { label = "inti", card = "Inti, Seneschal of the Sun" },
+  { label = "larcenist", card = "Library Larcenist" },
+]
+
+[scenarios.setup.P1]
+life = 20
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Inti, Seneschal of the Sun", count = 1, counters = { "+1/+1" = 1 } },
+  { zone = "graveyard", player = "P0", card = "Mountain", count = 1 },
+  { zone = "exile", player = "P0", card = "Island", count = 1 },
 ]

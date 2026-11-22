@@ -21,11 +21,23 @@ def _normalize_card_name(value: str) -> str:
     )
 
 
+# phase-rs and Forge name these counters P1P1/M1M1; XMage uses the printed form.
+_COUNTER_NAMES = {"p1p1": "+1/+1", "m1m1": "-1/-1"}
+
+
 def _normalize_projection_names(value: object) -> None:
     if isinstance(value, dict):
         for key, item in value.items():
             if key == "name" and isinstance(item, str):
                 value[key] = _normalize_card_name(item)
+            elif key == "counters" and isinstance(item, dict):
+                renamed = {
+                    _COUNTER_NAMES.get(name.lower(), name): count
+                    for name, count in item.items()
+                }
+                if len(renamed) != len(item):
+                    raise ValueError(f"counter names collide: {sorted(item)}")
+                value[key] = renamed
             else:
                 _normalize_projection_names(item)
     elif isinstance(value, list):
