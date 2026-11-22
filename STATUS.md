@@ -1,3 +1,12 @@
+## Optional discard with a reflexive trigger (Ill-Timed Explosion, Inti)
+
+- No engine change. Phase and XMage agree on all 6 new scenarios (0 triaged, 0 failed): I1–I4 for Ill-Timed Explosion and N2–N3 for Inti, Seneschal of the Sun. This closes the fresh-reviewer question (trial R4) whether an optional exact-count discard with too few cards discards partially and fires "when you do": it does not.
+- I4 uses Spirit of the Labyrinth to stop the second draw, leaving one card in hand. Neither engine offers "discard two"; nothing is discarded and no damage is dealt. A control run that scripted a `yes` answer for I4 failed in Phase with `1 choose_optional answer(s) were unconsumed`, so Phase really asks nothing. Drawing from a one-card library is not a usable setup: the player loses to the empty-library draw in both engines.
+- N3 (empty hand on attack) matches: no prompt, no counter, no exile.
+- Harness gap, `unsupported`, not a pass: Inti with the discard accepted. XMage then has two non-identical triggers from one source (reflexive counter trigger and "whenever you discard") and the test player stops with `Cannot auto-order non-identical triggered abilities`. Phase alone produced the expected result (counter on Inti, Opt discarded, Mountain exiled). Next harness capability: a scripted trigger order for Phase and XMage.
+- Not checked against XMage: empty-hand behavior of Awaken the Honored Dead, Miasma Demon, Shriek, Treblemaker and Tether Technician. They use the same optional Discard/WhenYouDo lowering as Inti N3.
+- Evidence: `runs/card-scenarios/discard-two/ite-2` (I1–I4), `runs/card-scenarios/discard-two/both-1` (N2–N3 matched, N1 runner error), `runs/card-scenarios/discard-two/ite-3` (I4 control).
+
 ## Dig-family optional exile
 
 - Patch 0041 limits the optional-exile parser continuation to `Dig`; Shadow Kin retains the prior A lowering (`Mill` → `Unimplemented` → `BecomeCopy`) and the parser regression rules out a new Hand route. The nested-Dig fix binds an empty Dig's missing-parent cause to descendants requiring `ParentTarget` and preserves an earlier cause when no new reason exists. Random-order library remainders shuffle without an order prompt.
