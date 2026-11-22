@@ -5,12 +5,12 @@ Subject: [PATCH] Script the order of non-identical triggers
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
- .../java/org/mage/test/player/TestPlayer.java | 58 +++++++++++++++++++
+ .../java/org/mage/test/player/TestPlayer.java | 62 +++++++++++++++++++-
  .../testapi/CardScenarioProjectionTest.java   | 30 +++++++++
- 2 files changed, 88 insertions(+)
+ 2 files changed, 91 insertions(+), 1 deletion(-)
 
 diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
-index 23eb63a..ea9e34d 100644
+index 23eb63a..8890c4d 100644
 --- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
 +++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
 @@ -139,6 +139,10 @@ public class TestPlayer implements Player {
@@ -70,7 +70,16 @@ index 23eb63a..ea9e34d 100644
      public void assertNoCardChoiceGroups() {
          if (!cardChoiceGroups.isEmpty()) {
              throw new IllegalStateException("card choice group(s) were unconsumed: " + cardChoiceGroups);
-@@ -3123,6 +3159,28 @@ public class TestPlayer implements Player {
+@@ -3117,12 +3153,36 @@ public class TestPlayer implements Player {
+                 TriggeredAbility first = abilities.get(0);
+                 UUID sourceId = first.getSourceId();
+                 String rule = first.getRule();
+-                if (sourceId != null && rule != null && !rule.isBlank()
++                // A scripted group in progress also covers its identical triggers.
++                if (activeTriggerPlacement.isEmpty()
++                        && sourceId != null && rule != null && !rule.isBlank()
+                         && abilities.stream().allMatch(ability -> sourceId.equals(ability.getSourceId())
+                         && rule.equals(ability.getRule()))) {
                      return first;
                  }
              }
@@ -147,6 +156,3 @@ index 3bb43ee..cb0c063 100644
                  case "copy_choice" -> {
                      rejectUnknownKeys(action, Set.of("action", "player", "decision", "new_targets"),
                              "script.copy_choice");
--- 
-2.43.0
-

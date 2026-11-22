@@ -836,10 +836,7 @@ fn trigger_placement_order(
         let index = matches.next().ok_or_else(|| {
             format!("order_triggers prefix {prefix:?} matches no trigger in {descriptions:?}")
         })?;
-        if matches
-            .next()
-            .is_some_and(|other| descriptions[other] != descriptions[index])
-        {
+        if matches.any(|other| descriptions[other] != descriptions[index]) {
             return Err(format!(
                 "order_triggers prefix {prefix:?} is ambiguous in {descriptions:?}"
             ));
@@ -8248,6 +8245,12 @@ mod trigger_order_tests {
         assert!(error(&["whenever you attack"]).contains("lists 1 abilities but 2"));
         assert!(error(&["whenever you attack", "when you do"]).contains("matches no trigger"));
         assert!(error(&["whenever you attack", "whenever you"]).contains("is ambiguous"));
+        let duplicated = texts(&["draw a card", "draw a card", "draw two cards"]);
+        assert!(
+            trigger_placement_order(&texts(&["draw a", "draw a", "draw"]), &duplicated)
+                .unwrap_err()
+                .contains("is ambiguous")
+        );
         assert!(
             error(&["whenever you attack", "whenever you attack"]).contains("matches no trigger")
         );

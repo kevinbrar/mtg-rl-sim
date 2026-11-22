@@ -974,6 +974,8 @@ def test_normalize_projection_unifies_plus_one_counter_names() -> None:
     assert normalize_projection({"battlefield": [{"counters": {"M1M1": 1}}]}) != (
         normalize_projection(xmage)
     )
+    with pytest.raises(ValueError, match="counter names collide"):
+        normalize_projection({"battlefield": [{"counters": {"P1P1": 1, "+1/+1": 1}}]})
 
 
 def test_load_specs_rejects_order_triggers_for_forge(tmp_path: Path) -> None:

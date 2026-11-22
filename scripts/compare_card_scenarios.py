@@ -31,10 +31,13 @@ def _normalize_projection_names(value: object) -> None:
             if key == "name" and isinstance(item, str):
                 value[key] = _normalize_card_name(item)
             elif key == "counters" and isinstance(item, dict):
-                value[key] = {
+                renamed = {
                     _COUNTER_NAMES.get(name.lower(), name): count
                     for name, count in item.items()
                 }
+                if len(renamed) != len(item):
+                    raise ValueError(f"counter names collide: {sorted(item)}")
+                value[key] = renamed
             else:
                 _normalize_projection_names(item)
     elif isinstance(value, list):

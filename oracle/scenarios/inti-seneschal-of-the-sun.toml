@@ -6,7 +6,9 @@
 
 [[scenarios]]
 # CR 603.12: the discard happens, so the reflexive trigger targets the attacker.
-# The discard also triggers Inti's second ability; the counter resolves first.
+# The discard also triggers Inti's second ability. XMage is told to resolve the
+# counter first; either order ends in the same state, so the order itself is
+# not observable here (N4 and N5 show an order being applied).
 # Phase does not ask for this order (STATUS.md), hence only = "xmage".
 name = "N1 discarding a card puts a +1/+1 counter on the attacker and exiles the top card"
 active_player = 0
