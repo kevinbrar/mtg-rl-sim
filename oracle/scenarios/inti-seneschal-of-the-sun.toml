@@ -1,0 +1,59 @@
+# Inti, Seneschal of the Sun {1}{R} Legendary Creature — Human Knight 2/2
+# Whenever you attack, you may discard a card. When you do, put a +1/+1 counter
+# on target attacking creature. It gains trample until end of turn.
+# Whenever you discard one or more cards, exile the top card of your library.
+# You may play that card until your next end step.
+#
+# Not covered: accepting the discard. It puts the reflexive trigger and the
+# discard trigger on the stack together, and the XMage runner cannot yet script
+# an order for non-identical triggers (see STATUS.md).
+
+[[scenarios]]
+# Declining keeps the card; no reflexive trigger and no discard trigger.
+name = "N2 declining the discard adds no counter"
+active_player = 0
+script = [
+  { action = "choose_optional", answers = ["no"] },
+  { action = "attack", attackers = ["inti"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+hand = [{ label = "fodder", card = "Opt" }]
+library_top = ["Mountain", "Island"]
+battlefield = [{ label = "inti", card = "Inti, Seneschal of the Sun" }]
+
+[scenarios.setup.P1]
+life = 20
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Inti, Seneschal of the Sun", count = 1, counters = {} },
+  { zone = "hand", player = "P0", card = "Opt", count = 1 },
+  { zone = "library", player = "P0", card = "Mountain", count = 1 },
+]
+
+[[scenarios]]
+# CR 603.12, 609.3: with no card to discard the action is not performed, so nothing triggers.
+name = "N3 an empty hand cannot discard and adds no counter"
+active_player = 0
+script = [
+  { action = "attack", attackers = ["inti"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+hand = []
+library_top = ["Mountain", "Island"]
+battlefield = [{ label = "inti", card = "Inti, Seneschal of the Sun" }]
+
+[scenarios.setup.P1]
+life = 20
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Inti, Seneschal of the Sun", count = 1, counters = {} },
+  { zone = "library", player = "P0", card = "Mountain", count = 1 },
+]

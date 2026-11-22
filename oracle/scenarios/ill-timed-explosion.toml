@@ -1,0 +1,150 @@
+# Ill-Timed Explosion {2}{U}{R} Sorcery
+# Draw two cards. Then you may discard two cards. When you do, Ill-Timed
+# Explosion deals X damage to each creature, where X is the greatest mana value
+# among cards discarded this way.
+
+[[scenarios]]
+# Discarding Divination (MV 3) and Opt (MV 1) deals 3 to each creature.
+name = "I1 discard two drawn cards deals greatest mana value to each creature"
+active_player = 0
+script = [
+  { action = "cast", card = "Ill-Timed Explosion" },
+  { action = "choose_optional", answers = ["yes"] },
+  { action = "choose_discard", player = "P0", cards = ["three", "one"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+hand = ["Ill-Timed Explosion"]
+library_top = [
+  { label = "three", card = "Divination" },
+  { label = "one", card = "Opt" },
+  "Island",
+]
+battlefield = [
+  { label = "mana.1", card = "Island" },
+  { label = "mana.2", card = "Island" },
+  { label = "mana.3", card = "Mountain" },
+  { label = "mana.4", card = "Mountain" },
+  { label = "dreadmaw", card = "Colossal Dreadmaw" },
+]
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "bears", card = "Grizzly Bears" }]
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P0", card = "Divination", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Opt", count = 1 },
+  { zone = "graveyard", player = "P1", card = "Grizzly Bears", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Colossal Dreadmaw", count = 1, damage = 3 },
+]
+
+[[scenarios]]
+# Declining the discard keeps both cards and deals no damage.
+name = "I2 declining the discard deals no damage"
+active_player = 0
+script = [
+  { action = "cast", card = "Ill-Timed Explosion" },
+  { action = "choose_optional", answers = ["no"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+hand = ["Ill-Timed Explosion"]
+library_top = [
+  { label = "three", card = "Divination" },
+  { label = "one", card = "Opt" },
+  "Island",
+]
+battlefield = [
+  { label = "mana.1", card = "Island" },
+  { label = "mana.2", card = "Island" },
+  { label = "mana.3", card = "Mountain" },
+  { label = "mana.4", card = "Mountain" },
+  { label = "dreadmaw", card = "Colossal Dreadmaw" },
+]
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "bears", card = "Grizzly Bears" }]
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Divination", count = 1 },
+  { zone = "hand", player = "P0", card = "Opt", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Colossal Dreadmaw", count = 1, damage = 0 },
+]
+
+[[scenarios]]
+# Two lands have mana value 0: the discard still happens and X is 0.
+name = "I3 discarding two lands deals 0 damage"
+active_player = 0
+script = [
+  { action = "cast", card = "Ill-Timed Explosion" },
+  { action = "choose_optional", answers = ["yes"] },
+  { action = "choose_discard", player = "P0", cards = ["land-1", "land-2"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+hand = ["Ill-Timed Explosion"]
+library_top = [
+  { label = "land-1", card = "Forest" },
+  { label = "land-2", card = "Forest" },
+  "Island",
+]
+battlefield = [
+  { label = "mana.1", card = "Island" },
+  { label = "mana.2", card = "Island" },
+  { label = "mana.3", card = "Mountain" },
+  { label = "mana.4", card = "Mountain" },
+]
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "bears", card = "Grizzly Bears" }]
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P0", card = "Forest", count = 2 },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", count = 1, damage = 0 },
+]
+
+[[scenarios]]
+# Spirit of the Labyrinth stops the second draw, leaving one card in hand.
+# "Discard two cards" cannot be done with one card, so the discard is not
+# offered, nothing is discarded and no reflexive trigger fires (CR 603.12).
+name = "I4 one card in hand cannot discard two and deals no damage"
+active_player = 0
+script = [
+  { action = "cast", card = "Ill-Timed Explosion" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+hand = ["Ill-Timed Explosion"]
+library_top = ["Divination", "Opt", "Island"]
+battlefield = [
+  { label = "mana.1", card = "Island" },
+  { label = "mana.2", card = "Island" },
+  { label = "mana.3", card = "Mountain" },
+  { label = "mana.4", card = "Mountain" },
+]
+
+[scenarios.setup.P1]
+life = 20
+battlefield = [{ label = "spirit", card = "Spirit of the Labyrinth" }]
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Divination", count = 1 },
+  { zone = "library", player = "P0", card = "Opt", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Spirit of the Labyrinth", count = 1, damage = 0 },
+]
