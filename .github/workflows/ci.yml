@@ -695,6 +695,16 @@ jobs:
             for target in "${test_targets[@]}"; do
               cargo_test_target_args+=(--cargo-arg=--test --cargo-arg="$target")
             done
+            # Unit tests added or changed in the patched library also run:
+            # the library target is already selected above, and a zero-argument
+            # fn name that is not a test only adds a filter matching nothing.
+            mapfile -t changed_unit_tests < <(
+              git diff -U0 --no-renames "$BASE_PATCHED" "$HEAD_PATCHED" -- crates/engine/src \
+                | sed -nE 's/^\+[[:space:]]*fn ([a-z0-9_]+)\(\) \{$/\1/p' | sort -u
+            )
+            if ((${#changed_unit_tests[@]} > 0)); then
+              test_filter+=("${changed_unit_tests[@]}")
+            fi
           else
             cargo_test_target_args+=(--cargo-arg=--test --cargo-arg=integration)
           fi
