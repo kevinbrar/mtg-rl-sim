@@ -2656,3 +2656,9 @@ def test_refusal_cost_prompts_are_required_but_not_compared() -> None:
         "Forge",
     )
     assert errors == ["Forge scenario S1 has missing or invalid refusal_cost_prompts"]
+
+
+def test_every_repository_suite_loads() -> None:
+    paths = sorted((Path(__file__).parents[1] / "oracle/scenarios").glob("*.toml"))
+
+    assert set(load_specs(paths)["suite_oracles"].values()) == {"xmage", "forge"}

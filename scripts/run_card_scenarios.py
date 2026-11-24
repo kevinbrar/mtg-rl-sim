@@ -1267,7 +1267,7 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                     )
         if action.get("action") == "choose_copies":
             context = f"{name}: script[{index}].choose_copies"
-            unknown = action.keys() - {"action", "player", "source", "cards"}
+            unknown = action.keys() - {"action", "player", "source", "cards", "expect"}
             if unknown:
                 raise ValueError(f"{context}.{min(unknown)} is unsupported")
             player = action.get("player")
