@@ -6,7 +6,7 @@
 - Behavior change for every targeted reflexive trigger: with a single legal target Phase now picks it without a prompt, as it does for other triggers. Before, the reflexive path always asked.
 - Existing engine tests that resolved an ability directly and expected the reflexive on the stack now place the queued triggers first (`GameRunner::place_deferred_triggers`). The Ratonhnhaké꞉ton test is now driven through real combat damage: resolved directly, with no trigger context, the auto-targeted reflexive did not attach the Equipment; through real play it does. The cause of the direct-resolution difference was narrowed to the stack entry's source-incarnation stamp but not fully explained.
 - Not covered: a reflexive trigger together with another player's triggers; three or more abilities including a reflexive one; modal and random-target reflexive triggers keep their previous paths.
-- Evidence: local `runs/card-scenarios/inti-order/fixed-2` (6 matched, 0 triaged, 0 failed); full patched engine suite locally, 29,485 passed, 0 failed (floor 29,400), built without debug info; CI numbers on the PR.
+- Evidence: all suites locally with the final patched binary, `runs/card-scenarios/inti-order/full/known-diffs-report.json`: 144 matched, 2 triaged (the recorded Forge bugs), 0 failed, including Inti 6 of 6; full patched engine suite locally, 29,485 passed, 0 failed (floor 29,400), built without debug info; CI numbers on the PR.
 
 ## Firebender Ascension trigger placement (phase patch 0043)
 
