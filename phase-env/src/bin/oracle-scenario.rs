@@ -532,8 +532,10 @@ fn parse_copy_cast_choice(
     if cards.iter().copied().collect::<HashSet<_>>().len() != cards.len() {
         return Err("choose_copies.cards cannot repeat labels".to_string());
     }
-    if refused.is_some() && cards.is_empty() {
-        return Err("refused choose_copies needs the refused card last".to_string());
+    if refused.is_some() && cards.len() < 2 {
+        return Err(
+            "refused choose_copies needs an accepted card before the refused card".to_string(),
+        );
     }
     Ok(CopyCastChoice {
         player,
@@ -1326,6 +1328,24 @@ fn apply_card_choice_group(
                 match choice.refused {
                     Some(index) => {
                         validate_card_choice_group(&choice.cards, &cards, 0, count, labels)?;
+                        let (refused_card, accepted) = choice
+                            .cards
+                            .split_last()
+                            .filter(|(_, accepted)| !accepted.is_empty())
+                            .ok_or("refused choose_copies needs an accepted card first")?;
+                        // Only a card the engine accepts on its own shows that the
+                        // accepted cards caused the refusal.
+                        if GameRunner::from_state(runner.state().clone())
+                            .act(GameAction::SelectCards {
+                                cards: vec![*refused_card],
+                            })
+                            .is_err()
+                        {
+                            return Err(format!(
+                                "script[{index}] choose_copies refused card is not selectable on its own"
+                            ));
+                        }
+                        let accepted = accepted.to_vec();
                         let before = project(runner.state(), labels, None, true);
                         let prompt = runner.state().waiting_for.clone();
                         if runner
@@ -1352,7 +1372,7 @@ fn apply_card_choice_group(
                             &after,
                             &mut discard_reconciler.choice_refusals,
                         )?;
-                        choice.cards[..choice.cards.len() - 1].to_vec()
+                        accepted
                     }
                     None => choice.cards,
                 }
@@ -2583,6 +2603,9 @@ fn apply_trigger_target_group(
                 .split_last()
                 .ok_or("refused trigger_targets needs the refused target last")?;
             let last = last.ok_or("refused trigger_targets cannot end with @skip")?;
+            if accepted.is_empty() {
+                return Err("refused trigger_targets needs an accepted target first".to_string());
+            }
             if accepted.contains(&None) {
                 // A skipped slot could hide a slot that offers the refused target.
                 return Err("refused trigger_targets cannot contain @skip".to_string());
@@ -2607,6 +2630,17 @@ fn apply_trigger_target_group(
         let slot = target_slots
             .get(selection.current_slot)
             .ok_or("trigger target slot is missing")?;
+        if target_index == 0 {
+            if let Some((index, target)) = &refused {
+                // Only a target that is legal on its own shows that the accepted
+                // targets caused the refusal.
+                if !slot.legal_targets.contains(target) {
+                    return Err(format!(
+                        "script[{index}] trigger_targets refused target is not legal on its own"
+                    ));
+                }
+            }
+        }
         if target_index >= group.len() {
             if let Some((index, target)) = &refused {
                 if slot.legal_targets.contains(target) {
@@ -2657,7 +2691,7 @@ fn apply_trigger_target_group(
     }
     ensure_trigger_target_group_consumed(group.len(), target_index)?;
     if let Some((index, _)) = refused {
-        eprintln!("Phase refusal: script[{index}] trigger_targets: absent from legal targets");
+        eprintln!("Phase refusal: script[{index}] trigger_targets: no longer a legal target");
         discard_reconciler.choice_refusals.push(index);
     }
     Ok(())
@@ -6400,7 +6434,7 @@ mod tests {
             json!({ "action": "choose_copies", "player": "P0", "source": "source", "cards": [] });
         assert!(parse_copy_cast_choice(&empty, &labels, Some(3))
             .unwrap_err()
-            .contains("needs the refused card last"));
+            .contains("needs an accepted card before the refused card"));
         assert_eq!(
             parse_copy_cast_choice(&empty, &labels, None)
                 .unwrap()
@@ -6410,8 +6444,15 @@ mod tests {
         let one = json!({
             "action": "choose_copies", "player": "P0", "source": "source", "cards": ["grave.card"]
         });
-        let choice = parse_copy_cast_choice(&one, &labels, Some(3)).unwrap();
-        assert_eq!(choice.cards, vec![card]);
+        assert!(parse_copy_cast_choice(&one, &labels, Some(3))
+            .unwrap_err()
+            .contains("needs an accepted card before the refused card"));
+        let two = json!({
+            "action": "choose_copies", "player": "P0", "source": "source",
+            "cards": ["source", "grave.card"]
+        });
+        let choice = parse_copy_cast_choice(&two, &labels, Some(3)).unwrap();
+        assert_eq!(choice.cards, vec![source, card]);
         assert_eq!(choice.refused, Some(3));
     }
 

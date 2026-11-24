@@ -969,6 +969,12 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                     raise ValueError(f"{context} needs the refused entry last in {key}")
                 if "@skip" in entries:
                     raise ValueError(f"{context} cannot be combined with @skip")
+                if len(entries) < 2:
+                    raise ValueError(
+                        f"{context} needs an accepted entry before the refused entry"
+                    )
+                if len(set(map(str, entries))) != len(entries):
+                    raise ValueError(f"{context} cannot repeat entries in {key}")
             elif action.get("action") not in {"cast", "activate"}:
                 raise ValueError(
                     f"{context} is only valid for cast, activate, choose_copies "

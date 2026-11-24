@@ -5,9 +5,10 @@
 - Seasoned Cryomancer C8: with one nonland card discarded, neither engine offers a second target; bear.2 stays untapped with no stun counter.
 - Result: Uldaros 6 of 6 and Cryomancer 8 of 8 match Forge; the full local run of all 27 suites is 146 matched, 2 digest-pinned Forge-bug triaged (E5/E6), 0 failed, with `refusals = [3]` in both engines for U6 and C8.
 - Control: the same marker on U1 (both copies fit the budget) and C1 (two nonland cards discarded) fails in both runners ("was accepted but expected refused" / "was offered but expected refused").
+- Review fix: the refused entry must be legal on its own in both engines, so the accepted entries are what make it illegal. Before this, C8 with a graveyard card or a land as the refused target, and U6 with Scaled Wurm (mana value 8) as the refused copy, passed in both runners. All three probes now fail in both runners ("refused target is not legal on its own", "refused card is not selectable / castable on its own"). A refused step needs at least one accepted entry, no `@skip`, and no repeated entry.
 - For RL: Phase offers the over-budget copy selection and rejects it only on submit; the environment must mask or handle that rejected action. Refusal reasons are not compared across engines.
-- Not run: refused choices against XMage; a refused target that is illegal for a reason other than the cap; a refused copy when an earlier copy cast is declined.
-- Evidence: `runs/card-scenarios/prompt-refusals/final/known-diffs-report.json`, `runs/card-scenarios/prompt-refusals/control/phase.log`, `runs/card-scenarios/prompt-refusals/control/forge.log`, `runs/card-scenarios/prompt-refusals/control-c1/forge.log`.
+- Not run: refused choices against XMage; a refused copy when an earlier copy cast is declined; a cap above one with a legal over-cap creature; the mana value 6 boundary; refusals by both players in one script. The local run of all 27 suites predates the review fix; after it, the two card suites were rerun locally (14 matched, 0 failed) and CI runs them again.
+- Evidence: `runs/card-scenarios/prompt-refusals/final/known-diffs-report.json`, `runs/card-scenarios/prompt-refusals/control/phase.log`, `runs/card-scenarios/prompt-refusals/control/forge.log`, `runs/card-scenarios/prompt-refusals/control-c1/forge.log`, `runs/card-scenarios/prompt-refusals/r2-cards/known-diffs-report.json`, `runs/card-scenarios/prompt-refusals/probe-c8-graveyard/`, `probe-c8-land/`, `probe-u6-wurm/` (`phase.log`, `forge.log`).
 
 ## Inti reflexive trigger order (phase patch 0044)
 

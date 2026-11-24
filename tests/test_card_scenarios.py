@@ -2436,7 +2436,15 @@ script = [{action}]
             "cannot be combined with @skip",
         ),
         (
-            '{ action = "choose_copies", player = "P0", source = "s", cards = ["a"], bogus = 1, expect = "refused" }',
+            '{ action = "trigger_targets", targets = ["a"], expect = "refused" }',
+            "needs an accepted entry before the refused entry",
+        ),
+        (
+            '{ action = "trigger_targets", targets = ["a", "b", "a"], expect = "refused" }',
+            "cannot repeat entries in targets",
+        ),
+        (
+            '{ action = "choose_copies", player = "P0", source = "s", cards = ["a", "b"], bogus = 1, expect = "refused" }',
             "choose_copies",
         ),
     ],

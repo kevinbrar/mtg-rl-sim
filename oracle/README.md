@@ -163,7 +163,13 @@ slot offers the refused target. Forge requires that the refused card is not
 offered by the next copy prompt (or that the effect stops asking and the card
 stays in exile), and that the refused target exceeds the ability's target
 maximum or is not a legal target. An entry that the engine would accept fails
-the scenario. The script index is recorded in `refusals` like an action-level
+the scenario. The refused entry must also be legal on its own, so that the
+earlier entries are what make it illegal: Phase requires a cloned state to
+accept the refused card alone and the first target slot to offer the refused
+target; Forge requires the first copy prompt to offer the refused card and the
+ability to accept the refused target before any target is chosen. A refused
+step therefore needs at least one accepted entry, no `@skip`, and no repeated
+entry. The script index is recorded in `refusals` like an action-level
 refusal. The XMage runner does not implement this, so the loader rejects it
 outside Forge-oracle suites.
 
