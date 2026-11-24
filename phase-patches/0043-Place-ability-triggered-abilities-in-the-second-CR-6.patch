@@ -1,0 +1,556 @@
+From dec9d0d8f2e2897709479860cdb98ef6f6f1639a Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Sun, 22 Nov 2026 22:16:16 +0000
+Subject: [PATCH] Place ability-triggered abilities in the second CR 603.3b
+ part
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/triggers.rs            | 148 +++++++++++-
+ .../tests/integration/firebender_ascension.rs | 225 ++++++++++++++----
+ 2 files changed, 315 insertions(+), 58 deletions(-)
+
+diff --git a/crates/engine/src/game/triggers.rs b/crates/engine/src/game/triggers.rs
+index 200a2f76c..9422ee434 100644
+--- a/crates/engine/src/game/triggers.rs
++++ b/crates/engine/src/game/triggers.rs
+@@ -4630,6 +4630,30 @@ fn apnap_rank(order: &[PlayerId], controller: PlayerId) -> usize {
+         .unwrap_or(order.len())
+ }
+ 
++/// CR 603.3b: the part of the two-part stack-placement process a triggered
++/// ability belongs to. Abilities whose trigger condition isn't another ability
++/// triggering are placed first; all remaining abilities are placed second, so
++/// they sit above every first-part ability regardless of controller.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
++enum StackPlacementPart {
++    First,
++    Remaining,
++}
++
++/// CR 603.3b: classify a pending trigger by whether its trigger condition is
++/// another ability triggering.
++fn stack_placement_part(ctx: &PendingTriggerContext) -> StackPlacementPart {
++    let trigger_event = ctx
++        .pending
++        .trigger_event
++        .as_ref()
++        .or_else(|| ctx.trigger_events.first());
++    match trigger_event {
++        Some(GameEvent::AbilityTriggered { .. }) => StackPlacementPart::Remaining,
++        _ => StackPlacementPart::First,
++    }
++}
++
+ fn trigger_apnap_rank(state: &GameState, controller: PlayerId) -> usize {
+     if state.format_config.topology().has_shared_team_turns() {
+         super::topology::apnap_team_rank(state, controller)
+@@ -7497,6 +7521,7 @@ fn collect_pending_triggers_with_collection(
+     // preserving the real trigger controller on each pending trigger.
+     pending.sort_by_key(|t| {
+         (
++            stack_placement_part(t),
+             trigger_apnap_rank(state, t.pending.controller),
+             t.pending.timestamp,
+         )
+@@ -8692,20 +8717,26 @@ fn queued_triggers_continue_chosen_order(
+ /// remainder of an order a controller already chose keeps that chosen order:
+ /// re-sorting it would move triggers the player has already placed.
+ fn normalize_deferred_trigger_order(state: &GameState, pending: &mut [PendingTriggerContext]) {
+-    let mut controllers: Vec<PlayerId> = Vec::new();
++    // CR 603.3b: a controller chooses one order per placement part, so a
++    // remainder is recognized per (controller, part).
++    let mut order_groups: Vec<(PlayerId, StackPlacementPart)> = Vec::new();
+     for ctx in pending.iter() {
+-        let controller = trigger_order_controller(state, ctx.pending.controller);
+-        if !controllers.contains(&controller) {
+-            controllers.push(controller);
++        let group = (
++            trigger_order_controller(state, ctx.pending.controller),
++            stack_placement_part(ctx),
++        );
++        if !order_groups.contains(&group) {
++            order_groups.push(group);
+         }
+     }
+-    let chosen_remainders: Vec<PlayerId> = controllers
++    let chosen_remainders: Vec<(PlayerId, StackPlacementPart)> = order_groups
+         .into_iter()
+-        .filter(|controller| {
++        .filter(|(controller, part)| {
+             let queued: Vec<_> = pending
+                 .iter()
+                 .filter(|ctx| {
+                     trigger_order_controller(state, ctx.pending.controller) == *controller
++                        && stack_placement_part(ctx) == *part
+                 })
+                 .map(thisobject_order_source)
+                 .collect();
+@@ -8716,12 +8747,14 @@ fn normalize_deferred_trigger_order(state: &GameState, pending: &mut [PendingTri
+     // its queued order within its controller's APNAP slot.
+     pending.sort_by_key(|ctx| {
+         let controller = trigger_order_controller(state, ctx.pending.controller);
+-        let collection_order = if chosen_remainders.contains(&controller) {
++        let part = stack_placement_part(ctx);
++        let collection_order = if chosen_remainders.contains(&(controller, part)) {
+             None
+         } else {
+             Some(ctx.pending.timestamp)
+         };
+         (
++            part,
+             trigger_apnap_rank(state, ctx.pending.controller),
+             collection_order,
+         )
+@@ -8879,9 +8912,13 @@ fn begin_trigger_ordering(
+     // trigger. Deliberately not updated by a triggered-mana context: an echo
+     // group is invisible to CR 603.3b grouping, while an ordinary group of a
+     // different controller still ends the previous controller's APNAP run.
+-    let mut last_ordinary_group: Option<(PlayerId, usize)> = None;
++    //
++    // CR 603.3b: a controller orders the abilities of each placement part
++    // separately, so a part boundary also ends the run.
++    let mut last_ordinary_group: Option<(PlayerId, StackPlacementPart, usize)> = None;
+     for ctx in pending {
+         let controller = trigger_order_controller(state, ctx.pending.controller);
++        let part = stack_placement_part(&ctx);
+         let trigger_event = ctx
+             .pending
+             .trigger_event
+@@ -8890,8 +8927,8 @@ fn begin_trigger_ordering(
+         let is_triggered_mana =
+             super::mana_abilities::is_triggered_mana_ability(&ctx.pending.ability, trigger_event);
+         if !is_triggered_mana {
+-            if let Some((group_controller, index)) = last_ordinary_group {
+-                if group_controller == controller {
++            if let Some((group_controller, group_part, index)) = last_ordinary_group {
++                if group_controller == controller && group_part == part {
+                     groups[index].triggers.push(ctx);
+                     continue;
+                 }
+@@ -8903,7 +8940,7 @@ fn begin_trigger_ordering(
+             ordered: is_triggered_mana,
+         });
+         if !is_triggered_mana {
+-            last_ordinary_group = Some((controller, groups.len() - 1));
++            last_ordinary_group = Some((controller, part, groups.len() - 1));
+         }
+     }
+ 
+@@ -16175,6 +16212,7 @@ fn collect_pending_and_delayed_triggers_reporting_terminalized(
+     contexts.extend(delayed_pending);
+     contexts.sort_by_key(|ctx| {
+         (
++            stack_placement_part(ctx),
+             trigger_apnap_rank(state, ctx.pending.controller),
+             ctx.pending.timestamp,
+         )
+@@ -56660,6 +56698,94 @@ pub mod tests {
+         normalize_deferred_trigger_order(&unmarked, &mut fresh);
+         assert_eq!(sources(&fresh), vec![3, 2]);
+     }
++
++    /// CR 603.3b: a controller chooses one order per placement part, so the
++    /// parked remainders of both parts keep their chosen orders, and abilities
++    /// triggered by another ability triggering stay after every other trigger.
++    #[test]
++    fn deferred_drain_keeps_chosen_order_remainders_of_both_placement_parts() {
++        let context = |source: u64, timestamp: u32, ability_triggered: bool| {
++            let controller = PlayerId(0);
++            let trigger_event = ability_triggered.then(|| GameEvent::AbilityTriggered {
++                trigger_instance: ObjectId(100 + source),
++                source: ObjectId(50),
++                controller,
++                cause: Box::new(GameEvent::AttackersDeclared {
++                    attacker_ids: vec![ObjectId(50)],
++                    defending_player: PlayerId(1),
++                    attacks: Vec::new(),
++                    declaration_records: Vec::new(),
++                }),
++            });
++            PendingTriggerContext::single(PendingTrigger {
++                source_id: ObjectId(source),
++                controller,
++                condition: None,
++                ability: Box::new(ResolvedAbility::new(
++                    Effect::Draw {
++                        count: QuantityExpr::Fixed { value: 1 },
++                        target: TargetFilter::Controller,
++                    },
++                    Vec::new(),
++                    ObjectId(source),
++                    controller,
++                )),
++                timestamp,
++                target_constraints: Vec::new(),
++                distribute: None,
++                trigger_event,
++                modal: None,
++                mode_abilities: Vec::new(),
++                description: None,
++                may_trigger_origin: None,
++                subject_match_count: None,
++                die_result: None,
++                provenance: None,
++            })
++        };
++        let sources = |pending: &[PendingTriggerContext]| -> Vec<u64> {
++            pending.iter().map(|ctx| ctx.pending.source_id.0).collect()
++        };
++        let mut state = setup();
++        state.active_player = PlayerId(0);
++        // Both chosen orders deliberately disagree with timestamp order.
++        let first = [
++            context(1, 5, false),
++            context(2, 9, false),
++            context(3, 1, false),
++        ];
++        let second = [context(4, 8, true), context(5, 2, true)];
++        let unmarked = state.clone();
++        state.set_trigger_order_template(build_ephemeral_order_template(PlayerId(0), &first));
++        state.set_trigger_order_template(build_ephemeral_order_template(PlayerId(0), &second));
++
++        let queue = || {
++            vec![
++                second[0].clone(),
++                first[1].clone(),
++                second[1].clone(),
++                first[2].clone(),
++            ]
++        };
++        let mut remainder = queue();
++        normalize_deferred_trigger_order(&state, &mut remainder);
++        assert_eq!(sources(&remainder), vec![2, 3, 4, 5]);
++
++        // Without chosen orders each part is normalized to timestamp order.
++        let mut fresh = queue();
++        normalize_deferred_trigger_order(&unmarked, &mut fresh);
++        assert_eq!(sources(&fresh), vec![3, 2, 5, 4]);
++
++        // A part whose queue is not a chosen remainder is normalized on its own.
++        let mut mixed = vec![
++            first[0].clone(),
++            first[2].clone(),
++            second[0].clone(),
++            second[1].clone(),
++        ];
++        normalize_deferred_trigger_order(&state, &mut mixed);
++        assert_eq!(sources(&mixed), vec![3, 1, 4, 5]);
++    }
+ }
+ 
+ /// Regression tests for the foundational trigger double-fire defect
+diff --git a/crates/engine/tests/integration/firebender_ascension.rs b/crates/engine/tests/integration/firebender_ascension.rs
+index 2afa95e69..54e36272d 100644
+--- a/crates/engine/tests/integration/firebender_ascension.rs
++++ b/crates/engine/tests/integration/firebender_ascension.rs
+@@ -1,5 +1,6 @@
+ use engine::game::combat::AttackTarget;
+ use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
++use engine::types::ability::TargetRef;
+ use engine::types::actions::GameAction;
+ use engine::types::counter::CounterType;
+ use engine::types::events::GameEvent;
+@@ -78,42 +79,30 @@ fn advance_to_declare_blockers(runner: &mut GameRunner) {
+     panic!("never reached the declare-blockers prompt");
+ }
+ 
+-fn declare_and_order_firebending(
++fn declare_firebending_attack(
+     runner: &mut GameRunner,
+     firebender: ObjectId,
+     attacker: ObjectId,
+     defender: engine::types::player::PlayerId,
+-    firebender_resolves_first: bool,
+ ) {
+     runner
+         .declare_attackers(&[(attacker, AttackTarget::Player(defender))])
+         .expect("attacker declaration succeeds");
+ 
+-    let WaitingFor::OrderTriggers { player, triggers } = runner.state().waiting_for.clone() else {
+-        panic!(
+-            "Firebending and Firebender Ascension triggers must be ordered together; got {:?}",
+-            runner.state().waiting_for
+-        );
+-    };
+-    assert_eq!(player, runner.state().active_player);
+-    assert_eq!(triggers.len(), 2);
+-    let firebending_index = triggers
+-        .iter()
+-        .position(|trigger| trigger.source_id == attacker)
+-        .expect("the Soldier's Firebending trigger is present");
+-    let firebender_index = triggers
+-        .iter()
+-        .position(|trigger| trigger.source_id == firebender)
+-        .expect("Firebender Ascension's trigger is present");
+-
+-    let order = if firebender_resolves_first {
+-        vec![firebending_index, firebender_index]
+-    } else {
+-        vec![firebender_index, firebending_index]
+-    };
+-    runner
+-        .act(GameAction::OrderTriggers { order })
+-        .expect("Firebender Ascension is placed above the Firebending trigger");
++    // CR 603.3b: Firebender Ascension's trigger condition is another ability
++    // triggering, so it is placed in the second part, above the Firebending
++    // ability, and the controller has no order to choose between the two.
++    assert!(
++        !matches!(runner.state().waiting_for, WaitingFor::OrderTriggers { .. }),
++        "no order may be offered between an ability and the ability it caused to trigger; got {:?}",
++        runner.state().waiting_for
++    );
++    assert_eq!(runner.state().stack.len(), 2);
++    assert_eq!(
++        runner.state().stack.last().map(|entry| entry.source_id),
++        Some(firebender),
++        "Firebender Ascension's ability is on top of the ability that caused it to trigger"
++    );
+ 
+     let original = runner
+         .state()
+@@ -172,7 +161,7 @@ fn pass_until_optional_effect(runner: &mut GameRunner) {
+ #[test]
+ fn firebending_attack_increments_quest_and_does_not_copy_before_four() {
+     let (mut runner, firebender, soldier) = firebending_board(0, P0);
+-    declare_and_order_firebending(&mut runner, firebender, soldier, P1, true);
++    declare_firebending_attack(&mut runner, firebender, soldier, P1);
+     runner.advance_until_stack_empty();
+ 
+     assert_eq!(quest_count(runner.state(), firebender), 1);
+@@ -187,7 +176,7 @@ fn firebending_attack_increments_quest_and_does_not_copy_before_four() {
+ #[test]
+ fn fourth_quest_counter_can_copy_the_attack_trigger() {
+     let (mut runner, firebender, soldier) = firebending_board(3, P0);
+-    declare_and_order_firebending(&mut runner, firebender, soldier, P1, true);
++    declare_firebending_attack(&mut runner, firebender, soldier, P1);
+     pass_until_optional_effect(&mut runner);
+ 
+     runner
+@@ -202,7 +191,7 @@ fn fourth_quest_counter_can_copy_the_attack_trigger() {
+ #[test]
+ fn declining_the_fourth_quest_counter_copy_keeps_only_original_effect() {
+     let (mut runner, firebender, soldier) = firebending_board(3, P0);
+-    declare_and_order_firebending(&mut runner, firebender, soldier, P1, true);
++    declare_firebending_attack(&mut runner, firebender, soldier, P1);
+     pass_until_optional_effect(&mut runner);
+ 
+     runner
+@@ -217,11 +206,15 @@ fn declining_the_fourth_quest_counter_copy_keeps_only_original_effect() {
+ #[test]
+ fn copy_of_an_attack_trigger_that_left_the_stack_is_a_noop() {
+     let (mut runner, firebender, soldier) = firebending_board(3, P0);
+-    declare_and_order_firebending(&mut runner, firebender, soldier, P1, false);
++    declare_firebending_attack(&mut runner, firebender, soldier, P1);
+ 
+-    runner.resolve_top();
++    // The original ability leaves the stack before Firebender Ascension's
++    // ability resolves, as when it is countered.
++    runner
++        .state_mut()
++        .stack
++        .retain(|entry| entry.source_id != soldier);
+     assert_eq!(runner.state().stack.len(), 1);
+-    assert_eq!(red_count(runner.state(), P0.0 as usize), 1);
+     pass_until_optional_effect(&mut runner);
+     runner
+         .act(GameAction::DecideOptionalEffect { accept: true })
+@@ -229,7 +222,7 @@ fn copy_of_an_attack_trigger_that_left_the_stack_is_a_noop() {
+     runner.advance_until_stack_empty();
+ 
+     assert_eq!(quest_count(runner.state(), firebender), 4);
+-    assert_eq!(red_count(runner.state(), P0.0 as usize), 1);
++    assert_eq!(red_count(runner.state(), P0.0 as usize), 0);
+ }
+ 
+ #[test]
+@@ -277,7 +270,7 @@ fn opponent_firebending_attacker_does_not_count() {
+ }
+ 
+ #[test]
+-fn attack_triggers_are_placed_in_apnap_order() {
++fn ability_triggered_abilities_are_placed_after_every_other_trigger() {
+     let mut scenario = GameScenario::new();
+     scenario.at_phase(Phase::PreCombatMain);
+     let firebender = scenario
+@@ -296,27 +289,165 @@ fn attack_triggers_are_placed_in_apnap_order() {
+         .declare_attackers(&[(soldier, AttackTarget::Player(P1))])
+         .expect("attacker declaration succeeds");
+ 
++    // CR 603.3b: first part, in APNAP order: P0's Firebending ability, then
++    // P1's attack trigger. Second part: Firebender Ascension's ability, whose
++    // trigger condition is another ability triggering, above both.
++    assert!(
++        !matches!(runner.state().waiting_for, WaitingFor::OrderTriggers { .. }),
++        "one ability per player per part leaves no order to choose; got {:?}",
++        runner.state().waiting_for
++    );
++    let sources: Vec<ObjectId> = runner
++        .state()
++        .stack
++        .iter()
++        .map(|entry| entry.source_id)
++        .collect();
++    assert_eq!(sources, vec![soldier, opponent_trigger, firebender]);
++}
++
++#[test]
++fn first_part_triggers_are_ordered_without_the_ability_triggered_ability() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let firebender = scenario
++        .add_enchantment_from_oracle(P0, "Firebender Ascension", FIREBENDER_ORACLE)
++        .id();
++    let own_trigger = scenario
++        .add_enchantment_from_oracle(P0, "Own Attack Trigger", OPPONENT_ATTACK_ORACLE)
++        .id();
++    let soldier = scenario
++        .add_creature(P0, "Firebending Soldier", 2, 2)
++        .from_oracle_text_with_keywords(&["firebending"], "Firebending 1")
++        .id();
++    let mut runner = scenario.build();
++    runner.advance_to_combat();
++    runner
++        .declare_attackers(&[(soldier, AttackTarget::Player(P1))])
++        .expect("attacker declaration succeeds");
++
++    // CR 603.3b: the controller orders the two first-part abilities; Firebender
++    // Ascension's second-part ability is not part of that choice.
+     let WaitingFor::OrderTriggers { player, triggers } = runner.state().waiting_for.clone() else {
+-        panic!("active player's simultaneous triggers must be ordered");
++        panic!(
++            "two different first-part triggers must be ordered; got {:?}",
++            runner.state().waiting_for
++        );
+     };
+     assert_eq!(player, P0);
+-    let firebending_index = triggers
++    let prompted: Vec<ObjectId> = triggers.iter().map(|trigger| trigger.source_id).collect();
++    assert_eq!(prompted.len(), 2);
++    assert!(prompted.contains(&soldier));
++    assert!(prompted.contains(&own_trigger));
++    let soldier_index = prompted
+         .iter()
+-        .position(|trigger| trigger.source_id == soldier)
++        .position(|source| *source == soldier)
+         .expect("Firebending trigger is present");
+-    let firebender_index = triggers
++    runner
++        .act(GameAction::OrderTriggers {
++            order: vec![1 - soldier_index, soldier_index],
++        })
++        .expect("ordering the first-part triggers succeeds");
++
++    let sources: Vec<ObjectId> = runner
++        .state()
++        .stack
+         .iter()
+-        .position(|trigger| trigger.source_id == firebender)
+-        .expect("Firebender Ascension trigger is present");
++        .map(|entry| entry.source_id)
++        .collect();
++    assert_eq!(sources, vec![own_trigger, soldier, firebender]);
++}
++
++#[test]
++fn chosen_first_part_order_survives_a_target_selection_pause() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let firebender = scenario
++        .add_enchantment_from_oracle(P0, "Firebender Ascension", FIREBENDER_ORACLE)
++        .id();
++    let earlier = scenario
++        .add_enchantment_from_oracle(P0, "Earlier Attack Trigger", OPPONENT_ATTACK_ORACLE)
++        .id();
++    let later = scenario
++        .add_enchantment_from_oracle(
++            P0,
++            "Later Attack Trigger",
++            "Whenever a creature attacks, each opponent loses 1 life.",
++        )
++        .id();
++    let bystander = scenario.add_creature(P1, "Bystander", 2, 2).id();
++    let attacker = scenario
++        .add_creature(P0, "Targeting Attacker", 2, 2)
++        .from_oracle_text(
++            "Whenever this creature attacks, target creature gets +1/+1 until end of turn.",
++        )
++        .id();
++    let mut runner = scenario.build();
++    // Trigger timestamps come from the turn a permanent entered; make the two
++    // enchantments differ so timestamp order and the chosen order disagree.
++    runner
++        .state_mut()
++        .objects
++        .get_mut(&earlier)
++        .expect("earlier enchantment exists")
++        .entered_battlefield_turn = Some(0);
++    runner
++        .state_mut()
++        .objects
++        .get_mut(&later)
++        .expect("later enchantment exists")
++        .entered_battlefield_turn = Some(1);
++    runner.advance_to_combat();
++    runner
++        .declare_attackers(&[(attacker, AttackTarget::Player(P1))])
++        .expect("attacker declaration succeeds");
++
++    let WaitingFor::OrderTriggers { triggers, .. } = runner.state().waiting_for.clone() else {
++        panic!(
++            "three different first-part triggers must be ordered; got {:?}",
++            runner.state().waiting_for
++        );
++    };
++    let index_of = |source: ObjectId| {
++        triggers
++            .iter()
++            .position(|trigger| trigger.source_id == source)
++            .expect("trigger is in the prompt")
++    };
++    assert_eq!(triggers.len(), 3);
++    // Place the targeted ability first so its target choice parks the rest, and
++    // choose the other two against their timestamp order.
+     runner
+         .act(GameAction::OrderTriggers {
+-            order: vec![firebending_index, firebender_index],
++            order: vec![index_of(attacker), index_of(later), index_of(earlier)],
+         })
+-        .expect("active player's trigger order succeeds");
++        .expect("ordering the first-part triggers succeeds");
++    assert!(
++        matches!(
++            runner.state().waiting_for,
++            WaitingFor::TriggerTargetSelection { .. }
++        ),
++        "the targeted ability pauses placement; got {:?}",
++        runner.state().waiting_for
++    );
++    runner
++        .act(GameAction::ChooseTarget {
++            target: Some(TargetRef::Object(bystander)),
++        })
++        .expect("target choice succeeds");
+ 
+-    assert_eq!(
+-        runner.state().stack.last().map(|entry| entry.source_id),
+-        Some(opponent_trigger),
+-        "nonactive player's trigger is placed above active player's triggers"
++    // CR 603.3b: the parked rest of the chosen first-part order keeps that
++    // order, and the second-part ability still goes above it.
++    assert!(
++        !matches!(runner.state().waiting_for, WaitingFor::OrderTriggers { .. }),
++        "an order already chosen is not asked again; got {:?}",
++        runner.state().waiting_for
+     );
++    let sources: Vec<ObjectId> = runner
++        .state()
++        .stack
++        .iter()
++        .map(|entry| entry.source_id)
++        .collect();
++    assert_eq!(sources, vec![attacker, later, earlier, firebender]);
+ }
+-- 
+2.56.0
+
