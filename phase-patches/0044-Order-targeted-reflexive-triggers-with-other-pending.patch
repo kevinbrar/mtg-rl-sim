@@ -1,0 +1,663 @@
+From dc4897dc598ef6000ae44e4b9502fdcac835a748 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Tue, 24 Nov 2026 18:03:48 +0000
+Subject: [PATCH] Order targeted reflexive triggers with other pending triggers
+ (CR 603.3b)
+
+A targeted "when you do" reflexive trigger is queued with the abilities that
+triggered during the same resolution instead of being pushed immediately, so
+its controller orders them together; targets are chosen as it is placed.
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/effects/mod.rs         |  60 ++++---
+ .../engine_phase_trigger_regression_tests.rs  |   9 +
+ crates/engine/src/game/scenario.rs            |  12 ++
+ .../triggers_push_first_contract_tests.rs     |  19 ++-
+ .../announced_counter_recipient_set.rs        |   4 +-
+ .../exchange_control_of_a_spell.rs            |   2 +
+ .../tests/integration/inti_trigger_order.rs   | 157 ++++++++++++++++++
+ .../tests/integration/issue_1328_inti.rs      |  30 +++-
+ crates/engine/tests/integration/main.rs       |   1 +
+ .../reflexive_body_token_referent.rs          | 101 ++++++++---
+ .../integration/reflexive_discard_this_way.rs |   2 +
+ .../tests/integration/valki_god_of_lies.rs    |   2 +
+ 12 files changed, 344 insertions(+), 55 deletions(-)
+ create mode 100644 crates/engine/tests/integration/inti_trigger_order.rs
+
+diff --git a/crates/engine/src/game/effects/mod.rs b/crates/engine/src/game/effects/mod.rs
+index ea70c8eac..ded467544 100644
+--- a/crates/engine/src/game/effects/mod.rs
++++ b/crates/engine/src/game/effects/mod.rs
+@@ -1070,6 +1070,11 @@ fn rebind_child_to_forwarded_objects(
+         && !child.effect.is_repeat_directive()
+     {
+         child.source_id = moved[0];
++        // CR 400.7j: without trigger provenance the captured incarnation is the
++        // source's whole identity, so it follows the rebind to the moved object.
++        if child.trigger_source.is_none() && child.source_incarnation.is_some() {
++            child.source_incarnation = state.objects.get(&moved[0]).map(|o| o.incarnation);
++        }
+     }
+     if let Effect::Attach { target, .. } = &child.effect {
+         let attach_target_is_last_created = matches!(target, TargetFilter::LastCreated);
+@@ -4289,26 +4294,11 @@ fn try_materialize_reflexive_trigger_inner(
+     }
+ 
+     if creates_reflexive_trigger {
++        // CR 603.3b: a targeted reflexive trigger waits with every other
++        // ability that triggered during this resolution, so its controller
++        // orders them together; targets are chosen as it is put on the stack.
+         let pending = build_reflexive_pending_trigger(state, reflexive, parent);
+-        let trigger_events =
+-            crate::game::triggers::take_pending_trigger_event_batch(state, &pending);
+-        let pending_for_state = pending.clone();
+-        let entry_id = crate::game::triggers::push_pending_trigger_to_stack_with_event_batch(
+-            state,
+-            pending,
+-            trigger_events,
+-            events,
+-        );
+-        state.pending_trigger = Some(Box::new(pending_for_state));
+-        state.pending_trigger_firing = Some(crate::types::identifiers::TriggerFiring::Ordinary);
+-        state.pending_trigger_entry = Some(entry_id);
+-        if let Some(waiting_for) =
+-            crate::game::engine::begin_pending_trigger_target_selection(state)
+-                .map_err(|error| EffectError::InvalidParam(error.to_string()))?
+-        {
+-            state.waiting_for = waiting_for;
+-            return Ok(Some(ResolutionProgress::Waiting));
+-        }
++        crate::game::triggers::defer_pending_trigger(state, pending);
+         return Ok(Some(ResolutionProgress::Complete));
+     }
+ 
+@@ -35197,13 +35187,37 @@ mod tests {
+         assert!(state.stack.is_empty());
+     }
+ 
++    /// CR 400.7j: the captured source incarnation follows a forwarded-result
++    /// rebind; an ability that never captured one stays unstamped.
++    #[test]
++    fn forwarded_rebind_moves_only_a_captured_source_incarnation() {
++        let mut state = GameState::new_two_player(42);
++        let producer = reflexive_test_creature(&mut state, PlayerId(0), "Producer");
++        let moved = reflexive_test_creature(&mut state, PlayerId(0), "Moved");
++        state.objects.get_mut(&moved).unwrap().incarnation = 3;
++
++        let mut stamped = reflexive_counter_ability(producer);
++        stamped.source_incarnation = Some(0);
++        rebind_child_to_forwarded_objects(&state, &mut stamped, producer, &[], &[moved]);
++        assert_eq!(stamped.source_id, moved);
++        assert_eq!(stamped.source_incarnation, Some(3));
++
++        let mut unstamped = reflexive_counter_ability(producer);
++        unstamped.source_incarnation = None;
++        rebind_child_to_forwarded_objects(&state, &mut unstamped, producer, &[], &[moved]);
++        assert_eq!(unstamped.source_id, moved);
++        assert_eq!(unstamped.source_incarnation, None);
++    }
++
+     #[test]
+     fn reflexive_target_chooser_differs_from_stack_controller() {
+         let mut state = GameState::new_two_player(42);
+         state.waiting_for = WaitingFor::Priority {
+             player: PlayerId(0),
+         };
+-        let target = reflexive_test_creature(&mut state, PlayerId(0), "Only target");
++        let target = reflexive_test_creature(&mut state, PlayerId(0), "Target");
++        // A second legal target keeps the choice a real prompt.
++        reflexive_test_creature(&mut state, PlayerId(0), "Other target");
+         let mut reflexive = reflexive_counter_ability(ObjectId(100));
+         // CR 601.2c + CR 603.3d: `Opponent` is the ONLY non-`ScopedPlayer` chooser
+         // the parser ever stamps ("of an opponent's choice"), and it is the
+@@ -35218,6 +35232,12 @@ mod tests {
+ 
+         try_materialize_reflexive_trigger(&mut state, &reflexive, None, None, &mut events, 0)
+             .unwrap();
++        // CR 603.3b: the targeted reflexive waits in the deferral queue; its
++        // targets are chosen when the queue is drained onto the stack.
++        assert!(state.stack.is_empty());
++        state.waiting_for =
++            crate::game::triggers::drain_deferred_trigger_queue(&mut state, &mut events)
++                .expect("placing the reflexive pauses on its target choice");
+         assert!(matches!(
+             state.waiting_for,
+             WaitingFor::TriggerTargetSelection {
+diff --git a/crates/engine/src/game/engine_phase_trigger_regression_tests.rs b/crates/engine/src/game/engine_phase_trigger_regression_tests.rs
+index e77070479..3bb069be1 100644
+--- a/crates/engine/src/game/engine_phase_trigger_regression_tests.rs
++++ b/crates/engine/src/game/engine_phase_trigger_regression_tests.rs
+@@ -902,6 +902,15 @@ fn issue_3262_kitt_kanto_taps_two_then_targets_active_player_creature() {
+     );
+     let controller_creature =
+         put_pt_creature(&mut state, 32623, PlayerId(0), "Controller Creature", 1, 1);
++    // A second legal target keeps the reflexive target a real prompt.
++    put_pt_creature(
++        &mut state,
++        32624,
++        PlayerId(1),
++        "Other Active Creature",
++        1,
++        1,
++    );
+ 
+     apply_as_current(&mut state, GameAction::PassPriority).unwrap();
+     apply_as_current(&mut state, GameAction::PassPriority).unwrap();
+diff --git a/crates/engine/src/game/scenario.rs b/crates/engine/src/game/scenario.rs
+index 55aa5a1c7..f38484679 100644
+--- a/crates/engine/src/game/scenario.rs
++++ b/crates/engine/src/game/scenario.rs
+@@ -1910,6 +1910,18 @@ impl GameRunner {
+         let _ = self.advance_until_stack_empty_with_events();
+     }
+ 
++    /// CR 603.3b: put the abilities that triggered during a resolution driven
++    /// directly through `resolve_ability_chain` on the stack, as the priority
++    /// pipeline does once a resolution finishes. Pauses on their first prompt.
++    pub fn place_deferred_triggers(&mut self) {
++        let mut events = Vec::new();
++        if let Some(waiting_for) =
++            super::triggers::drain_deferred_trigger_queue(&mut self.state, &mut events)
++        {
++            self.state.waiting_for = waiting_for;
++        }
++    }
++
+     /// Pass priority until the stack is empty, returning the events emitted while advancing.
+     pub fn advance_until_stack_empty_with_events(&mut self) -> Vec<GameEvent> {
+         let mut events = Vec::new();
+diff --git a/crates/engine/src/game/triggers_push_first_contract_tests.rs b/crates/engine/src/game/triggers_push_first_contract_tests.rs
+index 68d8429f2..7898638e3 100644
+--- a/crates/engine/src/game/triggers_push_first_contract_tests.rs
++++ b/crates/engine/src/game/triggers_push_first_contract_tests.rs
+@@ -248,12 +248,10 @@ fn push_first_no_legal_targets_drops_trigger_silently() {
+ }
+ 
+ /// Test #10 (reflexive WhenYouDo trigger): the push-first contract holds
+-/// at the OTHER pause-path site, `effects/mod.rs::resolve_chain_body`
+-/// (line ~3654). A reflexive `WhenYouDo` sub-ability with empty `targets`
+-/// and a non-empty target-slot set must push the entry to the stack
+-/// BEFORE entering `WaitingFor::TriggerTargetSelection`. Structurally
+-/// identical to the main dispatch path but lives in a different function;
+-/// a regression here would not fail the other discriminating tests.
++/// for a reflexive `WhenYouDo` sub-ability with empty `targets` and a
++/// non-empty target-slot set. It is deferred during the parent's resolution
++/// (CR 603.3b) and, once the deferral queue is drained, its entry must be on
++/// the stack BEFORE `WaitingFor::TriggerTargetSelection` is entered.
+ #[test]
+ fn push_first_reflexive_when_you_do_pushes_to_stack_during_prompt() {
+     let mut state = setup();
+@@ -305,8 +303,15 @@ fn push_first_reflexive_when_you_do_pushes_to_stack_during_prompt() {
+     let mut events = Vec::new();
+     resolve_ability_chain(&mut state, &parent, &mut events, 0).expect("resolve parent chain");
+ 
++    // CR 603.3b: the targeted reflexive trigger waits in the deferral queue
++    // with every other ability that triggered during this resolution.
++    assert_eq!(state.stack.len(), stack_before);
++    assert_eq!(state.deferred_triggers.len(), 1);
++    state.waiting_for = super::drain_deferred_trigger_queue(&mut state, &mut events)
++        .expect("placing the reflexive pauses on its target choice");
++
+     // CR 603.3c + CR 603.3d: The reflexive trigger entry MUST be on the
+-    // stack now (push-first contract holds at the reflexive site too).
++    // stack now (push-first contract holds for the deferred reflexive too).
+     assert_eq!(
+         state.stack.len(),
+         stack_before + 1,
+diff --git a/crates/engine/tests/integration/announced_counter_recipient_set.rs b/crates/engine/tests/integration/announced_counter_recipient_set.rs
+index 60001bdf5..311a75259 100644
+--- a/crates/engine/tests/integration/announced_counter_recipient_set.rs
++++ b/crates/engine/tests/integration/announced_counter_recipient_set.rs
+@@ -2806,8 +2806,8 @@ fn novel_nunchaku_refused_attach_has_no_reflexive_fight() {
+     assert_eq!(attached.attach_resolutions, 1);
+     assert!(attached.attached);
+     assert_eq!(
+-        attached.target_prompts, 1,
+-        "the single legal Attach host is auto-selected; the fight slot prompts"
++        attached.target_prompts, 0,
++        "the single legal Attach host and the single legal fight target are auto-selected"
+     );
+     assert!(attached.fights > 0);
+     assert_eq!(attached.theirs_damage, 4);
+diff --git a/crates/engine/tests/integration/exchange_control_of_a_spell.rs b/crates/engine/tests/integration/exchange_control_of_a_spell.rs
+index a7d719e88..675023253 100644
+--- a/crates/engine/tests/integration/exchange_control_of_a_spell.rs
++++ b/crates/engine/tests/integration/exchange_control_of_a_spell.rs
+@@ -1672,6 +1672,8 @@ fn arteeoh_reflexive_token_still_fires_when_the_exchange_happens() {
+     let foreign = scenario
+         .add_artifact_from_oracle(P1, "Foreign Relic", "")
+         .id();
++    // A second legal target keeps the reflexive copy target a real prompt.
++    scenario.add_artifact_from_oracle(P1, "Foreign Trinket", "");
+ 
+     let mut runner = scenario.build();
+     accept_arteeoh_exchange(&mut runner, arteeoh, a1, foreign);
+diff --git a/crates/engine/tests/integration/inti_trigger_order.rs b/crates/engine/tests/integration/inti_trigger_order.rs
+new file mode 100644
+index 000000000..1666470a4
+--- /dev/null
++++ b/crates/engine/tests/integration/inti_trigger_order.rs
+@@ -0,0 +1,157 @@
++//! Inti, Seneschal of the Sun: the reflexive "when you do" ability and the
++//! "whenever you discard" ability trigger during the same resolution, so their
++//! controller orders them (CR 603.3b, CR 603.12).
++
++use engine::game::combat::AttackTarget;
++use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
++use engine::types::ability::TargetRef;
++use engine::types::actions::GameAction;
++use engine::types::counter::CounterType;
++use engine::types::game_state::WaitingFor;
++use engine::types::identifiers::ObjectId;
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const INTI_ORACLE: &str = "Whenever you attack, you may discard a card. When you do, put a +1/+1 counter on target attacking creature. It gains trample until end of turn.\n\
++Whenever you discard one or more cards, exile the top card of your library. You may play that card until your next end step.";
++
++const DISCARD_ABILITY: &str = "Whenever you discard one or more cards, exile the top card of your library. You may play that card until your next end step.";
++
++struct Board {
++    runner: GameRunner,
++    inti: ObjectId,
++    other: ObjectId,
++    top_card: ObjectId,
++}
++
++/// Inti and a second creature attack, the attack trigger resolves and the
++/// optional discard is accepted.
++fn attack_and_discard() -> Board {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let inti = scenario
++        .add_creature_from_oracle(P0, "Inti, Seneschal of the Sun", 2, 2, INTI_ORACLE)
++        .id();
++    let other = scenario.add_creature(P0, "Attacker", 2, 2).id();
++    scenario.add_card_to_hand(P0, "Fodder");
++    let top_card = scenario.add_card_to_library_top(P0, "Top Card");
++    let mut runner = scenario.build();
++    runner.advance_to_combat();
++    runner
++        .declare_attackers(&[
++            (inti, AttackTarget::Player(P1)),
++            (other, AttackTarget::Player(P1)),
++        ])
++        .expect("attacker declaration succeeds");
++    runner.pass_both_players();
++    runner
++        .act(GameAction::DecideOptionalEffect { accept: true })
++        .expect("accepting the discard succeeds");
++    Board {
++        runner,
++        inti,
++        other,
++        top_card,
++    }
++}
++
++/// Index of the discard ability in the order prompt; the other entry is the
++/// reflexive ability.
++fn discard_index(runner: &GameRunner) -> usize {
++    let WaitingFor::OrderTriggers { player, triggers } = runner.state().waiting_for.clone() else {
++        panic!(
++            "the reflexive and discard abilities must be ordered; got {:?}",
++            runner.state().waiting_for
++        );
++    };
++    assert_eq!(player, P0);
++    assert_eq!(triggers.len(), 2);
++    assert!(runner.state().stack.is_empty());
++    let index = triggers
++        .iter()
++        .position(|trigger| trigger.description == DISCARD_ABILITY)
++        .expect("the discard ability is in the prompt");
++    assert_ne!(triggers[1 - index].description, DISCARD_ABILITY);
++    index
++}
++
++fn counters(runner: &GameRunner, id: ObjectId) -> u32 {
++    runner.state().objects[&id]
++        .counters
++        .get(&CounterType::Plus1Plus1)
++        .copied()
++        .unwrap_or(0)
++}
++
++fn zone(runner: &GameRunner, id: ObjectId) -> Zone {
++    runner.state().objects[&id].zone
++}
++
++fn choose_target(runner: &mut GameRunner, target: ObjectId) {
++    assert!(
++        matches!(
++            runner.state().waiting_for,
++            WaitingFor::TriggerTargetSelection { .. }
++        ),
++        "the reflexive ability chooses its target as it is put on the stack; got {:?}",
++        runner.state().waiting_for
++    );
++    runner
++        .act(GameAction::ChooseTarget {
++            target: Some(TargetRef::Object(target)),
++        })
++        .expect("target choice succeeds");
++}
++
++#[test]
++fn reflexive_ability_can_be_placed_above_the_discard_ability() {
++    let Board {
++        mut runner,
++        inti,
++        other,
++        top_card,
++    } = attack_and_discard();
++    let discard = discard_index(&runner);
++    // First placed resolves last (CR 405.3): the discard ability goes first.
++    runner
++        .act(GameAction::OrderTriggers {
++            order: vec![discard, 1 - discard],
++        })
++        .expect("ordering succeeds");
++    choose_target(&mut runner, other);
++    assert_eq!(runner.state().stack.len(), 2);
++
++    // Resolve only the top ability: the counter is placed, nothing is exiled yet.
++    runner.pass_both_players();
++    assert_eq!(counters(&runner, other), 1);
++    assert_eq!(counters(&runner, inti), 0);
++    assert_eq!(zone(&runner, top_card), Zone::Library);
++    runner.pass_both_players();
++    assert_eq!(zone(&runner, top_card), Zone::Exile);
++}
++
++#[test]
++fn discard_ability_can_be_placed_above_the_reflexive_ability() {
++    let Board {
++        mut runner,
++        inti,
++        other,
++        top_card,
++    } = attack_and_discard();
++    let discard = discard_index(&runner);
++    runner
++        .act(GameAction::OrderTriggers {
++            order: vec![1 - discard, discard],
++        })
++        .expect("ordering succeeds");
++    choose_target(&mut runner, inti);
++    assert_eq!(runner.state().stack.len(), 2);
++
++    // Resolve only the top ability: the card is exiled, no counter yet.
++    runner.pass_both_players();
++    assert_eq!(zone(&runner, top_card), Zone::Exile);
++    assert_eq!(counters(&runner, inti), 0);
++    runner.pass_both_players();
++    assert_eq!(counters(&runner, inti), 1);
++    assert_eq!(counters(&runner, other), 0);
++}
+diff --git a/crates/engine/tests/integration/issue_1328_inti.rs b/crates/engine/tests/integration/issue_1328_inti.rs
+index 0de908d75..f508a2df4 100644
+--- a/crates/engine/tests/integration/issue_1328_inti.rs
++++ b/crates/engine/tests/integration/issue_1328_inti.rs
+@@ -88,7 +88,10 @@ fn p1p1(runner: &engine::game::scenario::GameRunner, id: ObjectId) -> u32 {
+ fn inti_reflexive_counter_prompts_for_attacking_creature_after_discard() {
+     let mut scenario = GameScenario::new();
+     scenario.at_phase(Phase::PreCombatMain);
+-    scenario.add_creature_from_oracle(P0, "Inti, Seneschal of the Sun", 2, 2, INTI_ATTACK_ABILITY);
++    // Inti attacks too: two attacking creatures keep the target a real prompt.
++    let inti = scenario
++        .add_creature_from_oracle(P0, "Inti, Seneschal of the Sun", 2, 2, INTI_ATTACK_ABILITY)
++        .id();
+     let attacker = scenario.add_creature(P0, "Attacker", 2, 2).id();
+     let _hand_card = scenario.add_card_to_hand(P0, "Hand Card");
+ 
+@@ -96,7 +99,10 @@ fn inti_reflexive_counter_prompts_for_attacking_creature_after_discard() {
+     runner.pass_both_players();
+     runner
+         .act(GameAction::DeclareAttackers {
+-            attacks: vec![(attacker, AttackTarget::Player(P1))],
++            attacks: vec![
++                (attacker, AttackTarget::Player(P1)),
++                (inti, AttackTarget::Player(P1)),
++            ],
+             bands: vec![],
+         })
+         .expect("declare attackers");
+@@ -120,7 +126,10 @@ fn inti_reflexive_counter_prompts_for_attacking_creature_after_discard() {
+ fn inti_reflexive_counter_puts_plus_one_on_chosen_attacker() {
+     let mut scenario = GameScenario::new();
+     scenario.at_phase(Phase::PreCombatMain);
+-    scenario.add_creature_from_oracle(P0, "Inti, Seneschal of the Sun", 2, 2, INTI_ATTACK_ABILITY);
++    // Inti attacks too: two attacking creatures keep the target a real prompt.
++    let inti = scenario
++        .add_creature_from_oracle(P0, "Inti, Seneschal of the Sun", 2, 2, INTI_ATTACK_ABILITY)
++        .id();
+     let attacker = scenario.add_creature(P0, "Attacker", 2, 2).id();
+     let _hand_card = scenario.add_card_to_hand(P0, "Hand Card");
+ 
+@@ -128,7 +137,10 @@ fn inti_reflexive_counter_puts_plus_one_on_chosen_attacker() {
+     runner.pass_both_players();
+     runner
+         .act(GameAction::DeclareAttackers {
+-            attacks: vec![(attacker, AttackTarget::Player(P1))],
++            attacks: vec![
++                (attacker, AttackTarget::Player(P1)),
++                (inti, AttackTarget::Player(P1)),
++            ],
+             bands: vec![],
+         })
+         .expect("declare attackers");
+@@ -155,7 +167,10 @@ fn inti_reflexive_counter_puts_plus_one_on_chosen_attacker() {
+ fn inti_reflexive_counter_after_interactive_discard_choice() {
+     let mut scenario = GameScenario::new();
+     scenario.at_phase(Phase::PreCombatMain);
+-    scenario.add_creature_from_oracle(P0, "Inti, Seneschal of the Sun", 2, 2, INTI_ATTACK_ABILITY);
++    // Inti attacks too: two attacking creatures keep the target a real prompt.
++    let inti = scenario
++        .add_creature_from_oracle(P0, "Inti, Seneschal of the Sun", 2, 2, INTI_ATTACK_ABILITY)
++        .id();
+     let attacker = scenario.add_creature(P0, "Attacker", 2, 2).id();
+     let discard_a = scenario.add_card_to_hand(P0, "Discard A");
+     let _discard_b = scenario.add_card_to_hand(P0, "Discard B");
+@@ -164,7 +179,10 @@ fn inti_reflexive_counter_after_interactive_discard_choice() {
+     runner.pass_both_players();
+     runner
+         .act(GameAction::DeclareAttackers {
+-            attacks: vec![(attacker, AttackTarget::Player(P1))],
++            attacks: vec![
++                (attacker, AttackTarget::Player(P1)),
++                (inti, AttackTarget::Player(P1)),
++            ],
+             bands: vec![],
+         })
+         .expect("declare attackers");
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index f2cdc772e..ba6203252 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -112,6 +112,7 @@ mod hunters_insight_combat_draw;
+ mod indoraptor_enrage_chosen_opponent;
+ mod innocent_bystander_whole_event_damage;
+ mod interaction_contract;
++mod inti_trigger_order;
+ mod invasion_of_alara_8750;
+ mod investigate_that_many_times;
+ mod ironscale_hydra_combat_prevention;
+diff --git a/crates/engine/tests/integration/reflexive_body_token_referent.rs b/crates/engine/tests/integration/reflexive_body_token_referent.rs
+index 95b77f1b4..342590ab9 100644
+--- a/crates/engine/tests/integration/reflexive_body_token_referent.rs
++++ b/crates/engine/tests/integration/reflexive_body_token_referent.rs
+@@ -29,6 +29,7 @@
+ //! byte-verbatim from MTGJSON `AtomicCards.json`.
+ 
+ use engine::game::ability_utils::build_resolved_from_def_with_targets;
++use engine::game::combat::AttackTarget;
+ use engine::game::effects::resolve_ability_chain;
+ use engine::game::game_object::AttachTarget;
+ use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+@@ -41,9 +42,11 @@ use engine::types::ability::{
+ use engine::types::actions::GameAction;
+ use engine::types::card_type::CoreType;
+ use engine::types::counter::CounterType;
++use engine::types::game_state::{StackEntryKind, WaitingFor};
+ use engine::types::identifiers::{CardId, ObjectId};
+ use engine::types::keywords::KeywordKind;
+ use engine::types::mana::{ManaCost, ManaType, ManaUnit};
++use engine::types::phase::Phase;
+ use engine::types::player::PlayerId;
+ use engine::types::zones::Zone;
+ 
+@@ -276,15 +279,37 @@ fn settle_reflexive_body(runner: &mut GameRunner) {
+     runner.advance_until_stack_empty();
+ }
+ 
+-/// Answer a sub-clause's `TriggerTargetSelection` prompt and let the resulting
+-/// stack object resolve. Used where the targeted clause is NOT the chain's head
+-/// (North Pole's `SetTapState`, Ratonhnhaké꞉ton's `ChangeZone`), so its target
+-/// cannot be pre-wired into `build_resolved_from_def_with_targets`'s slot list
+-/// and must go through the real `apply()` action pipeline.
++/// Place the reflexive body on the stack with the declared target and let it
++/// resolve. Used where the targeted clause is NOT the chain's head (North
++/// Pole's `SetTapState`, Ratonhnhaké꞉ton's `ChangeZone`), so its target cannot
++/// be pre-wired into `build_resolved_from_def_with_targets`'s slot list and is
++/// chosen as the ability is put on the stack (CR 603.3d). A sole legal target
++/// is selected without a prompt; the stack entry must then carry it.
+ fn select_targets_and_resolve(runner: &mut GameRunner, targets: Vec<TargetRef>) {
+-    runner
+-        .act(GameAction::SelectTargets { targets })
+-        .expect("the reflexive body's target slot accepts the declared target");
++    // CR 603.3b: the reflexive waits in the deferral queue until it is placed.
++    runner.place_deferred_triggers();
++    if matches!(
++        runner.state().waiting_for,
++        WaitingFor::TriggerTargetSelection { .. }
++    ) {
++        runner
++            .act(GameAction::SelectTargets {
++                targets: targets.clone(),
++            })
++            .expect("the reflexive body's target slot accepts the declared target");
++    }
++    let placed = runner
++        .state()
++        .stack
++        .back()
++        .expect("the reflexive body is on the stack");
++    let StackEntryKind::TriggeredAbility { ability, .. } = &placed.kind else {
++        panic!(
++            "expected the reflexive triggered ability, got {:?}",
++            placed.kind
++        );
++    };
++    assert_eq!(ability.targets, targets);
+     runner.advance_until_stack_empty();
+ }
+ 
+@@ -528,25 +553,29 @@ fn north_pole_stun_counter_stays_on_tapped_creature() {
+ /// a gated publisher's referent must still bind the new Assassin token.
+ #[test]
+ fn ratonhnhaketon_attach_still_binds_created_token() {
+-    let mut runner = GameScenario::new().build();
+-    let source = add_creature(&mut runner, P0, "Ratonhnhak\u{e9}\u{a789}ton");
+-    let equipment = add_object(&mut runner, P0, "Bone Saw", Zone::Graveyard);
++    // Driven through real combat damage: the reflexive is placed by the
++    // priority pipeline (CR 603.3b) with its sole legal target auto-chosen.
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let source = scenario
++        .add_creature_from_oracle(P0, "Ratonhnhak\u{e9}\u{a789}ton", 2, 2, RATONHNHAKETON)
++        .id();
++    let equipment = scenario.add_land_to_graveyard(P0, "Bone Saw").id();
++    let mut runner = scenario.build();
+     {
+         let obj = runner.state_mut().objects.get_mut(&equipment).unwrap();
+-        obj.card_types.core_types.push(CoreType::Artifact);
++        obj.card_types.core_types = vec![CoreType::Artifact];
+         obj.card_types.subtypes.push("Equipment".to_string());
+         obj.base_card_types = obj.card_types.clone();
+     }
+     let decoy = pre_seed_decoy(&mut runner);
+ 
+-    let def = parse_trigger(
+-        RATONHNHAKETON,
+-        "Ratonhnhak\u{e9}\u{a789}ton",
+-        &["Creature"],
+-        0,
+-    );
+-    resolve_def(&mut runner, &def, source, vec![]);
+-    select_targets_and_resolve(&mut runner, vec![TargetRef::Object(equipment)]);
++    runner.advance_to_combat();
++    runner
++        .declare_attackers(&[(source, AttackTarget::Player(P1))])
++        .expect("Ratonhnhak\u{e9}\u{a789}ton attacks");
++    let _ = runner.combat_damage();
++    runner.advance_until_stack_empty();
+ 
+     let assassin = token_named(&runner, decoy, "Assassin");
+     // Reach-guard: the antecedent return really happened, so the attach clause
+@@ -1837,3 +1866,35 @@ fn repeat_process_replicates_every_listed_keyword() {
+         "non-vacuity: exactly two of the twelve reach the counter-placement binding"
+     );
+ }
++
++/// CR 400.7j: a reflexive placed without trigger provenance (a spell or
++/// activated parent) with its sole legal target auto-chosen still finds the
++/// Equipment it returned when it attaches "it" to the created token.
++#[test]
++fn sole_target_reflexive_without_trigger_provenance_attaches_returned_equipment() {
++    let mut runner = GameScenario::new().build();
++    let source = add_creature(&mut runner, P0, "Ratonhnhak\u{e9}\u{a789}ton");
++    let equipment = add_object(&mut runner, P0, "Bone Saw", Zone::Graveyard);
++    {
++        let obj = runner.state_mut().objects.get_mut(&equipment).unwrap();
++        obj.card_types.core_types.push(CoreType::Artifact);
++        obj.card_types.subtypes.push("Equipment".to_string());
++        obj.base_card_types = obj.card_types.clone();
++    }
++    let decoy = pre_seed_decoy(&mut runner);
++    let def = parse_trigger(
++        RATONHNHAKETON,
++        "Ratonhnhak\u{e9}\u{a789}ton",
++        &["Creature"],
++        0,
++    );
++    resolve_def(&mut runner, &def, source, vec![]);
++    runner.place_deferred_triggers();
++    assert_eq!(runner.state().stack.len(), 1, "sole target is auto-chosen");
++    runner.advance_until_stack_empty();
++    let assassin = token_named(&runner, decoy, "Assassin");
++    assert_eq!(
++        runner.state().objects[&equipment].attached_to,
++        Some(AttachTarget::Object(assassin))
++    );
++}
+diff --git a/crates/engine/tests/integration/reflexive_discard_this_way.rs b/crates/engine/tests/integration/reflexive_discard_this_way.rs
+index 16456866d..f1ebffee3 100644
+--- a/crates/engine/tests/integration/reflexive_discard_this_way.rs
++++ b/crates/engine/tests/integration/reflexive_discard_this_way.rs
+@@ -150,6 +150,8 @@ fn life_total(runner: &GameRunner, player: PlayerId) -> i32 {
+ fn resolve_created_reflexive(runner: &mut GameRunner, target: TargetRef) -> (usize, bool) {
+     let mut prompts = 0;
+     let mut reached_stack = false;
++    // CR 603.3b: the reflexive waits in the deferral queue until it is placed.
++    runner.place_deferred_triggers();
+     for _ in 0..16 {
+         match runner.state().waiting_for.clone() {
+             WaitingFor::TriggerTargetSelection { .. } => {
+diff --git a/crates/engine/tests/integration/valki_god_of_lies.rs b/crates/engine/tests/integration/valki_god_of_lies.rs
+index a901197a2..ef73f9634 100644
+--- a/crates/engine/tests/integration/valki_god_of_lies.rs
++++ b/crates/engine/tests/integration/valki_god_of_lies.rs
+@@ -723,6 +723,8 @@ fn shirriff_etb_on_stack() -> (ShirriffFixture, Vec<GameEvent>) {
+         .id();
+     let p0_token = scenario.add_creature(P0, "Soldier Token", 1, 1).id();
+     let p1_bear = scenario.add_creature(P1, "Opp Bear", 2, 2).id();
++    // A second legal target keeps the reflexive exile target a real prompt.
++    scenario.add_creature(P1, "Opp Wolf", 2, 2);
+     let mut runner = scenario.build();
+     runner
+         .state_mut()
+-- 
+2.56.0
+
