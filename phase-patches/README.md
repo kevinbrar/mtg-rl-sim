@@ -465,4 +465,8 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
   ability get an `OrderTriggers` prompt (`inti_trigger_order.rs`, both orders).
 - `GameRunner::place_deferred_triggers` lets tests that resolve an ability
   directly cross the placement boundary; affected reflexive tests use it.
+- `rebind_child_to_forwarded_objects`: when a forwarded-result child is
+  rebound to the moved object and has no trigger provenance, its captured
+  source incarnation follows the rebind (CR 400.7j). Needed once a sole-target
+  reflexive is auto-placed with a stamped source.
 - Runtime-only; no parser or card-data change.

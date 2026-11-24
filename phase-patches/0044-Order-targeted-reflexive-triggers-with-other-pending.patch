@@ -1,4 +1,4 @@
-From 57a16f5f168837f763e1062f0baec57c8214368c Mon Sep 17 00:00:00 2001
+From 6d2398072f34861746cc40b0cedf13f22ddd7341 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Tue, 24 Nov 2026 18:03:48 +0000
 Subject: [PATCH] Order targeted reflexive triggers with other pending triggers
@@ -10,7 +10,7 @@ its controller orders them together; targets are chosen as it is placed.
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
- crates/engine/src/game/effects/mod.rs         |  33 ++--
+ crates/engine/src/game/effects/mod.rs         |  38 ++---
  .../engine_phase_trigger_regression_tests.rs  |   9 +
  crates/engine/src/game/scenario.rs            |  12 ++
  .../triggers_push_first_contract_tests.rs     |  19 ++-
@@ -19,17 +19,29 @@ Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.gith
  .../tests/integration/inti_trigger_order.rs   | 157 ++++++++++++++++++
  .../tests/integration/issue_1328_inti.rs      |  30 +++-
  crates/engine/tests/integration/main.rs       |   1 +
- .../reflexive_body_token_referent.rs          |  69 +++++---
+ .../reflexive_body_token_referent.rs          | 101 ++++++++---
  .../integration/reflexive_discard_this_way.rs |   2 +
  .../tests/integration/valki_god_of_lies.rs    |   2 +
- 12 files changed, 285 insertions(+), 55 deletions(-)
+ 12 files changed, 322 insertions(+), 55 deletions(-)
  create mode 100644 crates/engine/tests/integration/inti_trigger_order.rs
 
 diff --git a/crates/engine/src/game/effects/mod.rs b/crates/engine/src/game/effects/mod.rs
-index ea70c8eac..0d6f7f298 100644
+index ea70c8eac..ee01b4309 100644
 --- a/crates/engine/src/game/effects/mod.rs
 +++ b/crates/engine/src/game/effects/mod.rs
-@@ -4289,26 +4289,11 @@ fn try_materialize_reflexive_trigger_inner(
+@@ -1070,6 +1070,11 @@ fn rebind_child_to_forwarded_objects(
+         && !child.effect.is_repeat_directive()
+     {
+         child.source_id = moved[0];
++        // CR 400.7j: without trigger provenance the captured incarnation is the
++        // source's whole identity, so it follows the rebind to the moved object.
++        if child.trigger_source.is_none() && child.source_incarnation.is_some() {
++            child.source_incarnation = state.objects.get(&moved[0]).map(|o| o.incarnation);
++        }
+     }
+     if let Effect::Attach { target, .. } = &child.effect {
+         let attach_target_is_last_created = matches!(target, TargetFilter::LastCreated);
+@@ -4289,26 +4294,11 @@ fn try_materialize_reflexive_trigger_inner(
      }
  
      if creates_reflexive_trigger {
@@ -60,7 +72,7 @@ index ea70c8eac..0d6f7f298 100644
          return Ok(Some(ResolutionProgress::Complete));
      }
  
-@@ -35203,7 +35188,9 @@ mod tests {
+@@ -35203,7 +35193,9 @@ mod tests {
          state.waiting_for = WaitingFor::Priority {
              player: PlayerId(0),
          };
@@ -71,7 +83,7 @@ index ea70c8eac..0d6f7f298 100644
          let mut reflexive = reflexive_counter_ability(ObjectId(100));
          // CR 601.2c + CR 603.3d: `Opponent` is the ONLY non-`ScopedPlayer` chooser
          // the parser ever stamps ("of an opponent's choice"), and it is the
-@@ -35218,6 +35205,12 @@ mod tests {
+@@ -35218,6 +35210,12 @@ mod tests {
  
          try_materialize_reflexive_trigger(&mut state, &reflexive, None, None, &mut events, 0)
              .unwrap();
@@ -445,7 +457,7 @@ index f2cdc772e..ba6203252 100644
  mod investigate_that_many_times;
  mod ironscale_hydra_combat_prevention;
 diff --git a/crates/engine/tests/integration/reflexive_body_token_referent.rs b/crates/engine/tests/integration/reflexive_body_token_referent.rs
-index 95b77f1b4..4a68e0866 100644
+index 95b77f1b4..342590ab9 100644
 --- a/crates/engine/tests/integration/reflexive_body_token_referent.rs
 +++ b/crates/engine/tests/integration/reflexive_body_token_referent.rs
 @@ -29,6 +29,7 @@
@@ -556,6 +568,42 @@ index 95b77f1b4..4a68e0866 100644
  
      let assassin = token_named(&runner, decoy, "Assassin");
      // Reach-guard: the antecedent return really happened, so the attach clause
+@@ -1837,3 +1866,35 @@ fn repeat_process_replicates_every_listed_keyword() {
+         "non-vacuity: exactly two of the twelve reach the counter-placement binding"
+     );
+ }
++
++/// CR 400.7j: a reflexive placed without trigger provenance (a spell or
++/// activated parent) with its sole legal target auto-chosen still finds the
++/// Equipment it returned when it attaches "it" to the created token.
++#[test]
++fn sole_target_reflexive_without_trigger_provenance_attaches_returned_equipment() {
++    let mut runner = GameScenario::new().build();
++    let source = add_creature(&mut runner, P0, "Ratonhnhak\u{e9}\u{a789}ton");
++    let equipment = add_object(&mut runner, P0, "Bone Saw", Zone::Graveyard);
++    {
++        let obj = runner.state_mut().objects.get_mut(&equipment).unwrap();
++        obj.card_types.core_types.push(CoreType::Artifact);
++        obj.card_types.subtypes.push("Equipment".to_string());
++        obj.base_card_types = obj.card_types.clone();
++    }
++    let decoy = pre_seed_decoy(&mut runner);
++    let def = parse_trigger(
++        RATONHNHAKETON,
++        "Ratonhnhak\u{e9}\u{a789}ton",
++        &["Creature"],
++        0,
++    );
++    resolve_def(&mut runner, &def, source, vec![]);
++    runner.place_deferred_triggers();
++    assert_eq!(runner.state().stack.len(), 1, "sole target is auto-chosen");
++    runner.advance_until_stack_empty();
++    let assassin = token_named(&runner, decoy, "Assassin");
++    assert_eq!(
++        runner.state().objects[&equipment].attached_to,
++        Some(AttachTarget::Object(assassin))
++    );
++}
 diff --git a/crates/engine/tests/integration/reflexive_discard_this_way.rs b/crates/engine/tests/integration/reflexive_discard_this_way.rs
 index 16456866d..f1ebffee3 100644
 --- a/crates/engine/tests/integration/reflexive_discard_this_way.rs
