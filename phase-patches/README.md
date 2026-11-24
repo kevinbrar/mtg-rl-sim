@@ -453,3 +453,16 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
   remainder per controller and part, matching the one ephemeral order template
   recorded per ordered group.
 - Runtime-only; no parser or card-data change.
+
+## Patch 0044 — reflexive triggers join CR 603.3b ordering
+
+- `try_materialize_reflexive_trigger_inner` queues a targeted "when you do"
+  reflexive trigger with `defer_pending_trigger` instead of pushing it and
+  starting target selection. The deferred-queue drain orders it with the other
+  abilities that triggered during the resolution and chooses its targets as it
+  is placed.
+- Inti, Seneschal of the Sun: the reflexive counter ability and the discard
+  ability get an `OrderTriggers` prompt (`inti_trigger_order.rs`, both orders).
+- `GameRunner::place_deferred_triggers` lets tests that resolve an ability
+  directly cross the placement boundary; affected reflexive tests use it.
+- Runtime-only; no parser or card-data change.

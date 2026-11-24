@@ -8,8 +8,10 @@
 # CR 603.12: the discard happens, so the reflexive trigger targets the attacker.
 # The discard also triggers Inti's second ability. XMage is told to resolve the
 # counter first; either order ends in the same state, so the order itself is
-# not observable here (N4 and N5 show an order being applied).
-# Phase does not ask for this order (STATUS.md), hence only = "xmage".
+# not observable here (N4 and N5 show an order being applied). A second
+# attacker keeps the target a real choice: Phase picks a sole legal target itself.
+# Phase labels the reflexive ability with its parent's full text (STATUS.md),
+# hence one order entry per engine.
 name = "N1 discarding a card puts a +1/+1 counter on the attacker and exiles the top card"
 active_player = 0
 script = [
@@ -17,7 +19,8 @@ script = [
   { action = "choose_discard", player = "P0", cards = ["fodder"] },
   { action = "trigger_targets", targets = ["inti"] },
   { action = "order_triggers", player = "P0", resolve = ["put a +1/+1 counter", "whenever you discard"], only = "xmage" },
-  { action = "attack", attackers = ["inti"] },
+  { action = "order_triggers", player = "P0", resolve = ["whenever you attack", "whenever you discard"], only = "phase" },
+  { action = "attack", attackers = ["inti", "bear"] },
   { action = "pass_until_resolved" },
 ]
 
@@ -25,7 +28,7 @@ script = [
 life = 20
 hand = [{ label = "fodder", card = "Opt" }]
 library_top = ["Mountain", "Island"]
-battlefield = [{ label = "inti", card = "Inti, Seneschal of the Sun" }]
+battlefield = [{ label = "inti", card = "Inti, Seneschal of the Sun" }, { label = "bear", card = "Grizzly Bears" }]
 
 [scenarios.setup.P1]
 life = 20
@@ -35,6 +38,7 @@ all = [
   { zone = "battlefield", player = "P0", card = "Inti, Seneschal of the Sun", count = 1, counters = { "+1/+1" = 1 } },
   { zone = "graveyard", player = "P0", card = "Opt", count = 1 },
   { zone = "exile", player = "P0", card = "Mountain", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Grizzly Bears", count = 1, counters = {} },
 ]
 
 [[scenarios]]
@@ -129,6 +133,7 @@ script = [
   { action = "choose_discard", player = "P0", cards = ["drawn"] },
   { action = "trigger_targets", targets = ["inti"] },
   { action = "order_triggers", player = "P0", resolve = ["put a +1/+1 counter", "whenever you discard"], only = "xmage" },
+  { action = "order_triggers", player = "P0", resolve = ["whenever you attack", "whenever you discard"], only = "phase" },
   { action = "attack", attackers = ["inti", "larcenist"] },
   { action = "pass_until_resolved" },
 ]
@@ -150,4 +155,36 @@ all = [
   { zone = "battlefield", player = "P0", card = "Inti, Seneschal of the Sun", count = 1, counters = { "+1/+1" = 1 } },
   { zone = "graveyard", player = "P0", card = "Mountain", count = 1 },
   { zone = "exile", player = "P0", card = "Island", count = 1 },
+]
+
+[[scenarios]]
+# CR 603.3b: the same attack as N1 with the exile ability resolving first. Both
+# engines must ask for the order; the end state is the same as N1.
+name = "N6 the discard ability may resolve before the reflexive counter ability"
+active_player = 0
+script = [
+  { action = "choose_optional", answers = ["yes"] },
+  { action = "choose_discard", player = "P0", cards = ["fodder"] },
+  { action = "trigger_targets", targets = ["inti"] },
+  { action = "order_triggers", player = "P0", resolve = ["whenever you discard", "put a +1/+1 counter"], only = "xmage" },
+  { action = "order_triggers", player = "P0", resolve = ["whenever you discard", "whenever you attack"], only = "phase" },
+  { action = "attack", attackers = ["inti", "bear"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+life = 20
+hand = [{ label = "fodder", card = "Opt" }]
+library_top = ["Mountain", "Island"]
+battlefield = [{ label = "inti", card = "Inti, Seneschal of the Sun" }, { label = "bear", card = "Grizzly Bears" }]
+
+[scenarios.setup.P1]
+life = 20
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Inti, Seneschal of the Sun", count = 1, counters = { "+1/+1" = 1 } },
+  { zone = "graveyard", player = "P0", card = "Opt", count = 1 },
+  { zone = "exile", player = "P0", card = "Mountain", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Grizzly Bears", count = 1, counters = {} },
 ]
