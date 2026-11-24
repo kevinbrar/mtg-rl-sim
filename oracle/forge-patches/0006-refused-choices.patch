@@ -1,0 +1,205 @@
+diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
+index 048eee9..a465d34 100644
+--- a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
++++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
+@@ -598,8 +598,11 @@ public final class CardScenarioProjectionTest extends AITest {
+         boolean attackThroughDamage = false;
+         for (int scriptIndex = 0; scriptIndex < script.size(); scriptIndex++) {
+             JsonObject action = script.get(scriptIndex).getAsJsonObject();
+-            boolean expectRefused = expectedRefusal(action, scriptIndex);
+-            switch (requiredString(action, "action")) {
++            String scriptAction = requiredString(action, "action");
++            boolean expectRefused = !"choose_copies".equals(scriptAction)
++                    && !"trigger_targets".equals(scriptAction)
++                    && expectedRefusal(action, scriptIndex);
++            switch (scriptAction) {
+                 case "cast" -> {
+                     Player caster = action.has("player")
+                             ? playerFor(action.get("player").getAsString(), game)
+@@ -696,6 +699,9 @@ public final class CardScenarioProjectionTest extends AITest {
+         assertNoScriptedControllerFailures(scriptedFailures);
+         controller0.assertConsumed();
+         controller1.assertConsumed();
++        refusals.addAll(controller0.choiceRefusals());
++        refusals.addAll(controller1.choiceRefusals());
++        refusals.sort(null);
+         boolean reached = checkReach(scenario, game, labels);
+         JsonObject projection = projection(game, labels, reached);
+         JsonObject result = new JsonObject();
+@@ -1000,9 +1006,12 @@ public final class CardScenarioProjectionTest extends AITest {
+                         caster, caster.getOpponents().get(0));
+             }
+         }
++        int loadIndex = -1;
+         for (JsonElement value : scenario.getAsJsonArray("script")) {
++            loadIndex++;
+             JsonObject action = value.getAsJsonObject();
+             String actionName = requiredString(action, "action");
++            int refusedIndex = expectedRefusal(action, loadIndex) ? loadIndex : -1;
+             if ("choose_outside_game".equals(actionName)) {
+                 ScriptedController chooser = controllerFor(action, controller0, controller1);
+                 List<String> choices = new ArrayList<>();
+@@ -1089,7 +1098,16 @@ public final class CardScenarioProjectionTest extends AITest {
+                 if (targetLabels.isEmpty()) {
+                     throw new IllegalArgumentException("trigger_targets requires at least one label");
+                 }
+-                chooser.addTriggerTargetChoice(chooser.getPlayer(), targetLabels);
++                if (refusedIndex >= 0) {
++                    if (targetLabels.get(targetLabels.size() - 1).equals("@skip")) {
++                        throw new IllegalArgumentException(
++                                "refused trigger_targets needs the refused target last");
++                    }
++                    chooser.addRefusedTriggerTargetChoice(
++                            chooser.getPlayer(), targetLabels, refusedIndex);
++                } else {
++                    chooser.addTriggerTargetChoice(chooser.getPlayer(), targetLabels);
++                }
+             } else if ("graveyard_targets".equals(actionName)
+                     || "copy_targets".equals(actionName)) {
+                 ScriptedController chooser = controllerFor(action, controller0, controller1);
+@@ -1146,7 +1164,15 @@ public final class CardScenarioProjectionTest extends AITest {
+                     }
+                     cards.add(selected);
+                 }
+-                chooser.addCopyCastChoice(source, cards);
++                if (refusedIndex >= 0) {
++                    if (cards.isEmpty()) {
++                        throw new IllegalArgumentException(
++                                "refused choose_copies needs the refused card last");
++                    }
++                    chooser.addRefusedCopyCastChoice(source, cards, refusedIndex);
++                } else {
++                    chooser.addCopyCastChoice(source, cards);
++                }
+             } else if ("choose_replacement".equals(actionName)) {
+                 ScriptedController chooser = controllerFor(action, controller0, controller1);
+                 chooser.addReplacementChoice(requiredString(action, "description"));
+@@ -1180,9 +1206,13 @@ public final class CardScenarioProjectionTest extends AITest {
+             throw new IllegalArgumentException("script[" + scriptIndex + "].expect must be 'refused'");
+         }
+         String kind = requiredString(action, "action");
++        if ("choose_copies".equals(kind) || "trigger_targets".equals(kind)) {
++            return true;
++        }
+         if (!"cast".equals(kind) && !"activate".equals(kind)) {
+             throw new IllegalArgumentException(
+-                    "script[" + scriptIndex + "].expect is only valid for cast or activate");
++                    "script[" + scriptIndex
++                            + "].expect is only valid for cast, activate, choose_copies or trigger_targets");
+         }
+         if (action.has("sacrifice") || action.has("alternative_cost") || action.has("x")) {
+             throw new IllegalArgumentException(
+@@ -1796,7 +1826,8 @@ public final class CardScenarioProjectionTest extends AITest {
+     }
+ 
+     private static final class ScriptedController extends PlayerControllerForTests {
+-        private record CopyCastChoice(Card source, List<Card> cards) {}
++        /** {@code cards} are the accepted picks; {@code refused} must not be castable after them. */
++        private record CopyCastChoice(Card source, List<Card> cards, Card refused, int refusedIndex) {}
+ 
+         private final Deque<OutsideGameChoice> outsideGameChoices = new ArrayDeque<>();
+         private final Deque<ManaScriptPayment> manaChoices = new ArrayDeque<>();
+@@ -1819,6 +1850,7 @@ public final class CardScenarioProjectionTest extends AITest {
+         private boolean pendingOutsideGameCancellation;
+         private boolean passingPriority;
+         private List<String> activeGraveyardTargetLabels;
++        private final List<Integer> choiceRefusals = new ArrayList<>();
+         private CopyCastChoice activeCopyCastChoice;
+         private int nextCopyCastCard;
+         private Card selectedCopyForPlayEffect;
+@@ -1990,7 +2022,38 @@ public final class CardScenarioProjectionTest extends AITest {
+ 
+         private void addTriggerTargetChoice(Player scriptedPlayer, List<String> targetLabels) {
+             triggerTargetChoices.addLast(
+-                    new TriggerTargetChoice(scriptedPlayer, List.copyOf(targetLabels)));
++                    new TriggerTargetChoice(scriptedPlayer, List.copyOf(targetLabels), null, -1));
++        }
++
++        private void addRefusedTriggerTargetChoice(
++                Player scriptedPlayer, List<String> targetLabels, int scriptIndex) {
++            int last = targetLabels.size() - 1;
++            triggerTargetChoices.addLast(new TriggerTargetChoice(
++                    scriptedPlayer, List.copyOf(targetLabels.subList(0, last)),
++                    targetLabels.get(last), scriptIndex));
++        }
++
++        private void addRefusedCopyCastChoice(Card source, List<Card> cards, int scriptIndex) {
++            int last = cards.size() - 1;
++            copyCastChoices.addLast(new CopyCastChoice(
++                    source, List.copyOf(cards.subList(0, last)), cards.get(last), scriptIndex));
++        }
++
++        /** Refusals of scripted choices, valid once the script has been consumed. */
++        private List<Integer> choiceRefusals() {
++            if (activeCopyCastChoice != null && activeCopyCastChoice.refused() != null
++                    && nextCopyCastCard == activeCopyCastChoice.cards().size()) {
++                // The effect stopped asking: nothing castable was left to offer.
++                Card refused = activeCopyCastChoice.refused();
++                if (refused.getZone() == null
++                        || refused.getZone().getZoneType() != ZoneType.Exile) {
++                    throw failClosed("refused choose_copies card left exile: " + refused.getName());
++                }
++                choiceRefusals.add(activeCopyCastChoice.refusedIndex());
++                activeCopyCastChoice = null;
++                nextCopyCastCard = 0;
++            }
++            return List.copyOf(choiceRefusals);
+         }
+ 
+         private void addGraveyardTargetChoice(List<String> targetLabels) {
+@@ -1998,7 +2061,7 @@ public final class CardScenarioProjectionTest extends AITest {
+         }
+ 
+         private void addCopyCastChoice(Card source, List<Card> cards) {
+-            copyCastChoices.addLast(new CopyCastChoice(source, List.copyOf(cards)));
++            copyCastChoices.addLast(new CopyCastChoice(source, List.copyOf(cards), null, -1));
+         }
+ 
+         private void addReplacementChoice(String description) {
+@@ -2202,6 +2265,18 @@ public final class CardScenarioProjectionTest extends AITest {
+             if (!ability.isTargetNumberValid()) {
+                 throw failClosed("scripted target count is invalid");
+             }
++            if (targetChoice.refusedLabel() != null) {
++                GameObject refused = labels.get(targetChoice.refusedLabel());
++                if (refused == null) {
++                    throw failClosed("unknown scripted target label " + targetChoice.refusedLabel());
++                }
++                if (selectedCount < max && ability.canTarget(refused)) {
++                    throw failClosed(
++                            "trigger_targets last target was offered but expected refused: "
++                                    + targetChoice.refusedLabel());
++                }
++                choiceRefusals.add(targetChoice.refusedIndex());
++            }
+             return true;
+         }
+ 
+@@ -2611,6 +2686,16 @@ public final class CardScenarioProjectionTest extends AITest {
+                 throw failClosed("choose_copies prompt was offered to a different player");
+             }
+             if (nextCopyCastCard == activeCopyCastChoice.cards().size()) {
++                Card refused = activeCopyCastChoice.refused();
++                if (refused != null) {
++                    if (choices.stream().anyMatch(choice -> choice instanceof Card card
++                            && matchesScriptedCopy(card, refused))) {
++                        throw failClosed(
++                                "choose_copies last card was offered but expected refused: "
++                                        + refused.getName());
++                    }
++                    choiceRefusals.add(activeCopyCastChoice.refusedIndex());
++                }
+                 if (!optional) {
+                     throw failClosed("choose_copies cannot stop at the scripted count");
+                 }
+@@ -2727,7 +2812,9 @@ public final class CardScenarioProjectionTest extends AITest {
+         }
+     }
+ 
+-    private record TriggerTargetChoice(Player player, List<String> targetLabels) { }
++    /** {@code refusedLabel} must not be choosable after {@code targetLabels}. */
++    private record TriggerTargetChoice(
++            Player player, List<String> targetLabels, String refusedLabel, int refusedIndex) { }
+ 
+     private record OutsideGameChoice(boolean accept, List<String> cards) { }
+ }

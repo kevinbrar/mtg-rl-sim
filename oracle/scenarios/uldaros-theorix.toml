@@ -320,3 +320,69 @@ all = [
   { zone = "library", player = "P0", card = "Opt", count = 1 },
   { zone = "battlefield", player = "P0", card = "Grizzly Bears", token = true, count = 0 },
 ]
+
+[[scenarios]]
+# Total mana value 6 or less: after Air Elemental (5), Divination (3) cannot also be cast.
+name = "U6-divination-after-air-elemental-refused-over-budget"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.blue", card = "Island", tapped = true },
+  { label = "mana.black.1", card = "Swamp", tapped = true },
+  { label = "mana.black.2", card = "Swamp", tapped = true },
+  { label = "mana.generic.1", card = "Forest", tapped = true },
+  { label = "mana.generic.2", card = "Forest", tapped = true },
+  { label = "mana.generic.3", card = "Forest", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.blue" },
+  { color = "B", source = "mana.black.1" },
+  { color = "B", source = "mana.black.2" },
+  { color = "G", source = "mana.generic.1" },
+  { color = "G", source = "mana.generic.2" },
+  { color = "G", source = "mana.generic.3" },
+]
+hand = [{ label = "uldaros", card = "Uldaros Theorix" }]
+graveyard = [
+  { label = "grave.divination", card = "Divination" },
+  { label = "grave.air-elemental", card = "Air Elemental" },
+]
+library_top = [{ label = "draw.marker", card = "Opt" }]
+
+[scenarios.setup.P1]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.blue", "mana.black.1", "mana.black.2", "mana.generic.1", "mana.generic.2", "mana.generic.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Uldaros Theorix"
+
+[[scenarios.script]]
+action = "graveyard_targets"
+player = "P0"
+targets = ["grave.divination", "grave.air-elemental"]
+
+[[scenarios.script]]
+action = "choose_copies"
+player = "P0"
+source = "uldaros"
+cards = ["grave.air-elemental", "grave.divination"]
+expect = "refused"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Uldaros Theorix", count = 1 },
+  { zone = "exile", player = "P0", card = "Divination", count = 1 },
+  { zone = "exile", player = "P0", card = "Air Elemental", count = 1 },
+  { zone = "library", player = "P0", card = "Opt", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Air Elemental", token = true, count = 1 },
+]

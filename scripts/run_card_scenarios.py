@@ -954,8 +954,25 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
             context = f"{name}: script[{index}].expect"
             if action["expect"] != "refused":
                 raise ValueError(f"{context} must be 'refused'")
+            if action.get("action") in {"choose_copies", "trigger_targets"}:
+                if oracle != "forge":
+                    raise ValueError(
+                        f"{context} on {action['action']} needs a Forge-oracle suite"
+                    )
+                key = "cards" if action["action"] == "choose_copies" else "targets"
+                entries = action.get(key)
+                if (
+                    not isinstance(entries, list)
+                    or not entries
+                    or entries[-1] == "@skip"
+                ):
+                    raise ValueError(f"{context} needs the refused entry last in {key}")
+                continue
             if action.get("action") not in {"cast", "activate"}:
-                raise ValueError(f"{context} is only valid for cast or activate")
+                raise ValueError(
+                    f"{context} is only valid for cast, activate, choose_copies "
+                    "or trigger_targets"
+                )
             if {"sacrifice", "alternative_cost", "x"} & action.keys():
                 raise ValueError(f"{context} cannot be combined with choice scripts")
         if action.get("action") == "cast" and "player" in action:

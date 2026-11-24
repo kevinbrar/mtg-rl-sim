@@ -2424,8 +2424,46 @@ script = [{action}]
     ("action", "error"),
     [
         (
+            '{ action = "choose_copies", source = "s", cards = [], expect = "refused" }',
+            "needs the refused entry last in cards",
+        ),
+        (
+            '{ action = "trigger_targets", targets = ["a", "@skip"], expect = "refused" }',
+            "needs the refused entry last in targets",
+        ),
+    ],
+)
+def test_load_specs_rejects_refused_choice_without_a_refused_entry(
+    tmp_path: Path, action: str, error: str
+) -> None:
+    spec = tmp_path / "refused-choice.toml"
+    spec.write_text(
+        f"""
+oracle = "forge"
+
+[[scenarios]]
+name = "refused choice"
+script = [{action}]
+
+[scenarios.setup.P0]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=error):
+        load_specs([spec])
+
+
+@pytest.mark.parametrize(
+    ("action", "error"),
+    [
+        (
             '{ action = "pass_until_resolved", expect = "refused" }',
-            "expect is only valid for cast or activate",
+            "expect is only valid for cast, activate, choose_copies",
+        ),
+        (
+            '{ action = "trigger_targets", targets = ["a", "b"], expect = "refused" }',
+            "on trigger_targets needs a Forge-oracle suite",
         ),
         (
             '{ action = "cast", card = "spell", expect = "accepted" }',
