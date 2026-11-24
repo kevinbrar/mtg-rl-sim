@@ -2583,6 +2583,10 @@ fn apply_trigger_target_group(
                 .split_last()
                 .ok_or("refused trigger_targets needs the refused target last")?;
             let last = last.ok_or("refused trigger_targets cannot end with @skip")?;
+            if accepted.contains(&None) {
+                // A skipped slot could hide a slot that offers the refused target.
+                return Err("refused trigger_targets cannot contain @skip".to_string());
+            }
             (accepted.to_vec(), Some((index, TargetRef::Object(last))))
         }
         None => (group.targets, None),
