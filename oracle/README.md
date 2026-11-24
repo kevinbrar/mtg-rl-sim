@@ -169,7 +169,12 @@ accept the refused card alone and the first target slot to offer the refused
 target; Forge requires the first copy prompt to offer the refused card and the
 ability to accept the refused target before any target is chosen. A refused
 step therefore needs at least one accepted entry, no `@skip`, and no repeated
-entry. The script index is recorded in `refusals` like an action-level
+entry. Limits: the checks assume an "up to N of one kind" prompt (Phase looks
+for the refused target in the first slot), "legal on its own" means
+selectable or offered, not proven castable, a player (`@P0`/`@P1`) cannot be
+the refused entry, and in Forge the refused target must be a permanent that
+started on the battlefield (a label for a card that changed zones during the
+script fails closed). The script index is recorded in `refusals` like an action-level
 refusal. The XMage runner does not implement this, so the loader rejects it
 outside Forge-oracle suites.
 
