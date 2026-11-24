@@ -1,4 +1,4 @@
-From 6d2398072f34861746cc40b0cedf13f22ddd7341 Mon Sep 17 00:00:00 2001
+From dc4897dc598ef6000ae44e4b9502fdcac835a748 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Tue, 24 Nov 2026 18:03:48 +0000
 Subject: [PATCH] Order targeted reflexive triggers with other pending triggers
@@ -10,7 +10,7 @@ its controller orders them together; targets are chosen as it is placed.
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
- crates/engine/src/game/effects/mod.rs         |  38 ++---
+ crates/engine/src/game/effects/mod.rs         |  60 ++++---
  .../engine_phase_trigger_regression_tests.rs  |   9 +
  crates/engine/src/game/scenario.rs            |  12 ++
  .../triggers_push_first_contract_tests.rs     |  19 ++-
@@ -22,11 +22,11 @@ Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.gith
  .../reflexive_body_token_referent.rs          | 101 ++++++++---
  .../integration/reflexive_discard_this_way.rs |   2 +
  .../tests/integration/valki_god_of_lies.rs    |   2 +
- 12 files changed, 322 insertions(+), 55 deletions(-)
+ 12 files changed, 344 insertions(+), 55 deletions(-)
  create mode 100644 crates/engine/tests/integration/inti_trigger_order.rs
 
 diff --git a/crates/engine/src/game/effects/mod.rs b/crates/engine/src/game/effects/mod.rs
-index ea70c8eac..ee01b4309 100644
+index ea70c8eac..ded467544 100644
 --- a/crates/engine/src/game/effects/mod.rs
 +++ b/crates/engine/src/game/effects/mod.rs
 @@ -1070,6 +1070,11 @@ fn rebind_child_to_forwarded_objects(
@@ -72,7 +72,35 @@ index ea70c8eac..ee01b4309 100644
          return Ok(Some(ResolutionProgress::Complete));
      }
  
-@@ -35203,7 +35193,9 @@ mod tests {
+@@ -35197,13 +35187,37 @@ mod tests {
+         assert!(state.stack.is_empty());
+     }
+ 
++    /// CR 400.7j: the captured source incarnation follows a forwarded-result
++    /// rebind; an ability that never captured one stays unstamped.
++    #[test]
++    fn forwarded_rebind_moves_only_a_captured_source_incarnation() {
++        let mut state = GameState::new_two_player(42);
++        let producer = reflexive_test_creature(&mut state, PlayerId(0), "Producer");
++        let moved = reflexive_test_creature(&mut state, PlayerId(0), "Moved");
++        state.objects.get_mut(&moved).unwrap().incarnation = 3;
++
++        let mut stamped = reflexive_counter_ability(producer);
++        stamped.source_incarnation = Some(0);
++        rebind_child_to_forwarded_objects(&state, &mut stamped, producer, &[], &[moved]);
++        assert_eq!(stamped.source_id, moved);
++        assert_eq!(stamped.source_incarnation, Some(3));
++
++        let mut unstamped = reflexive_counter_ability(producer);
++        unstamped.source_incarnation = None;
++        rebind_child_to_forwarded_objects(&state, &mut unstamped, producer, &[], &[moved]);
++        assert_eq!(unstamped.source_id, moved);
++        assert_eq!(unstamped.source_incarnation, None);
++    }
++
+     #[test]
+     fn reflexive_target_chooser_differs_from_stack_controller() {
+         let mut state = GameState::new_two_player(42);
          state.waiting_for = WaitingFor::Priority {
              player: PlayerId(0),
          };
@@ -83,7 +111,7 @@ index ea70c8eac..ee01b4309 100644
          let mut reflexive = reflexive_counter_ability(ObjectId(100));
          // CR 601.2c + CR 603.3d: `Opponent` is the ONLY non-`ScopedPlayer` chooser
          // the parser ever stamps ("of an opponent's choice"), and it is the
-@@ -35218,6 +35210,12 @@ mod tests {
+@@ -35218,6 +35232,12 @@ mod tests {
  
          try_materialize_reflexive_trigger(&mut state, &reflexive, None, None, &mut events, 0)
              .unwrap();
