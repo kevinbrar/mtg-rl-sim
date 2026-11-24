@@ -2431,6 +2431,14 @@ script = [{action}]
             '{ action = "trigger_targets", targets = ["a", "@skip"], expect = "refused" }',
             "needs the refused entry last in targets",
         ),
+        (
+            '{ action = "trigger_targets", targets = ["a", "@skip", "b"], expect = "refused" }',
+            "cannot be combined with @skip",
+        ),
+        (
+            '{ action = "choose_copies", player = "P0", source = "s", cards = ["a"], bogus = 1, expect = "refused" }',
+            "choose_copies",
+        ),
     ],
 )
 def test_load_specs_rejects_refused_choice_without_a_refused_entry(
