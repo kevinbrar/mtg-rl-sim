@@ -932,6 +932,13 @@ fn parse_trigger_order(action: &Value) -> Result<Option<TriggerOrderChoice>, Str
                 .ok_or("order_triggers.resolve entries must be non-empty strings".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if resolve.iter().any(|prefix| prefix == UNLABELED_TRIGGER)
+        && action.get("only").and_then(Value::as_str) != Some("phase")
+    {
+        return Err(
+            "order_triggers.resolve may use @unlabeled only with only = \"phase\"".to_string(),
+        );
+    }
     Ok(queued.then_some(TriggerOrderChoice { player, resolve }))
 }
 
@@ -970,6 +977,13 @@ fn trigger_placement_order(
         let index = matches.next().ok_or_else(|| {
             format!("order_triggers prefix {prefix:?} matches no trigger in {descriptions:?}")
         })?;
+        // Triggers without text cannot be told apart, so more than one of
+        // them is never treated as identical.
+        if prefix == UNLABELED_TRIGGER && matches.next().is_some() {
+            return Err(format!(
+                "order_triggers prefix {prefix:?} is ambiguous in {descriptions:?}"
+            ));
+        }
         if matches.any(|other| descriptions[other] != descriptions[index]) {
             return Err(format!(
                 "order_triggers prefix {prefix:?} is ambiguous in {descriptions:?}"
@@ -8997,6 +9011,22 @@ mod trigger_order_tests {
             trigger_placement_order(&texts(&["whenever ~ deals", "@unlabeled"]), &pending),
             Ok(vec![1, 0])
         );
+        assert!(
+            trigger_placement_order(&texts(&["@unlabeled", "@unlabeled"]), &texts(&["", ""]))
+                .unwrap_err()
+                .contains("is ambiguous")
+        );
+        for only in [json!(null), json!("xmage")] {
+            let mut action = json!({
+                "action": "order_triggers", "player": "P0", "resolve": ["@unlabeled", "a"],
+            });
+            if !only.is_null() {
+                action["only"] = only;
+            }
+            assert!(parse_trigger_order(&action)
+                .unwrap_err()
+                .contains("@unlabeled"));
+        }
         let labeled = texts(&["whenever ~ deals combat damage", "draw a card"]);
         assert!(
             trigger_placement_order(&texts(&["@unlabeled", "whenever ~ deals"]), &labeled)

@@ -511,11 +511,15 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
 
 ## Patch 0047 — combat-damage events are claimed once collected (CR 603.2c)
 
-- `process_combat_damage_triggers` claims its events for ordinary collection
+- `process_combat_damage_triggers` claims its own events (`batch_event_start..`,
+  the damage batch and the state-based actions after it) for ordinary collection
   whenever its batch put an ability on the stack or opened a trigger prompt.
+  Earlier events of the pass stay visible to the post-action scan; the
+  replacement-choice path of patch 0046 uses the same start.
   Before, an ordinary combat-damage trigger beside a delayed one (Hunter's
   Insight) was collected again by the post-action scan while the controller
   ordered the two.
 - Regression: `combat_damage_trigger_beside_delayed_trigger.rs` (with and
-  without the delayed trigger, beside a combat death, two ordinary triggers).
+  without the delayed trigger, beside a combat death, two ordinary triggers,
+  those two beside the delayed trigger, and beside an earlier life-loss event).
 - Runtime-only; no parser or card-data change.

@@ -68,3 +68,38 @@ all = [
   { zone = "graveyard", player = "P0", card = "Hunter's Insight", count = 1 },
   { player = "P1", life = 19 },
 ]
+
+[[scenarios]]
+name = "HI3 the delayed trigger fires beside two creatures' own combat damage triggers"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Hunter's Insight", targets = ["thief.0"] },
+  { action = "pass_until_resolved" },
+  { action = "order_triggers", player = "P0", resolve = ["whenever this creature deals combat damage to a player or planeswalker", "whenever ~ deals combat damage to a player, draw", "whenever ~ deals combat damage to a player, draw"], only = "xmage" },
+  { action = "order_triggers", player = "P0", resolve = ["@unlabeled", "whenever ~ deals combat damage to a player, draw", "whenever ~ deals combat damage to a player, draw"], only = "phase" },
+  { action = "attack", attackers = ["thief.0", "thief.1"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+hand = ["Hunter's Insight"]
+library_top = ["Island", "Island", "Island", "Island", "Island"]
+battlefield = [
+  { label = "thief.0", card = "Scroll Thief" },
+  { label = "thief.1", card = "Scroll Thief" },
+  { label = "forest.0", card = "Forest" },
+  { label = "forest.1", card = "Forest" },
+  { label = "forest.2", card = "Forest" },
+]
+
+[scenarios.setup.P1]
+battlefield = []
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Island", count = 3 },
+  { zone = "library", player = "P0", card = "Island", count = 2 },
+  { zone = "graveyard", player = "P0", card = "Hunter's Insight", count = 1 },
+  { player = "P1", life = 18 },
+]
