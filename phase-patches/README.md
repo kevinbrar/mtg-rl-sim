@@ -64,8 +64,9 @@
   land-type choice is still asked, the land enters untapped, then the player
   loses. Before, elimination ran with the land-type choice open and panicked
   in `abandon_active_resolution_carrier` (`stack.rs:179`).
-- Tests: `as_enters_life_payment_to_zero.rs` (to 0 life, and a 3-life
-  control). Runtime-only; no parser or card-data change.
+- Tests: `as_enters_life_payment_to_zero.rs` (to 0 life, a 3-life
+  control, and a resolving spell that loses life to 0 before a scry, where
+  the check is not deferred). Runtime-only; no parser or card-data change.
 
 # Local phase-rs fixes
 

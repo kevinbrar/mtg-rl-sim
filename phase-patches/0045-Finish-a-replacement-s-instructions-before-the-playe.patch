@@ -1,4 +1,4 @@
-From 36278d954206a8d293d390f8c2387bcbed91d9b1 Mon Sep 17 00:00:00 2001
+From 23b79ce0f240d9b16369936f35da3a574e41dc9a Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Wed, 25 Nov 2026 06:21:01 +0000
 Subject: [PATCH] Finish a replacement's instructions before the player-loss
@@ -15,11 +15,11 @@ activations and mana abilities.
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
- crates/engine/src/game/engine.rs              | 11 ++-
- crates/engine/src/types/game_state.rs         | 12 +++
- .../as_enters_life_payment_to_zero.rs         | 93 +++++++++++++++++++
- crates/engine/tests/integration/main.rs       |  1 +
- 4 files changed, 116 insertions(+), 1 deletion(-)
+ crates/engine/src/game/engine.rs              |  11 +-
+ crates/engine/src/types/game_state.rs         |  12 ++
+ .../as_enters_life_payment_to_zero.rs         | 144 ++++++++++++++++++
+ crates/engine/tests/integration/main.rs       |   1 +
+ 4 files changed, 167 insertions(+), 1 deletion(-)
  create mode 100644 crates/engine/tests/integration/as_enters_life_payment_to_zero.rs
 
 diff --git a/crates/engine/src/game/engine.rs b/crates/engine/src/game/engine.rs
@@ -69,10 +69,10 @@ index ef5589840..87bb137d0 100644
          self.active_post_replacement_drains()
 diff --git a/crates/engine/tests/integration/as_enters_life_payment_to_zero.rs b/crates/engine/tests/integration/as_enters_life_payment_to_zero.rs
 new file mode 100644
-index 000000000..b49c6eec1
+index 000000000..f8fcb0678
 --- /dev/null
 +++ b/crates/engine/tests/integration/as_enters_life_payment_to_zero.rs
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,144 @@
 +//! CR 119.4 + CR 704.3: a land's "as this land enters ... you may pay 2 life"
 +//! payment may take its controller to 0 life. The entry finishes first; the
 +//! player loses when state-based actions are next checked.
@@ -80,6 +80,7 @@ index 000000000..b49c6eec1
 +use engine::game::scenario::{GameScenario, P0, P1};
 +use engine::types::actions::GameAction;
 +use engine::types::game_state::WaitingFor;
++use engine::types::mana::ManaCost;
 +use engine::types::phase::Phase;
 +use engine::types::zones::Zone;
 +
@@ -164,6 +165,56 @@ index 000000000..b49c6eec1
 +    assert!(
 +        !object.tapped,
 +        "the land enters untapped when the life is paid"
++    );
++}
++
++/// CR 704.5a: outside a replacement's instructions the player-loss check is not
++/// deferred. A resolving spell that takes its controller to 0 life and then
++/// asks that player something ends the game instead of waiting on the answer.
++#[test]
++fn losing_life_to_zero_during_a_resolution_does_not_wait_on_a_later_choice() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    scenario.with_life(P0, 2);
++    for name in ["Library Card A", "Library Card B"] {
++        scenario.add_card_to_library_top(P0, name);
++    }
++    let spell = scenario
++        .add_spell_to_hand_from_oracle(
++            P0,
++            "Costly Foresight",
++            false,
++            "You lose 2 life, then scry 1.",
++        )
++        .with_mana_cost(ManaCost::zero())
++        .id();
++    let mut runner = scenario.build();
++    let card_id = runner.state().objects[&spell].card_id;
++    runner
++        .act(GameAction::CastSpell {
++            object_id: spell,
++            card_id,
++            targets: Vec::new(),
++            payment_mode: Default::default(),
++        })
++        .expect("the sorcery is castable");
++    for _ in 0..4 {
++        if !matches!(runner.state().waiting_for, WaitingFor::Priority { .. }) {
++            break;
++        }
++        runner
++            .act(GameAction::PassPriority)
++            .expect("passing priority is legal");
++    }
++
++    assert_eq!(runner.state().players[0].life, 0);
++    assert!(
++        matches!(
++            runner.state().waiting_for,
++            WaitingFor::GameOver { winner: Some(winner) } if winner == P1
++        ),
++        "P0 lost during the resolution, got {:?}",
++        runner.state().waiting_for
 +    );
 +}
 diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
