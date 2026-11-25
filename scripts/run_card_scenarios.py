@@ -1134,14 +1134,27 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                     raise ValueError(f"{context}.{field} must name mana_pool sources")
         if action.get("action") == "choose_replacement":
             context = f"{name}: script[{index}].choose_replacement"
-            unknown = action.keys() - {"action", "player", "description"}
+            selector = "description" if oracle == "forge" else "source"
+            unknown = action.keys() - {"action", "player", selector}
             if unknown:
                 raise ValueError(f"{context}.{min(unknown)} is unsupported")
             if action.get("player") not in {"P0", "P1"}:
                 raise ValueError(f"{context}.player must be P0 or P1")
-            description = action.get("description")
-            if not isinstance(description, str) or not description.strip():
-                raise ValueError(f"{context}.description must be a non-empty string")
+            if oracle == "forge":
+                description = action.get("description")
+                if not isinstance(description, str) or not description.strip():
+                    raise ValueError(
+                        f"{context}.description must be a non-empty string"
+                    )
+            else:
+                source = action.get("source")
+                location = (
+                    label_locations.get(source) if isinstance(source, str) else None
+                )
+                if location is None or location[1] != "battlefield":
+                    raise ValueError(
+                        f"{context}.source must be a battlefield setup label"
+                    )
         if action.get("action") == "choose_entity":
             context = f"{name}: script[{index}].choose_entity"
             unknown = action.keys() - {"action", "player", "card"}
@@ -1236,11 +1249,44 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                     )
         if action.get("action") == "attack":
             context = f"{name}: script[{index}].attack"
-            unknown = action.keys() - {"action", "attackers", "through"}
+            unknown = action.keys() - {"action", "attackers", "through", "blocks"}
             if unknown:
                 raise ValueError(f"{context}.{min(unknown)} is unsupported")
             if "through" in action and action["through"] != "damage":
                 raise ValueError(f'{context}.through must be "damage"')
+            if "blocks" in action:
+                if oracle == "forge":
+                    raise ValueError(
+                        f"{context}.blocks is unsupported by the Forge scenario runner"
+                    )
+                if action.get("through") != "damage":
+                    raise ValueError(f'{context}.blocks requires through = "damage"')
+                blocks = action["blocks"]
+                if not isinstance(blocks, list) or not blocks:
+                    raise ValueError(f"{context}.blocks must be a non-empty array")
+                blockers = []
+                for block in blocks:
+                    if not isinstance(block, dict) or block.keys() != {
+                        "blocker",
+                        "attacker",
+                    }:
+                        raise ValueError(
+                            f"{context}.blocks entries need exactly blocker and attacker"
+                        )
+                    if label_locations.get(block["blocker"], (None, None))[:2] != (
+                        "P1",
+                        "battlefield",
+                    ):
+                        raise ValueError(
+                            f"{context}.blocks blocker {block['blocker']} must be on P1's battlefield"
+                        )
+                    if block["attacker"] not in (action.get("attackers") or []):
+                        raise ValueError(
+                            f"{context}.blocks attacker {block['attacker']} is not attacking"
+                        )
+                    blockers.append(block["blocker"])
+                if len(blockers) != len(set(blockers)):
+                    raise ValueError(f"{context}.blocks cannot repeat a blocker")
             attackers = action.get("attackers")
             if not isinstance(attackers, list) or not attackers:
                 raise ValueError(f"{context}.attackers must be a non-empty label array")

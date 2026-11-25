@@ -1,0 +1,182 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+index 8890c4d9..686d1410 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -118,6 +118,7 @@ public class TestPlayer implements Player {
+     private final Map<String, UUID> aliases = new HashMap<>(); // aliases for game objects/players (use it for cards with same name to save and use)
+     private final Deque<RottenmouthUnlessChoice> rottenmouthUnlessChoices = new ArrayDeque<>();
+     private final Deque<FirebenderCopyChoice> firebenderCopyChoices = new ArrayDeque<>();
++    private final Deque<UUID> replacementSourceChoices = new ArrayDeque<>();
+     private FirebenderCopyChoice pendingFirebenderTargetChoice;
+     private final List<String> pendingFirebenderTargets = new ArrayList<>();
+     private boolean firebenderTargetSelectionActive;
+@@ -185,6 +186,7 @@ public class TestPlayer implements Player {
+         this.aliases.putAll(testPlayer.aliases);
+         this.rottenmouthUnlessChoices.addAll(testPlayer.rottenmouthUnlessChoices);
+         this.firebenderCopyChoices.addAll(testPlayer.firebenderCopyChoices);
++        this.replacementSourceChoices.addAll(testPlayer.replacementSourceChoices);
+         this.pendingFirebenderTargetChoice = testPlayer.pendingFirebenderTargetChoice;
+         this.pendingFirebenderTargets.addAll(testPlayer.pendingFirebenderTargets);
+         this.firebenderTargetSelectionActive = testPlayer.firebenderTargetSelectionActive;
+@@ -276,6 +278,14 @@ public class TestPlayer implements Player {
+         }
+     }
+ 
++    public void addReplacementSourceChoice(UUID sourceId) {
++        replacementSourceChoices.addLast(sourceId);
++    }
++
++    public int remainingReplacementSourceChoices() {
++        return replacementSourceChoices.size();
++    }
++
+     public void addFirebenderCopyChoice(FirebenderCopyChoice choice) {
+         firebenderCopyChoices.addLast(choice);
+     }
+@@ -2406,8 +2416,23 @@ public class TestPlayer implements Player {
+                 String[] groups = command.split("\\$");
+                 String blockerName = groups[0];
+                 String attackerName = groups[1];
+-                Permanent attacker = findPermanent(new FilterAttackingCreature(), attackerName, game.getCombat().getAttackingPlayerId(), game);
+-                Permanent blocker = findPermanent(new FilterControlledPermanent(), blockerName, this.getId(), game);
++                Permanent attacker;
++                Permanent blocker;
++                if (blockerName.startsWith("id=") && attackerName.startsWith("id=")) {
++                    // scenario scripts name both creatures by object id
++                    attacker = game.getPermanent(UUID.fromString(attackerName.substring(3)));
++                    blocker = game.getPermanent(UUID.fromString(blockerName.substring(3)));
++                    if (attacker == null || !attacker.isAttacking()) {
++                        throw new AssertionError("Block action does not identify an attacking creature");
++                    }
++                    if (blocker == null || !blocker.getControllerId().equals(this.getId())
++                            || !blocker.canBlock(attacker.getId(), game)) {
++                        throw new AssertionError("Block action does not identify a creature you control that can block the attacker");
++                    }
++                } else {
++                    attacker = findPermanent(new FilterAttackingCreature(), attackerName, game.getCombat().getAttackingPlayerId(), game);
++                    blocker = findPermanent(new FilterControlledPermanent(), blockerName, this.getId(), game);
++                }
+ 
+                 if (canBlockAnother(game, blocker, attacker, blockedCreaturesList)) {
+                     computerPlayer.declareBlocker(defendingPlayerId, blocker.getId(), attacker.getId(), game);
+@@ -2663,6 +2688,29 @@ public class TestPlayer implements Player {
+         if (effectsMap.size() <= 1) {
+             return 0;
+         }
++        if (!replacementSourceChoices.isEmpty()) {
++            // scenario scripts name the replacement effect by its source permanent
++            UUID sourceId = replacementSourceChoices.removeFirst();
++            int found = -1;
++            int index = 0;
++            for (String key : effectsMap.keySet()) {
++                MageObject object = objectsMap.get(key);
++                if (object != null && object.getId().equals(sourceId)) {
++                    if (found >= 0) {
++                        throw new IllegalStateException(
++                                "choose_replacement.source offers more than one replacement effect");
++                    }
++                    found = index;
++                }
++                index++;
++            }
++            if (found < 0) {
++                throw new IllegalStateException(
++                        "choose_replacement.source is not an offered replacement effect: "
++                                + String.join("\n", effectsMap.values()));
++            }
++            return found;
++        }
+         assertAliasSupportInChoices(false);
+         if (!choices.isEmpty()) {
+             // workaround for replecement effects to search in regexp style by object and ability
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+index 0397aec1..6444243e 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -152,10 +152,20 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         }
+         for (String label : expectedAttackers) {
+             UUID attacker = labels.get(label);
+-            if (attacker == null || !currentGame.getCombat().getAttackers().contains(attacker)) {
++            // an attacker that left the battlefield in combat is no longer in combat (CR 506.4)
++            if (attacker == null || (currentGame.getPermanent(attacker) != null
++                    && !currentGame.getCombat().getAttackers().contains(attacker))) {
+                 throw new IllegalStateException("attack label " + label + " was not declared");
+             }
+         }
++        for (int index = 0; index < 2; index++) {
++            if (player(index).remainingReplacementSourceChoices() != 0) {
++                throw new IllegalStateException("choose_replacement entries were unconsumed when the script ended");
++            }
++            if (player(index).getActions().stream().anyMatch(action -> action.getAction().startsWith("block:"))) {
++                throw new IllegalStateException("attack.blocks were unconsumed when the script ended");
++            }
++        }
+         System.out.println(RESULT_PREFIX + GSON.toJson(result()));
+     }
+ 
+@@ -607,7 +617,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                             decision.equals("accept"), targetMode, newTargets));
+                 }
+                 case "attack" -> {
+-                    rejectUnknownKeys(action, Set.of("action", "attackers", "through"), "script.attack");
++                    rejectUnknownKeys(action, Set.of("action", "attackers", "through", "blocks"), "script.attack");
+                     if (activeIndex != 0) {
+                         throw new IllegalArgumentException("attack requires P0 active to attack P1");
+                     }
+@@ -634,10 +644,55 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                                 "", turn, PhaseStep.DECLARE_ATTACKERS, "attack:id=" + labels.get(label)));
+                         expectedAttackers.add(label);
+                     }
++                    if (action.has("blocks")) {
++                        if (!throughDamage) {
++                            throw new IllegalArgumentException("attack.blocks requires through = \"damage\"");
++                        }
++                        JsonArray blocks = array(action, "blocks");
++                        if (blocks.isEmpty()) {
++                            throw new IllegalArgumentException("attack.blocks must be a non-empty array");
++                        }
++                        Set<String> blockers = new HashSet<>();
++                        for (JsonElement element : blocks) {
++                            JsonObject block = element.getAsJsonObject();
++                            rejectUnknownKeys(block, Set.of("blocker", "attacker"), "script.attack.blocks");
++                            String blocker = requiredString(block, "blocker");
++                            String blocked = requiredString(block, "attacker");
++                            if (!labels.containsKey(blocker)
++                                    || labelZones.get(blocker) != Zone.BATTLEFIELD
++                                    || labelPlayers.get(blocker) != 1) {
++                                throw new IllegalArgumentException(
++                                        "attack.blocks blocker " + blocker + " must be on P1's battlefield");
++                            }
++                            if (!attackers.contains(blocked)) {
++                                throw new IllegalArgumentException(
++                                        "attack.blocks attacker " + blocked + " is not attacking");
++                            }
++                            if (!blockers.add(blocker)) {
++                                throw new IllegalArgumentException("attack.blocks cannot repeat a blocker");
++                            }
++                            player(1).addAction(new PlayerAction(
++                                    "", turn, PhaseStep.DECLARE_BLOCKERS,
++                                    "block:id=" + labels.get(blocker) + "$id=" + labels.get(blocked)));
++                        }
++                    }
+                     lastStep = PhaseStep.DECLARE_ATTACKERS;
+                     attackNeedsResolution = true;
+                     attackThroughDamage = throughDamage;
+                 }
++                case "choose_replacement" -> {
++                    rejectUnknownKeys(action, Set.of("action", "player", "source"), "script.choose_replacement");
++                    String choicePlayer = requiredString(action, "player");
++                    if (!choicePlayer.equals("P0") && !choicePlayer.equals("P1")) {
++                        throw new IllegalArgumentException("choose_replacement.player must be P0 or P1");
++                    }
++                    String source = requiredString(action, "source");
++                    if (!labels.containsKey(source) || labelZones.get(source) != Zone.BATTLEFIELD) {
++                        throw new IllegalArgumentException(
++                                "choose_replacement.source must be a battlefield setup label");
++                    }
++                    player(choicePlayer.equals("P0") ? 0 : 1).addReplacementSourceChoice(labels.get(source));
++                }
+                 case "choose_cards" -> {
+                     if (!action.has("cards") || !action.get("cards").isJsonArray()) {
+                         throw new IllegalArgumentException("choose_cards needs cards");

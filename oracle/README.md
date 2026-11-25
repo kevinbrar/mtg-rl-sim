@@ -70,8 +70,17 @@ An `attack` action may set `through = "damage"` to continue past declare
 attackers, declare blockers, and combat damage, resolving scripted triggers
 before stopping with an empty stack and priority at the active player. Omitted
 `through` preserves the existing declare-attackers stop. The current script
-supports no blockers only; any `blocks` field is rejected, and unscripted combat
-or damage-assignment prompts fail closed. Trigger targets, card choices, and
+declares no blockers unless `blocks = [{ blocker = "<P1 label>", attacker =
+"<attacking label>" }]` is given (Phase and XMage only; requires `through =
+"damage"`; each blocker blocks one attacker), and unscripted combat
+or damage-assignment prompts fail closed. When several replacement effects
+apply to one event during that combat (CR 616.1), script one
+`{ action = "choose_replacement", player = "P0", source = "<label>" }` per
+prompt before the `attack`: a per-player FIFO naming the permanent whose
+replacement effect that player applies next. Phase and XMage only; a prompt
+with no entry, a source that is not offered, and an unconsumed entry all fail.
+Replacement choices outside an `attack` continued through damage are not
+scripted yet. Trigger targets, card choices, and
 other supported resolution choices use the same FIFO handlers during combat
 damage, and the runner stops only after regular combat damage is complete.
 Activations can name a labeled battlefield permanent or a card in the

@@ -1225,9 +1225,34 @@ def test_load_specs_rejects_invalid_uldaros_choice_scripts(
             'through must be "damage"',
         ),
         (
-            '{ action = "attack", attackers = ["attacker"], blocks = [] }',
+            '{ action = "attack", attackers = ["attacker"], blocks = [{ blocker = "blocker", attacker = "attacker" }] }',
+            '[scenarios.setup.P0]\nbattlefield = [{ label = "attacker", card = "Pulse Tracker" }]\n[scenarios.setup.P1]\nbattlefield = [{ label = "blocker", card = "Pulse Tracker" }]',
+            "blocks requires through",
+        ),
+        (
+            '{ action = "attack", attackers = ["attacker"], through = "damage", blocks = [] }',
             '[scenarios.setup.P0]\nbattlefield = [{ label = "attacker", card = "Pulse Tracker" }]',
-            "blocks is unsupported",
+            "blocks must be a non-empty array",
+        ),
+        (
+            '{ action = "attack", attackers = ["attacker"], through = "damage", blocks = [{ blocker = "blocker" }] }',
+            '[scenarios.setup.P0]\nbattlefield = [{ label = "attacker", card = "Pulse Tracker" }]\n[scenarios.setup.P1]\nbattlefield = [{ label = "blocker", card = "Pulse Tracker" }]',
+            "exactly blocker and attacker",
+        ),
+        (
+            '{ action = "attack", attackers = ["attacker"], through = "damage", blocks = [{ blocker = "attacker", attacker = "attacker" }] }',
+            '[scenarios.setup.P0]\nbattlefield = [{ label = "attacker", card = "Pulse Tracker" }]',
+            "must be on P1's battlefield",
+        ),
+        (
+            '{ action = "attack", attackers = ["attacker"], through = "damage", blocks = [{ blocker = "blocker", attacker = "blocker" }] }',
+            '[scenarios.setup.P0]\nbattlefield = [{ label = "attacker", card = "Pulse Tracker" }]\n[scenarios.setup.P1]\nbattlefield = [{ label = "blocker", card = "Pulse Tracker" }]',
+            "is not attacking",
+        ),
+        (
+            '{ action = "attack", attackers = ["attacker"], through = "damage", blocks = [{ blocker = "blocker", attacker = "attacker" }, { blocker = "blocker", attacker = "attacker" }] }',
+            '[scenarios.setup.P0]\nbattlefield = [{ label = "attacker", card = "Pulse Tracker" }]\n[scenarios.setup.P1]\nbattlefield = [{ label = "blocker", card = "Pulse Tracker" }]',
+            "cannot repeat a blocker",
         ),
         (
             '{ action = "copy_choice", player = "P0", decision = "maybe" }',
@@ -2377,6 +2402,8 @@ def test_load_specs_rejects_invalid_replacement_choice(tmp_path: Path) -> None:
     spec = tmp_path / "invalid-replacement-choice.toml"
     spec.write_text(
         """
+oracle = "forge"
+
 [[scenarios]]
 name = "invalid replacement choice"
 script = [{ action = "choose_replacement", player = "P0", description = "" }]
@@ -2387,6 +2414,41 @@ script = [{ action = "choose_replacement", player = "P0", description = "" }]
 
     with pytest.raises(ValueError, match="description must be a non-empty string"):
         load_specs([spec])
+
+
+@pytest.mark.parametrize(
+    ("choice", "message"),
+    [
+        ('player = "P0", description = "x"', "description is unsupported"),
+        ('player = "P2", source = "rip"', "player must be P0 or P1"),
+        ('player = "P0", source = "ghost"', "source must be a battlefield setup label"),
+        ('player = "P0", source = "held"', "source must be a battlefield setup label"),
+        ('player = "P0"', "source must be a battlefield setup label"),
+    ],
+)
+def test_load_specs_rejects_invalid_replacement_source_choice(
+    tmp_path: Path, choice: str, message: str
+) -> None:
+    spec = tmp_path / "invalid-replacement-source.toml"
+    spec.write_text(
+        f"""
+[[scenarios]]
+name = "invalid replacement source"
+script = [{{ action = "choose_replacement", {choice} }}]
+[scenarios.setup.P0]
+hand = [{{ label = "held", card = "Opt" }}]
+battlefield = [{{ label = "rip", card = "Rest in Peace" }}]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        load_specs([spec])
+
+
+def test_load_specs_accepts_blocks_and_replacement_sources() -> None:
+    specs = load_specs([Path("oracle/scenarios/rest-in-peace.toml")])
+    assert len(specs["scenarios"]) == 6
 
 
 def test_load_specs_rejects_invalid_single_entity_choice(tmp_path: Path) -> None:

@@ -1,0 +1,211 @@
+[[scenarios]]
+name = "RIP1 one Rest in Peace exiles both creatures that trade in combat"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "attack", attackers = ["attacker"], through = "damage", blocks = [{ blocker = "blocker", attacker = "attacker" }] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "attacker", card = "Centaur Courser" },
+  { label = "rip", card = "Rest in Peace" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "blocker", card = "Centaur Courser" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Centaur Courser", count = 1 },
+  { zone = "exile", player = "P1", card = "Centaur Courser", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Centaur Courser", count = 0 },
+  { zone = "graveyard", player = "P1", card = "Centaur Courser", count = 0 },
+  { zone = "battlefield", player = "P0", card = "Centaur Courser", count = 0 },
+  { zone = "battlefield", player = "P1", card = "Centaur Courser", count = 0 },
+  { player = "P0", life = 20 },
+  { player = "P1", life = 20 },
+]
+
+[[scenarios]]
+name = "RIP2 two Rest in Peace, one per player, each owner applies their own"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_replacement", player = "P1", source = "rip.p1" },
+  { action = "choose_replacement", player = "P0", source = "rip.p0" },
+  { action = "attack", attackers = ["attacker"], through = "damage", blocks = [{ blocker = "blocker", attacker = "attacker" }] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "attacker", card = "Centaur Courser" },
+  { label = "rip.p0", card = "Rest in Peace" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "blocker", card = "Centaur Courser" },
+  { label = "rip.p1", card = "Rest in Peace" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Centaur Courser", count = 1 },
+  { zone = "exile", player = "P1", card = "Centaur Courser", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Centaur Courser", count = 0 },
+  { zone = "graveyard", player = "P1", card = "Centaur Courser", count = 0 },
+  { zone = "battlefield", player = "P0", card = "Centaur Courser", count = 0 },
+  { zone = "battlefield", player = "P1", card = "Centaur Courser", count = 0 },
+  { player = "P0", life = 20 },
+  { player = "P1", life = 20 },
+]
+
+[[scenarios]]
+name = "RIP3 two Rest in Peace, one per player, each owner applies the opponent's"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_replacement", player = "P1", source = "rip.p0" },
+  { action = "choose_replacement", player = "P0", source = "rip.p1" },
+  { action = "attack", attackers = ["attacker"], through = "damage", blocks = [{ blocker = "blocker", attacker = "attacker" }] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "attacker", card = "Centaur Courser" },
+  { label = "rip.p0", card = "Rest in Peace" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "blocker", card = "Centaur Courser" },
+  { label = "rip.p1", card = "Rest in Peace" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Centaur Courser", count = 1 },
+  { zone = "exile", player = "P1", card = "Centaur Courser", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Centaur Courser", count = 0 },
+  { zone = "graveyard", player = "P1", card = "Centaur Courser", count = 0 },
+  { zone = "battlefield", player = "P0", card = "Centaur Courser", count = 0 },
+  { zone = "battlefield", player = "P1", card = "Centaur Courser", count = 0 },
+  { player = "P0", life = 20 },
+  { player = "P1", life = 20 },
+]
+
+[[scenarios]]
+name = "RIP4 two Rest in Peace under the attacking player"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_replacement", player = "P1", source = "rip.a" },
+  { action = "choose_replacement", player = "P0", source = "rip.b" },
+  { action = "attack", attackers = ["attacker"], through = "damage", blocks = [{ blocker = "blocker", attacker = "attacker" }] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "attacker", card = "Centaur Courser" },
+  { label = "rip.a", card = "Rest in Peace" },
+  { label = "rip.b", card = "Rest in Peace" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "blocker", card = "Centaur Courser" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Centaur Courser", count = 1 },
+  { zone = "exile", player = "P1", card = "Centaur Courser", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Centaur Courser", count = 0 },
+  { zone = "graveyard", player = "P1", card = "Centaur Courser", count = 0 },
+  { zone = "battlefield", player = "P0", card = "Centaur Courser", count = 0 },
+  { zone = "battlefield", player = "P1", card = "Centaur Courser", count = 0 },
+  { player = "P0", life = 20 },
+  { player = "P1", life = 20 },
+]
+
+[[scenarios]]
+name = "RIP5 a combat damage trigger beside the replacement choices resolves once"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_replacement", player = "P0", source = "rip.p0" },
+  { action = "choose_replacement", player = "P1", source = "rip.p1" },
+  { action = "attack", attackers = ["thief", "attacker"], through = "damage", blocks = [{ blocker = "blocker", attacker = "attacker" }] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+library_top = ["Island", "Island", "Island"]
+battlefield = [
+  { label = "thief", card = "Scroll Thief" },
+  { label = "attacker", card = "Centaur Courser" },
+  { label = "rip.p0", card = "Rest in Peace" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "blocker", card = "Centaur Courser" },
+  { label = "rip.p1", card = "Rest in Peace" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Centaur Courser", count = 1 },
+  { zone = "exile", player = "P1", card = "Centaur Courser", count = 1 },
+  { zone = "hand", player = "P0", card = "Island", count = 1 },
+  { zone = "library", player = "P0", card = "Island", count = 2 },
+  { player = "P0", life = 20 },
+  { player = "P1", life = 19 },
+]
+
+[[scenarios]]
+name = "RIP6 a delayed combat damage trigger beside the replacement choice resolves once"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Hunter's Insight", targets = ["bear"] },
+  { action = "pass_until_resolved" },
+  { action = "choose_replacement", player = "P1", source = "rip" },
+  { action = "attack", attackers = ["bear", "attacker"], through = "damage", blocks = [{ blocker = "blocker", attacker = "attacker" }] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+hand = ["Hunter's Insight"]
+library_top = ["Island", "Island", "Island", "Island", "Island"]
+battlefield = [
+  { label = "bear", card = "Centaur Courser" },
+  { label = "attacker", card = "Centaur Courser" },
+  { label = "rip", card = "Rest in Peace" },
+  { label = "leyline", card = "Leyline of the Void" },
+  { label = "forest.0", card = "Forest" },
+  { label = "forest.1", card = "Forest" },
+  { label = "forest.2", card = "Forest" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "blocker", card = "Centaur Courser" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Centaur Courser", count = 1 },
+  { zone = "exile", player = "P1", card = "Centaur Courser", count = 1 },
+  { zone = "exile", player = "P0", card = "Hunter's Insight", count = 1 },
+  { zone = "hand", player = "P0", card = "Island", count = 3 },
+  { zone = "library", player = "P0", card = "Island", count = 2 },
+  { player = "P1", life = 17 },
+]
