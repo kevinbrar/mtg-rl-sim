@@ -60,8 +60,10 @@ A `play_land` action may answer the land's "as this land enters" prompts:
 declines an optional life payment. An answer nothing asked for and a prompt
 with no answer both fail. Phase and XMage only; `behold` cannot be combined
 with them. When a player has lost, the game is over (CR 104.1, 104.2a) and
-both runners project only `game_over`, each player's `life` and `lost`, since
-what an engine does with the board after the game is not game state. The
+both runners project `game_over`, the loser's `life` and `lost` only, and the
+other player's zones as usual, since what an engine does with the loser's
+cards after the game is not game state. The loser's board is therefore not
+compared. The
 reach check `{ player = "P0", lost = true }` asserts who lost (XMage suites).
 An `attack` action may set `through = "damage"` to continue past declare
 attackers, declare blockers, and combat damage, resolving scripted triggers

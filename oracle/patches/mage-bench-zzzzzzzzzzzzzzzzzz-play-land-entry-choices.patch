@@ -1,5 +1,5 @@
 diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-index cb0c063e..2acc540c 100644
+index cb0c063e..091e4c50 100644
 --- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 +++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 @@ -49,10 +49,12 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
@@ -117,21 +117,23 @@ index cb0c063e..2acc540c 100644
                      lastStep = step;
                  }
                  case "cast" -> {
-@@ -1064,6 +1111,24 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -1064,6 +1111,26 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
              projection.add("legal_targets", legalTargets);
          }
          projection.addProperty("reach", reached);
 +        // CR 104.1 + CR 104.2a: the game ends immediately when a player has lost.
-+        // What each engine does with the board afterwards is not game state, so a
-+        // finished game projects only who lost and the life totals.
++        // What each engine does with the loser's cards afterwards is not game
++        // state, so a finished game projects the loser's life only, and the
++        // zones of the player still in the game.
 +        if (player(0).hasLost() || player(1).hasLost()) {
 +            JsonObject finished = new JsonObject();
 +            finished.addProperty("game_over", true);
 +            JsonObject finishedPlayers = new JsonObject();
 +            for (int index = 0; index < 2; index++) {
-+                JsonObject finishedPlayer = new JsonObject();
++                boolean lost = player(index).hasLost();
++                JsonObject finishedPlayer = lost ? new JsonObject() : projectPlayer(player(index));
 +                finishedPlayer.addProperty("life", player(index).getLife());
-+                finishedPlayer.addProperty("lost", player(index).hasLost());
++                finishedPlayer.addProperty("lost", lost);
 +                finishedPlayers.add("P" + index, finishedPlayer);
 +            }
 +            finished.add("players", finishedPlayers);
@@ -142,7 +144,7 @@ index cb0c063e..2acc540c 100644
          JsonObject result = new JsonObject();
          result.addProperty("scenario", scenarioName);
          result.add("projection", projection);
-@@ -1163,6 +1228,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -1163,6 +1230,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
              rejectUnknownKeys(reach, Set.of("player", "life"), "reach.life");
              return player.getLife() == reach.get("life").getAsInt();
          }

@@ -50,3 +50,21 @@ all = [
   { player = "P0", lost = true },
   { player = "P1", lost = false },
 ]
+
+[[scenarios]]
+name = "MP4 at 1 life the payment is not offered and the land enters tapped"
+active_player = 0
+script = [{ action = "play_land", card = "passage", land_type = "Swamp" }]
+
+[scenarios.setup.P0]
+life = 1
+hand = [{ card = "Multiversal Passage", label = "passage" }]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Multiversal Passage", tapped = true, count = 1 },
+  { player = "P0", life = 1 },
+  { player = "P0", lost = false },
+]

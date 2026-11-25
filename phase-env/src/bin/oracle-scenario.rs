@@ -179,29 +179,6 @@ fn project(
     legal_targets: Option<Vec<String>>,
     reached: bool,
 ) -> Value {
-    // CR 104.1 + CR 104.2a: the game ends immediately when a player has lost.
-    // What each engine does with the board afterwards is not game state, so a
-    // finished game projects only who lost and the life totals.
-    if state
-        .players
-        .iter()
-        .take(2)
-        .any(|player| player.is_eliminated)
-    {
-        let mut players = serde_json::Map::new();
-        for (index, player) in state.players.iter().take(2).enumerate() {
-            players.insert(
-                format!("P{index}"),
-                json!({ "life": player.life, "lost": player.is_eliminated }),
-            );
-        }
-        return json!({
-            "game_over": true,
-            "players": players,
-            "legal_targets": legal_targets,
-            "reach": reached,
-        });
-    }
     let mut players = serde_json::Map::new();
     for index in 0..2 {
         let mut player = json!({
@@ -216,6 +193,31 @@ fn project(
             player["sideboard"] = json!(sideboard);
         }
         players.insert(format!("P{index}"), player);
+    }
+    // CR 104.1 + CR 104.2a: the game ends immediately when a player has lost.
+    // What each engine does with the loser's cards afterwards is not game
+    // state, so a finished game projects the loser's life only, and the zones
+    // of the player still in the game.
+    if state
+        .players
+        .iter()
+        .take(2)
+        .any(|player| player.is_eliminated)
+    {
+        for (index, player) in state.players.iter().take(2).enumerate() {
+            let key = format!("P{index}");
+            if player.is_eliminated {
+                players.insert(key, json!({ "life": player.life, "lost": true }));
+            } else if let Some(Value::Object(fields)) = players.get_mut(&key) {
+                fields.insert("lost".to_string(), json!(false));
+            }
+        }
+        return json!({
+            "game_over": true,
+            "players": players,
+            "legal_targets": legal_targets,
+            "reach": reached,
+        });
     }
     let mut battlefield = state
         .battlefield
