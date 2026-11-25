@@ -74,13 +74,16 @@ declares no blockers unless `blocks = [{ blocker = "<P1 label>", attacker =
 "<attacking label>" }]` is given (Phase and XMage only; requires `through =
 "damage"`; each blocker blocks one attacker), and unscripted combat
 or damage-assignment prompts fail closed. When several replacement effects
-apply to one event during that combat (CR 616.1), script one
+apply to one event (CR 616.1), script one
 `{ action = "choose_replacement", player = "P0", source = "<label>" }` per
-prompt before the `attack`: a per-player FIFO naming the permanent whose
-replacement effect that player applies next. Phase and XMage only; a prompt
-with no entry, a source that is not offered, and an unconsumed entry all fail.
-Replacement choices outside an `attack` continued through damage are not
-scripted yet. Trigger targets, card choices, and
+prompt before the `attack` or `pass_until_resolved` that reaches it: a
+per-player FIFO naming the permanent whose replacement effect that player
+applies next. Phase and XMage only; a prompt with no entry, a source that is
+not offered, and an unconsumed entry all fail. A replacement choice that opens
+while a spell is cast or an ability is activated (for example a sacrifice
+cost) is not scripted yet. An explore's "may put that card into their
+graveyard" (CR 701.44a) is scripted with `choose_optional`: `"yes"` puts the
+revealed card into the graveyard, `"no"` leaves it on top. Trigger targets, card choices, and
 other supported resolution choices use the same FIFO handlers during combat
 damage, and the runner stops only after regular combat damage is complete.
 Activations can name a labeled battlefield permanent or a card in the

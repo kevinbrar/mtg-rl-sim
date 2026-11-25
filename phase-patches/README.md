@@ -91,6 +91,17 @@
   `yenna_aura_token_copy.rs` (loss processed after the closing scry).
   Runtime-only; no parser or card-data change.
 
+## Patch 0048 — a dig's routed remainder stays in the library until it moves (CR 616.1)
+
+- `DigChoice` with `kept_destination = Library` lifted every looked-at card out
+  of the library's list before routing the remainder. A remainder bound for
+  another zone whose move paused on a replacement choice was then a library
+  object in no zone list for that prompt (explore beside two Rest in Peace).
+  Only a remainder routed back into the library is lifted now; the zone
+  pipeline removes the others when their move happens.
+- Regression: `explore_rest_pile_stays_in_library_during_choice.rs`.
+- Runtime-only; no parser or card-data change.
+
 # Local phase-rs fixes
 
 The phase submodule remains pinned at `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
