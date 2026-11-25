@@ -1,5 +1,5 @@
 diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
-index dec84ec..cd55814 100644
+index dec84ec..4768d2e 100644
 --- a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
 +++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
 @@ -615,7 +615,7 @@ public final class CardScenarioProjectionTest extends AITest {
@@ -67,12 +67,16 @@ index dec84ec..cd55814 100644
              assertTrue(
                      discardChoices.isEmpty(),
                      "unconsumed discard choices for " + player.getName() + ": " + discardChoices);
-@@ -2464,6 +2476,30 @@ public final class CardScenarioProjectionTest extends AITest {
+@@ -2464,6 +2476,34 @@ public final class CardScenarioProjectionTest extends AITest {
              return ordered;
          }
  
 +        @Override
 +        public ImmutablePair<CardCollection, CardCollection> arrangeForScry(CardCollection topN) {
++            if (topN.isEmpty()) {
++                // Nothing to look at: no decision exists, as in Phase.
++                return ImmutablePair.of(topN, null);
++            }
 +            List<String> scripted = scryChoices.pollFirst();
 +            if (scripted == null) {
 +                throw failClosed("unscripted scry choice");

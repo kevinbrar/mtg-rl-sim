@@ -5,8 +5,9 @@
 - Runner is stricter in both engines. Phase: a resolution step used to end silently at any prompt outside a fixed list (a scry among them) once the stack was empty; it now ends only at a priority window or a finished game, and any other open prompt fails the scenario. Forge: a scry used to keep every card on top without a script; it now fails without a `choose_scry` entry. No existing scenario relied on either.
 - Result: Uldaros 9 of 9 match Forge; the full local run of all 27 suites is 149 matched, 2 digest-pinned Forge-bug triaged (E5/E6), 0 failed.
 - Control: U7 without its `choose_scry` entry fails in both runners (Phase "no choose_scry entry", Forge "unscripted scry choice").
+- Review fix (Devin Review): a scry with an empty library asks nothing in Phase, but Forge still called the scry decision and failed as unscripted. Forge now returns without consuming an entry when there is nothing to look at. Probe (Opt copy, empty library): Forge no longer stops at the scry; the scenario still cannot be compared because P0 then loses to the draw and the Forge projection fails on a finished game (`IndexOutOfBounds` in `projection`). Open: scenarios that end the game are not projectable in Forge.
 - Not run: scry against XMage; reordering the cards kept on top (not scriptable); a scry by the non-active player; scry and surveil prompts in one resolution step.
-- Evidence: `runs/card-scenarios/uldaros-opt/full/known-diffs-report.json`, `runs/card-scenarios/uldaros-opt/control-unscripted/phase.log`, `runs/card-scenarios/uldaros-opt/control-unscripted/forge.log`.
+- Evidence: `runs/card-scenarios/uldaros-opt/full/known-diffs-report.json`, `runs/card-scenarios/uldaros-opt/control-unscripted/phase.log`, `runs/card-scenarios/uldaros-opt/control-unscripted/forge.log`, `runs/card-scenarios/uldaros-opt/probe-empty/forge.log`.
 
 ## Refused choices inside a prompt (Uldaros U6, Cryomancer C8)
 
