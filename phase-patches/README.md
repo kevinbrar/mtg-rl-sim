@@ -53,6 +53,20 @@
   B: `4eb51556ce1f72a55642a0062620c0d0325fd447d37c84485af2fd2b3009fc85`.
   Evidence: `runs/card-scenarios/dig-family/card-data-ab/`.
 
+## Patch 0046 — a state-based action's replacement choice survives combat damage
+
+- `pending_combat_damage_waiting` returns `WaitingFor::ReplacementChoice` when
+  `pending_replacement` is set, as it already returns `OrderTriggers` and
+  `GameOver`, so the caller does not replace it with a priority window
+  (CR 616.1, CR 704.3).
+- `process_combat_damage_triggers` stops at that prompt: the collected triggers
+  go to `deferred_triggers` and the pass's events are claimed with
+  `claim_events_for_ordinary_collection`, so the post-action collector does not
+  collect them a second time (CR 603.2c, CR 603.3b).
+- Test: `sba_death_replacement_choice_in_combat.rs` (two Rest in Peace, a 1/1
+  trade, each creature with a combat-damage trigger).
+- Runtime-only; no parser or card-data change.
+
 ## Patch 0045 — player loss is checked after a resolution or replacement finishes
 
 - `reconcile_terminal_sba` (the #962 player-loss safety net) no longer runs

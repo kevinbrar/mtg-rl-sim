@@ -1,0 +1,192 @@
+From 1b3a19d7be5d13a1914a475d0d0676fa90d1b1b1 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Wed, 25 Nov 2026 12:30:14 +0000
+Subject: [PATCH] Keep a state-based action's replacement choice open after
+ combat damage (CR 616.1, CR 704.3)
+
+When combat damage killed a creature and two replacement effects applied to
+its death (two Rest in Peace), the combat-damage resolver replaced the
+ReplacementChoice prompt with a priority window. The replacement stayed
+pending forever and the cleanup step repeated without end.
+
+The resolver now returns the prompt, parks the abilities that triggered in
+the deferred queue and claims the pass's events so they are collected once
+(CR 603.2c, CR 603.3b).
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/combat_damage.rs       | 29 +++++-
+ crates/engine/tests/integration/main.rs       |  1 +
+ .../sba_death_replacement_choice_in_combat.rs | 94 +++++++++++++++++++
+ 3 files changed, 122 insertions(+), 2 deletions(-)
+ create mode 100644 crates/engine/tests/integration/sba_death_replacement_choice_in_combat.rs
+
+diff --git a/crates/engine/src/game/combat_damage.rs b/crates/engine/src/game/combat_damage.rs
+index 5050880ca..2e76ecc85 100644
+--- a/crates/engine/src/game/combat_damage.rs
++++ b/crates/engine/src/game/combat_damage.rs
+@@ -95,6 +95,25 @@ fn process_combat_damage_triggers(
+     ) {
+         return;
+     }
++    // CR 616.1 + CR 704.3: a state-based action paused on a choice between
++    // replacement effects (two Rest in Peace on a dying creature). The check
++    // is not complete, so no ability goes on the stack and no player receives
++    // priority yet. CR 603.3b: the abilities that have triggered wait in the
++    // deferred queue and are put on the stack, with those of the remaining
++    // state-based actions, the next time a player would receive priority.
++    // CR 603.2c: this step and the steps before it in the same pass collected
++    // their own ordinary triggers, so the pass's events are claimed from the
++    // post-action collector; delayed abilities are left to its delayed scan.
++    if state.pending_replacement.is_some()
++        && matches!(
++            state.waiting_for,
++            crate::types::game_state::WaitingFor::ReplacementChoice { .. }
++        )
++    {
++        state.deferred_triggers.extend(pending);
++        triggers::claim_events_for_ordinary_collection(state, all_events, 0);
++        return;
++    }
+     // CR 800.4a: If combat-damage SBAs eliminated a player before this
+     // collect-only batch is put on the stack, drop triggers controlled by that
+     // player before constructing the APNAP ordering pass.
+@@ -441,9 +460,11 @@ fn claim_combat_lifelink_batch_events_for_ordinary_collection(
+     triggers::claim_events_for_ordinary_collection(state, events, event_start);
+ }
+ 
+-/// Returns a terminal or trigger-ordering state produced while combat damage resolves.
++/// Returns a terminal, trigger-ordering or replacement-choice state produced
++/// while combat damage resolves.
+ ///
+-/// CR 603.3b / CR 704.3: trigger ordering and game-over results are completion
++/// CR 603.3b / CR 704.3 / CR 616.1: trigger ordering, game-over results and a
++/// state-based action's replacement choice are completion
+ /// states of the combat-damage resolver, so callers must receive them rather than
+ /// replacing them with a fresh priority window.
+ fn pending_combat_damage_waiting(state: &GameState) -> Option<WaitingFor> {
+@@ -451,6 +472,10 @@ fn pending_combat_damage_waiting(state: &GameState) -> Option<WaitingFor> {
+         WaitingFor::OrderTriggers { .. } | WaitingFor::GameOver { .. } => {
+             Some(state.waiting_for.clone())
+         }
++        // CR 616.1 + CR 704.3: a state-based action's unanswered replacement choice.
++        WaitingFor::ReplacementChoice { .. } if state.pending_replacement.is_some() => {
++            Some(state.waiting_for.clone())
++        }
+         _ => None,
+     }
+ }
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index 7af4f2a02..9262a1542 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -339,5 +339,6 @@ mod ignite_memories_random_reveal;
+ mod niambi_granted_trigger_once_each_turn;
+ mod q_stacking_the_deck;
+ mod risky_move_gain_control_trigger;
++mod sba_death_replacement_choice_in_combat;
+ mod token_attack_destination;
+ mod venat_heros_sundering_transform_8071;
+diff --git a/crates/engine/tests/integration/sba_death_replacement_choice_in_combat.rs b/crates/engine/tests/integration/sba_death_replacement_choice_in_combat.rs
+new file mode 100644
+index 000000000..16fb48cc4
+--- /dev/null
++++ b/crates/engine/tests/integration/sba_death_replacement_choice_in_combat.rs
+@@ -0,0 +1,94 @@
++//! CR 616.1 + CR 704.3: when two replacement effects apply to a creature that
++//! state-based actions destroy after combat damage, the choice between them is
++//! asked before any player receives priority.
++
++use engine::game::combat::AttackTarget;
++use engine::game::scenario::{GameScenario, P0, P1};
++use engine::types::actions::GameAction;
++use engine::types::game_state::WaitingFor;
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const REST_IN_PEACE: &str = "When this enchantment enters, exile all graveyards.\nIf a card or token would be put into a graveyard from anywhere, exile it instead.";
++
++#[test]
++fn two_rest_in_peace_ask_before_priority_when_combat_damage_kills_creatures() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    for player in [P0, P1] {
++        scenario
++            .add_creature(player, "Rest in Peace", 0, 0)
++            .as_enchantment()
++            .from_oracle_text(REST_IN_PEACE);
++    }
++    let attacker = scenario
++        .add_creature(P0, "Attacker", 1, 1)
++        .from_oracle_text(
++            "Whenever this creature deals combat damage to a creature, you gain 1 life.",
++        )
++        .id();
++    let blocker = scenario
++        .add_creature(P1, "Blocker", 1, 1)
++        .from_oracle_text(
++            "Whenever this creature deals combat damage to a creature, you gain 1 life.",
++        )
++        .id();
++    let mut runner = scenario.build();
++
++    let mut seen_choices = 0;
++    for _ in 0..60 {
++        let state = runner.state();
++        if state.objects[&attacker].zone != Zone::Battlefield
++            && state.objects[&blocker].zone != Zone::Battlefield
++            && state.stack.is_empty()
++            && matches!(state.waiting_for, WaitingFor::Priority { .. })
++        {
++            break;
++        }
++        assert!(
++            state.turn_number <= 1 || state.phase != Phase::Cleanup,
++            "the game must not reach cleanup with the deaths undelivered"
++        );
++        match state.waiting_for.clone() {
++            WaitingFor::DeclareAttackers { .. } => {
++                runner
++                    .act(GameAction::DeclareAttackers {
++                        attacks: vec![(attacker, AttackTarget::Player(P1))],
++                        bands: vec![],
++                    })
++                    .expect("attack is legal");
++            }
++            WaitingFor::DeclareBlockers { .. } => {
++                runner
++                    .act(GameAction::DeclareBlockers {
++                        assignments: vec![(blocker, attacker)],
++                    })
++                    .expect("block is legal");
++            }
++            WaitingFor::ReplacementChoice { .. } => {
++                seen_choices += 1;
++                runner
++                    .act(GameAction::ChooseReplacement { index: 0 })
++                    .expect("choosing a replacement is legal");
++            }
++            WaitingFor::Priority { .. } => {
++                assert!(
++                    runner.state().pending_replacement.is_none(),
++                    "no player has priority while a replacement choice is unanswered"
++                );
++                runner.act(GameAction::PassPriority).expect("pass is legal");
++            }
++            other => panic!("unexpected prompt {other:?}"),
++        }
++    }
++
++    let state = runner.state();
++    assert!(seen_choices >= 1, "the replacement choice was asked");
++    assert_eq!(state.objects[&attacker].zone, Zone::Exile);
++    assert_eq!(state.objects[&blocker].zone, Zone::Exile);
++    assert!(state.pending_replacement.is_none());
++    // CR 603.3b: each creature's damage trigger, held while the choices were
++    // open, was put on the stack once and resolved.
++    assert_eq!(state.players[0].life, 21);
++    assert_eq!(state.players[1].life, 21);
++}
+-- 
+2.56.0
+

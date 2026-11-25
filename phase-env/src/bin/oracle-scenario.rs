@@ -971,6 +971,139 @@ fn trigger_placement_order(
     Ok(placement)
 }
 
+/// Scripted blocks and replacement choices for an `attack` continued through
+/// combat damage.
+#[derive(Default)]
+struct CombatScript {
+    /// (blocker, attacker) pairs for the next declare-blockers prompt.
+    blocks: Vec<(ObjectId, ObjectId)>,
+    /// Per-player FIFO of the replacement effect's source to apply next.
+    replacement_sources: [VecDeque<ObjectId>; 2],
+}
+
+fn parse_attack_blocks(
+    action: &Value,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<Vec<(ObjectId, ObjectId)>, String> {
+    let Some(blocks) = action.get("blocks") else {
+        return Ok(Vec::new());
+    };
+    if action.get("through").and_then(Value::as_str) != Some("damage") {
+        return Err("attack.blocks requires through = \"damage\"".to_string());
+    }
+    let entries = blocks
+        .as_array()
+        .filter(|entries| !entries.is_empty())
+        .ok_or("attack.blocks must be a non-empty array")?;
+    let mut pairs = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let fields = entry
+            .as_object()
+            .filter(|fields| fields.len() == 2)
+            .ok_or("attack.blocks entries need exactly blocker and attacker")?;
+        let label = |key: &str| {
+            fields
+                .get(key)
+                .and_then(Value::as_str)
+                .ok_or("attack.blocks entries need exactly blocker and attacker")
+        };
+        let blocker = resolve_script_label(labels, label("blocker")?)?;
+        let attacker = resolve_script_label(labels, label("attacker")?)?;
+        if pairs.iter().any(|(seen, _)| *seen == blocker) {
+            return Err("attack.blocks cannot repeat a blocker".to_string());
+        }
+        pairs.push((blocker, attacker));
+    }
+    Ok(pairs)
+}
+
+fn parse_replacement_source(
+    action: &Value,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<Option<(usize, ObjectId)>, String> {
+    // Forge suites select by `description`; that runner owns those entries.
+    let Some(source) = action.get("source") else {
+        return Ok(None);
+    };
+    let player = match action.get("player").and_then(Value::as_str) {
+        Some("P0") => 0,
+        Some("P1") => 1,
+        _ => return Err("choose_replacement.player must be P0 or P1".to_string()),
+    };
+    let label = source
+        .as_str()
+        .ok_or("choose_replacement.source must be a setup label")?;
+    Ok(Some((player, resolve_script_label(labels, label)?)))
+}
+
+/// CR 616.1: answer a choice between replacement effects with the scripted
+/// source. Only an ordering prompt offered to the scripted player is answered.
+fn apply_replacement_source_choice(
+    runner: &mut GameRunner,
+    combat_script: &mut CombatScript,
+    labels: &HashMap<ObjectId, String>,
+    discard_reconciler: &mut DiscardChoiceReconciler,
+    discard_choice_groups: &mut [VecDeque<DiscardScriptChoice>; 2],
+) -> Result<(), String> {
+    let WaitingFor::ReplacementChoice {
+        player,
+        candidates,
+        kind,
+        ..
+    } = runner.state().waiting_for.clone()
+    else {
+        return Err("no replacement prompt is open".to_string());
+    };
+    if kind != engine::types::game_state::ReplacementChoiceKind::Order {
+        return Err(format!("unscripted replacement prompt: {candidates:?}"));
+    }
+    let source = combat_script
+        .replacement_sources
+        .get_mut(player.0 as usize)
+        .and_then(VecDeque::pop_front)
+        .ok_or_else(|| {
+            format!(
+                "replacement prompt for P{} has no choose_replacement entry: {candidates:?}",
+                player.0
+            )
+        })?;
+    let mut matching = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| candidate.source_id == source);
+    let (index, _) = matching
+        .next()
+        .ok_or("choose_replacement.source is not an offered replacement effect")?;
+    if matching.next().is_some() {
+        return Err(
+            "choose_replacement.source offers more than one replacement effect".to_string(),
+        );
+    }
+    discard_reconciler.act(
+        runner,
+        GameAction::ChooseReplacement { index },
+        discard_choice_groups,
+        labels,
+    )
+}
+
+fn ensure_combat_script_consumed(combat_script: &CombatScript) -> Result<(), String> {
+    let remaining = combat_script
+        .replacement_sources
+        .iter()
+        .map(VecDeque::len)
+        .sum::<usize>();
+    if remaining != 0 {
+        return Err(format!(
+            "{remaining} choose_replacement entry(s) were unconsumed when the script ended"
+        ));
+    }
+    if !combat_script.blocks.is_empty() {
+        return Err("attack.blocks were unconsumed when the script ended".to_string());
+    }
+    Ok(())
+}
+
 fn ensure_trigger_orders_consumed(orders: &VecDeque<TriggerOrderChoice>) -> Result<(), String> {
     if orders.is_empty() {
         return Ok(());
@@ -2155,9 +2288,9 @@ fn declare_attackers_with_trigger_targets(
     let fields = action.as_object().ok_or("attack must be a table")?;
     if fields
         .keys()
-        .any(|key| !["action", "attackers", "through"].contains(&key.as_str()))
+        .any(|key| !["action", "attackers", "through", "blocks"].contains(&key.as_str()))
     {
-        return Err("attack supports only attackers and through".to_string());
+        return Err("attack supports only attackers, through and blocks".to_string());
     }
     if let Some(through) = action.get("through") {
         if through.as_str() != Some("damage") {
@@ -4040,6 +4173,7 @@ fn advance_through_combat_damage(
     optional_choice_groups: &mut [VecDeque<OptionalChoice>; 2],
     unless_choice_groups: &mut [VecDeque<UnlessScriptChoice>; 2],
     discard_reconciler: &mut DiscardChoiceReconciler,
+    combat_script: &mut CombatScript,
 ) -> Result<(), String> {
     let active_player = runner.state().active_player;
     for _ in 0..128 {
@@ -4103,12 +4237,19 @@ fn advance_through_combat_damage(
                 discard_reconciler.act(
                     runner,
                     GameAction::DeclareBlockers {
-                        assignments: Vec::new(),
+                        assignments: std::mem::take(&mut combat_script.blocks),
                     },
                     discard_choice_groups,
                     labels,
                 )?;
             }
+            WaitingFor::ReplacementChoice { .. } => apply_replacement_source_choice(
+                runner,
+                combat_script,
+                labels,
+                discard_reconciler,
+                discard_choice_groups,
+            )?,
             _ => {
                 pass_until_resolved(
                     scenario_name,
@@ -4795,6 +4936,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
     let mut discard_reconciler = DiscardChoiceReconciler::default();
     let mut attack_needs_resolution = false;
     let mut attack_through_damage = false;
+    let mut combat_script = CombatScript::default();
     let mut refusals = Vec::new();
     let mut refusal_cost_prompts = Vec::new();
     for (action_index, action) in actions.iter().enumerate() {
@@ -5121,6 +5263,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     &mut discard_reconciler,
                     &mut discard_choice_groups,
                 )?;
+                combat_script.blocks = parse_attack_blocks(action, &labels)?;
                 attack_needs_resolution = true;
                 attack_through_damage = action.get("through").is_some();
             }
@@ -5157,7 +5300,12 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
             "choose_mana" => {
                 mana_choice_groups.push_back(parse_mana_choice(action)?);
             }
-            "choose_replacement" | "choose_entity" => {}
+            "choose_replacement" => {
+                if let Some((player, source)) = parse_replacement_source(action, &labels)? {
+                    combat_script.replacement_sources[player].push_back(source);
+                }
+            }
+            "choose_entity" => {}
             "pass_until_resolved" => {
                 pass_until_resolved(
                     name,
@@ -5199,6 +5347,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                             &mut optional_choice_groups,
                             &mut unless_choice_groups,
                             &mut discard_reconciler,
+                            &mut combat_script,
                         )?;
                     } else {
                         ensure_attack_resolution_boundary(&runner)?;
@@ -5220,6 +5369,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
         }
     }
     ensure_trigger_target_groups_consumed(&trigger_target_groups)?;
+    ensure_combat_script_consumed(&combat_script)?;
     ensure_activation_target_groups_consumed(&activation_target_groups)?;
     ensure_card_choice_groups_consumed(&card_choice_groups)?;
     ensure_copy_cast_choices_consumed(&copy_cast_choices)?;
@@ -6985,6 +7135,7 @@ mod tests {
                     &mut optional_choices,
                     &mut unless_choices,
                     &mut discard_reconciler,
+                    &mut CombatScript::default(),
                 )
                 .unwrap();
 
@@ -7017,13 +7168,39 @@ mod tests {
             &json!({
                 "action": "attack",
                 "attackers": ["attacker"],
-                "blocks": []
+                "blockers": []
             }),
             &mut discard_reconciler,
             &mut discard_choices,
         )
         .unwrap_err();
-        assert!(blocks_error.contains("supports only attackers and through"));
+        assert!(blocks_error.contains("supports only attackers, through and blocks"));
+        for (action, message) in [
+            (
+                json!({"action": "attack", "attackers": ["attacker"], "blocks": [{"blocker": "attacker", "attacker": "attacker"}]}),
+                "attack.blocks requires through",
+            ),
+            (
+                json!({"action": "attack", "attackers": ["attacker"], "through": "damage", "blocks": []}),
+                "attack.blocks must be a non-empty array",
+            ),
+            (
+                json!({"action": "attack", "attackers": ["attacker"], "through": "damage", "blocks": [{"blocker": "attacker"}]}),
+                "exactly blocker and attacker",
+            ),
+            (
+                json!({"action": "attack", "attackers": ["attacker"], "through": "damage", "blocks": [{"blocker": "ghost", "attacker": "attacker"}]}),
+                "unknown setup label ghost",
+            ),
+            (
+                json!({"action": "attack", "attackers": ["attacker"], "through": "damage", "blocks": [{"blocker": "attacker", "attacker": "attacker"}, {"blocker": "attacker", "attacker": "attacker"}]}),
+                "cannot repeat a blocker",
+            ),
+        ] {
+            assert!(parse_attack_blocks(&action, &labels)
+                .unwrap_err()
+                .contains(message));
+        }
         let through_error = declare_attackers(
             &mut runner,
             &labels,
