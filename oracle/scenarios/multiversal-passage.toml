@@ -1,0 +1,70 @@
+[[scenarios]]
+name = "MP1 pay 2 life at 3 life enters untapped"
+active_player = 0
+script = [{ action = "play_land", card = "passage", land_type = "Swamp", pay_life = true }]
+
+[scenarios.setup.P0]
+life = 3
+hand = [{ card = "Multiversal Passage", label = "passage" }]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Multiversal Passage", tapped = false, count = 1 },
+  { player = "P0", life = 1 },
+  { player = "P0", lost = false },
+]
+
+[[scenarios]]
+name = "MP2 decline the payment enters tapped"
+active_player = 0
+script = [{ action = "play_land", card = "passage", land_type = "Swamp", pay_life = false }]
+
+[scenarios.setup.P0]
+life = 3
+hand = [{ card = "Multiversal Passage", label = "passage" }]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Multiversal Passage", tapped = true, count = 1 },
+  { player = "P0", life = 3 },
+]
+
+[[scenarios]]
+name = "MP3 pay 2 life at exactly 2 life goes to 0"
+active_player = 0
+script = [{ action = "play_land", card = "passage", land_type = "Swamp", pay_life = true }]
+
+[scenarios.setup.P0]
+life = 2
+hand = [{ card = "Multiversal Passage", label = "passage" }]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { player = "P0", life = 0 },
+  { player = "P0", lost = true },
+  { player = "P1", lost = false },
+]
+
+[[scenarios]]
+name = "MP4 at 1 life the payment is not offered and the land enters tapped"
+active_player = 0
+script = [{ action = "play_land", card = "passage", land_type = "Swamp" }]
+
+[scenarios.setup.P0]
+life = 1
+hand = [{ card = "Multiversal Passage", label = "passage" }]
+
+[scenarios.setup.P1]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Multiversal Passage", tapped = true, count = 1 },
+  { player = "P0", life = 1 },
+  { player = "P0", lost = false },
+]

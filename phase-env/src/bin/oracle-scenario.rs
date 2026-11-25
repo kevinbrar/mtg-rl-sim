@@ -194,11 +194,40 @@ fn project(
         }
         players.insert(format!("P{index}"), player);
     }
+    // CR 104.1 + CR 104.2a: the game ends immediately when a player has lost.
+    // What each engine does with the loser's cards afterwards is not game
+    // state: the loser projects as life and `lost` only, and the battlefield
+    // and exile leave out cards the loser owns or controls.
+    let lost = |player: PlayerId| {
+        player.0 < 2
+            && state
+                .players
+                .get(player.0 as usize)
+                .is_some_and(|player| player.is_eliminated)
+    };
+    let any_lost = state
+        .players
+        .iter()
+        .take(2)
+        .any(|player| player.is_eliminated);
+    if any_lost {
+        for (index, player) in state.players.iter().take(2).enumerate() {
+            let key = format!("P{index}");
+            if player.is_eliminated {
+                players.insert(key, json!({ "life": player.life, "lost": true }));
+            } else if let Some(Value::Object(fields)) = players.get_mut(&key) {
+                fields.insert("lost".to_string(), json!(false));
+            }
+        }
+    }
     let mut battlefield = state
         .battlefield
         .iter()
         .filter_map(|id| {
             let object = state.objects.get(id)?;
+            if lost(object.owner) || lost(object.controller) {
+                return None;
+            }
             let attached_to = object.attached_to.as_ref().and_then(|target| match target {
                 engine::types::object_data::AttachTarget::Object(host) => {
                     labels.get(host).cloned()
@@ -248,13 +277,23 @@ fn project(
         .collect::<Vec<_>>();
     battlefield
         .sort_by_key(|permanent| permanent["label"].as_str().unwrap_or_default().to_string());
-    json!({
+    let exile = state.exile.iter().copied().filter(|id| {
+        state
+            .objects
+            .get(id)
+            .is_none_or(|object| !lost(object.owner))
+    });
+    let mut projection = json!({
         "players": players,
         "battlefield": battlefield,
-        "exile": names(state, state.exile.iter().copied()),
+        "exile": names(state, exile),
         "legal_targets": legal_targets,
         "reach": reached,
-    })
+    });
+    if any_lost {
+        projection["game_over"] = json!(matches!(state.waiting_for, WaitingFor::GameOver { .. }));
+    }
+    projection
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4298,6 +4337,110 @@ fn ensure_behold_selection_is_offered(
     }
 }
 
+/// Answer a land's "as this land enters" prompts: an optional life payment
+/// (`pay_life`) and a basic land type (`land_type`), in whichever order the
+/// engine asks. Every scripted answer must be asked for, and every prompt
+/// needs a scripted answer.
+fn answer_land_entry_choices(
+    runner: &mut GameRunner,
+    labels: &HashMap<ObjectId, String>,
+    action: &Value,
+    player: PlayerId,
+    land_id: ObjectId,
+    discard_reconciler: &mut DiscardChoiceReconciler,
+    discard_choice_groups: &mut [VecDeque<DiscardScriptChoice>; 2],
+) -> Result<(), String> {
+    let mut pay_life = match action.get("pay_life") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_bool()
+                .ok_or("play_land.pay_life must be a boolean")?,
+        ),
+    };
+    let mut land_type = match action.get("land_type") {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .ok_or("play_land.land_type must be a basic land type name")?,
+        ),
+    };
+    loop {
+        match runner.state().waiting_for.clone() {
+            WaitingFor::ReplacementChoice {
+                player: chooser,
+                candidates,
+                kind,
+                ..
+            } => {
+                if chooser != player {
+                    return Err(
+                        "play_land payment prompt was offered to a different player".to_string()
+                    );
+                }
+                let pays_life = kind
+                    == engine::types::game_state::ReplacementChoiceKind::OptionalBranch
+                    && candidates.len() == 2
+                    && candidates
+                        .iter()
+                        .all(|candidate| candidate.source_id == land_id);
+                if !pays_life {
+                    return Err(format!("unexpected replacement prompt: {candidates:?}"));
+                }
+                let pay = pay_life
+                    .take()
+                    .ok_or("play_land life payment was offered without a pay_life field")?;
+                discard_reconciler.act(
+                    runner,
+                    GameAction::ChooseReplacement {
+                        index: if pay { 0 } else { 1 },
+                    },
+                    discard_choice_groups,
+                    labels,
+                )?;
+            }
+            WaitingFor::NamedChoice {
+                player: chooser,
+                choice_type: engine::types::ability::ChoiceType::BasicLandType,
+                options,
+                ..
+            } => {
+                if chooser != player {
+                    return Err(
+                        "play_land land-type prompt was offered to a different player".to_string(),
+                    );
+                }
+                let wanted = land_type
+                    .take()
+                    .ok_or("play_land land type was asked without a land_type field")?;
+                if !options.iter().any(|option| option == wanted) {
+                    return Err(format!(
+                        "play_land.land_type {wanted} is not among the offered {options:?}"
+                    ));
+                }
+                discard_reconciler.act(
+                    runner,
+                    GameAction::ChooseOption {
+                        choice: wanted.to_string(),
+                    },
+                    discard_choice_groups,
+                    labels,
+                )?;
+            }
+            _ => break,
+        }
+    }
+    if pay_life.is_some() {
+        return Err("play_land.pay_life was provided but no life payment was offered".to_string());
+    }
+    if land_type.is_some() {
+        return Err("play_land.land_type was provided but no land type was asked".to_string());
+    }
+    Ok(())
+}
+
 fn play_land(
     runner: &mut GameRunner,
     labels: &HashMap<ObjectId, String>,
@@ -4346,6 +4489,23 @@ fn play_land(
         discard_choice_groups,
         labels,
     )?;
+
+    if action.get("pay_life").is_some() || action.get("land_type").is_some() {
+        if behold.is_some() {
+            return Err(
+                "play_land.behold cannot be combined with pay_life or land_type".to_string(),
+            );
+        }
+        return answer_land_entry_choices(
+            runner,
+            labels,
+            action,
+            player,
+            land_id,
+            discard_reconciler,
+            discard_choice_groups,
+        );
+    }
 
     let chooser = match &runner.state().waiting_for {
         WaitingFor::ReplacementChoice { player, .. }
@@ -5092,6 +5252,7 @@ const REACH_FIELDS: &[&str] = &[
     "all",
     "player",
     "life",
+    "lost",
     "zone",
     "card",
     "label",
@@ -5171,6 +5332,19 @@ fn check_reach(
             .as_i64()
             .ok_or("reach.life must be an integer")?;
         return Ok(state.players[index].life as i64 == expected_life);
+    }
+    if let Some(expected_lost) = reach.get("lost") {
+        if reach.as_object().is_some_and(|fields| {
+            fields
+                .keys()
+                .any(|key| !["player", "lost"].contains(&key.as_str()))
+        }) {
+            return Err("reach.lost can only be combined with player".to_string());
+        }
+        let expected_lost = expected_lost
+            .as_bool()
+            .ok_or("reach.lost must be a boolean")?;
+        return Ok(state.players[index].is_eliminated == expected_lost);
     }
     let zone = reach["zone"].as_str().unwrap_or("graveyard");
     let card = reach["card"].as_str().ok_or("reach needs card")?;

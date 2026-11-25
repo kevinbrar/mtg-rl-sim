@@ -53,6 +53,27 @@
   B: `4eb51556ce1f72a55642a0062620c0d0325fd447d37c84485af2fd2b3009fc85`.
   Evidence: `runs/card-scenarios/dig-family/card-data-ab/`.
 
+## Patch 0045 — player loss is checked after a resolution or replacement finishes
+
+- `reconcile_terminal_sba` (the #962 player-loss safety net) no longer runs
+  state-based actions while `GameState::resolution_or_replacement_unfinished`
+  is true: a resolution carrier is held (`resolving_stack_entry`), or any frame
+  of the resolution stack is `PostReplacement` (CR 704.3, CR 704.4, CR 614.1c).
+  It already waited for casts, activations and mana abilities, and still runs
+  for prompts outside all of these (a cleanup discard).
+- Multiversal Passage played at exactly 2 life with the 2 life paid: the
+  land-type choice is still asked, the land enters untapped, then the player
+  loses. Before, elimination ran with the land-type choice open and panicked
+  in `abandon_active_resolution_carrier` (`stack.rs:179`).
+- A player at 0 life during a resolution answers the rest of it and is judged
+  when priority is next given, so later life gain keeps them in the game.
+- Tests: `as_enters_life_payment_to_zero.rs` (to 0 life; a 3-life control;
+  0 life then scry then life gain; 0 life then scry, loss afterwards; two
+  Passages entering in one resolution with life gain after). Changed to the
+  rules outcome: `resolution_optional_payments.rs` (payer at 0 life) and
+  `yenna_aura_token_copy.rs` (loss processed after the closing scry).
+  Runtime-only; no parser or card-data change.
+
 # Local phase-rs fixes
 
 The phase submodule remains pinned at `988bc3412f5d4e475c1837fbc88062b14d1f5489`.

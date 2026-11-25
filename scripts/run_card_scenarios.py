@@ -42,6 +42,7 @@ REACH_FIELDS = {
     "all",
     "player",
     "life",
+    "lost",
     "zone",
     "card",
     "label",
@@ -77,6 +78,7 @@ KNOWN_DIFF_DIGEST_FIELDS = {
     "forge_sha256",
 }
 KNOWN_DIFF_CATEGORIES = {"engine-bug", "xmage-bug", "forge-bug", "unsupported"}
+BASIC_LAND_TYPES = {"Plains", "Island", "Swamp", "Mountain", "Forest"}
 
 
 def _validate_reach_fields(
@@ -122,6 +124,13 @@ def _validate_reach_fields(
             raise TypeError(f"{name}: {path}.life must be an integer")
         if reach.keys() - {"player", "life"}:
             raise ValueError(f"{name}: {path}.life can only be combined with player")
+    if "lost" in reach:
+        if not isinstance(reach["lost"], bool):
+            raise TypeError(f"{name}: {path}.lost must be a boolean")
+        if oracle == "forge":
+            raise ValueError(f"{name}: {path}.lost needs an XMage-oracle suite")
+        if reach.keys() - {"player", "lost"}:
+            raise ValueError(f"{name}: {path}.lost can only be combined with player")
     if "all" in reach:
         if len(reach) != 1:
             raise ValueError(
@@ -1167,6 +1176,11 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                 raise ValueError(
                     f"{context}.answers entries must be exactly 'yes' or 'no'"
                 )
+        for field in ("pay_life", "land_type"):
+            if field in action and action.get("action") != "play_land":
+                raise ValueError(
+                    f"{name}: script[{index}].{field} is only valid for play_land actions"
+                )
         if "behold" in action and action.get("action") != "play_land":
             raise ValueError(
                 f"{name}: script[{index}].behold is only valid for play_land actions"
@@ -1434,6 +1448,20 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                 behold = action["behold"]
                 if not isinstance(behold, str) or not behold:
                     raise ValueError(f"{context}.behold must be a label or decline")
+            if "pay_life" in action and not isinstance(action["pay_life"], bool):
+                raise ValueError(f"{context}.pay_life must be a boolean")
+            if "land_type" in action and action["land_type"] not in BASIC_LAND_TYPES:
+                raise ValueError(
+                    f"{context}.land_type must be one of {sorted(BASIC_LAND_TYPES)}"
+                )
+            if oracle == "forge" and ("pay_life" in action or "land_type" in action):
+                raise ValueError(
+                    f"{context}.pay_life and .land_type need an XMage-oracle suite"
+                )
+            if "behold" in action and ("pay_life" in action or "land_type" in action):
+                raise ValueError(
+                    f"{context}.behold cannot be combined with pay_life or land_type"
+                )
         if "alternative_cost" not in action:
             continue
         context = f"{name}: script[{index}].alternative_cost"

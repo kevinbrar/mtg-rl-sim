@@ -1,0 +1,535 @@
+From 33c31495657d02f8e729e919649558812eb74576 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Wed, 25 Nov 2026 06:21:01 +0000
+Subject: [PATCH] Check player loss only after a resolution or replacement
+ finishes (CR 704.3, CR 704.4, CR 614.1c)
+
+A land's "as this land enters, choose a basic land type. Then you may pay
+2 life" taken at exactly 2 life left its controller at 0 life with the
+land-type choice still open. The terminal player-loss safety net ran
+state-based actions inside that event; eliminating the player then tried to
+abandon the resolution carrier with the post-replacement frame on top and
+panicked.
+
+The same net also ran at every prompt a resolving spell or ability raised,
+so a player at 0 life in the middle of a resolution lost before the rest of
+it happened, even when a later instruction gained that player life.
+State-based actions are checked when a player would receive priority
+(CR 704.3) and pay no attention to what happens during a resolution
+(CR 704.4).
+
+The net now waits while a resolution carrier is held or any frame of the
+resolution stack is a replacement's unfinished instructions. It still runs
+for prompts outside both, such as a cleanup discard.
+
+Two existing tests pinned the mid-resolution loss and now assert the
+rules outcome: the payer at 0 life makes the payment and is judged when
+priority is next given, and the loss after Yenna's host prompt is processed
+after the scry that ends that resolution.
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/engine.rs              |  16 +-
+ crates/engine/src/game/engine_tests.rs        |  40 +++
+ crates/engine/src/types/game_state.rs         |  21 +-
+ crates/engine/src/types/resolution.rs         |   8 +
+ .../as_enters_life_payment_to_zero.rs         | 230 ++++++++++++++++++
+ crates/engine/tests/integration/main.rs       |   1 +
+ .../resolution_optional_payments.rs           |  46 ++--
+ .../integration/yenna_aura_token_copy.rs      |  12 +
+ 8 files changed, 352 insertions(+), 22 deletions(-)
+ create mode 100644 crates/engine/tests/integration/as_enters_life_payment_to_zero.rs
+
+diff --git a/crates/engine/src/game/engine.rs b/crates/engine/src/game/engine.rs
+index a969c9b53..ab6a351a8 100644
+--- a/crates/engine/src/game/engine.rs
++++ b/crates/engine/src/game/engine.rs
+@@ -2572,9 +2572,19 @@ fn reconcile_terminal_sba(state: &mut GameState, result: &mut ActionResult) {
+     // mana ability (CR 605.4a). Paying life down to 0 is a legal payment
+     // (CR 119.4), so the 0-life check waits until that process ends and a
+     // player would next receive priority. Until then that player is still in
+-    // the game, so waiting on their choices is not the #962 softlock; prompts
+-    // owned by a resolution keep the net.
+-    if sba::has_pending_player_loss_sba(state) && !state.withholds_priority() {
++    // the game, so waiting on their choices is not the #962 softlock.
++    //
++    // CR 704.3 + CR 704.4 + CR 614.1c + CR 119.4: nor while a spell or ability
++    // is still resolving, or a replacement effect's instructions are
++    // unfinished. A spell that takes a player to 0 life and later gains that
++    // player life leaves them in the game; a land's "as this enters, choose a
++    // basic land type, then you may pay 2 life" taken at 2 life leaves its
++    // controller at 0 with the choice still open. That player answers, and
++    // loses if still at 0 when a player would next receive priority.
++    if sba::has_pending_player_loss_sba(state)
++        && !state.withholds_priority()
++        && !state.resolution_or_replacement_unfinished()
++    {
+         sba::check_state_based_actions(state, &mut result.events);
+         // SBA may have advanced waiting_for (e.g., GameOver, or Priority for
+         // the next living player). Sync the result.
+diff --git a/crates/engine/src/game/engine_tests.rs b/crates/engine/src/game/engine_tests.rs
+index 1405c3edf..ad6d582ef 100644
+--- a/crates/engine/src/game/engine_tests.rs
++++ b/crates/engine/src/game/engine_tests.rs
+@@ -551,6 +551,46 @@ fn terminal_reconcile_runs_player_loss_sba_for_unprotected_player() {
+     ));
+ }
+ 
++/// CR 704.3 + CR 704.4: the same 0-life player is not judged while a spell or
++/// ability is still resolving, and is judged once it has finished.
++#[test]
++fn terminal_reconcile_waits_for_a_resolving_stack_entry() {
++    let mut state = GameState::new_two_player(42);
++    state.players[0].life = 0;
++    state.waiting_for = WaitingFor::DiscardChoice {
++        player: PlayerId(0),
++        count: 1,
++        cards: Vec::new(),
++        source_id: ObjectId(999),
++        effect_kind: EffectKind::DiscardCard,
++        up_to: false,
++        unless_filter: None,
++        discard_frame: None,
++    };
++    state.resolving_stack_entry = Some(no_op_stack_entry(998, PlayerId(0)));
++    let mut result = ActionResult::applied(Vec::new(), state.waiting_for.clone());
++
++    reconcile_terminal_result(&mut state, &mut result);
++
++    assert!(!state.players[0].is_eliminated);
++    assert!(matches!(
++        result.waiting_for,
++        WaitingFor::DiscardChoice { .. }
++    ));
++
++    state.resolving_stack_entry = None;
++    reconcile_terminal_result(&mut state, &mut result);
++
++    assert!(state.players[0].is_eliminated);
++    assert!(matches!(
++        result.waiting_for,
++        WaitingFor::GameOver {
++            winner: Some(PlayerId(1)),
++            ..
++        }
++    ));
++}
++
+ /// Create a DealDamage ability for testing.
+ fn make_damage_ability(amount: i32, cost: Option<AbilityCost>) -> AbilityDefinition {
+     let kind = if cost.is_some() {
+diff --git a/crates/engine/src/types/game_state.rs b/crates/engine/src/types/game_state.rs
+index ef5589840..f2a2ec588 100644
+--- a/crates/engine/src/types/game_state.rs
++++ b/crates/engine/src/types/game_state.rs
+@@ -30261,9 +30261,9 @@ impl GameState {
+     ///   after the mana ability that triggered it, without waiting for
+     ///   priority".
+     ///
+-    /// Prompts owned by a resolution are deliberately not counted, so the
+-    /// #962 safety net still ends a game stuck waiting on a player who has
+-    /// already lost. Wider than [`WaitingFor::has_pending_cast`], the display
++    /// Prompts owned by a resolution are not counted here; the resolution's
++    /// carrier covers them, see
++    /// [`Self::resolution_or_replacement_unfinished`]. Wider than [`WaitingFor::has_pending_cast`], the display
+     /// and `CancelCast` predicate.
+     pub fn withholds_priority(&self) -> bool {
+         self.pending_cast.is_some()
+@@ -31886,6 +31886,17 @@ impl GameState {
+         installed
+     }
+ 
++    /// CR 704.3 + CR 704.4 + CR 614.1c: Whether the game is inside a process
++    /// that started and has not finished: a spell or ability that is still
++    /// resolving (its carrier is held across every pause for a choice), or a
++    /// replacement effect whose own instructions are unfinished, such as an "as
++    /// this enters" choice still open after the optional payment that came
++    /// with it. No player receives priority inside either, so state-based
++    /// actions are not checked there.
++    pub fn resolution_or_replacement_unfinished(&self) -> bool {
++        self.resolving_stack_entry.is_some() || self.resolution_stack.has_post_replacement()
++    }
++
+     /// True when the exact active general drain has ready continuation work.
+     pub fn has_active_post_replacement_drain(&self) -> bool {
+         self.active_post_replacement_drains()
+@@ -54177,8 +54188,8 @@ mod tests {
+     }
+ 
+     /// CR 608.2 + CR 616.1: a replacement prompt left over from a resolution's
+-    /// own life payment keeps the resolution's #962 safety net; the same prompt
+-    /// during a cast's payment does not.
++    /// own life payment is not a withheld-priority process of its own; the same
++    /// prompt during a cast's payment is.
+     #[test]
+     fn cost_owner_decides_whether_priority_is_withheld() {
+         let mut state = GameState::new_two_player(42);
+diff --git a/crates/engine/src/types/resolution.rs b/crates/engine/src/types/resolution.rs
+index 12e20cf62..adcd3abae 100644
+--- a/crates/engine/src/types/resolution.rs
++++ b/crates/engine/src/types/resolution.rs
+@@ -1259,6 +1259,14 @@ impl ResolutionStack {
+         self.frames.last()
+     }
+ 
++    /// CR 614.1c: Whether any frame, at any depth, is a replacement effect's
++    /// unfinished instructions.
++    pub(crate) fn has_post_replacement(&self) -> bool {
++        self.frames
++            .iter()
++            .any(|frame| matches!(frame, ResolutionFrame::PostReplacement(_)))
++    }
++
+     pub(crate) fn ability_continuations(&self) -> impl Iterator<Item = &PendingContinuation> {
+         self.frames.iter().filter_map(|frame| match frame {
+             ResolutionFrame::AbilityContinuation(frame) => Some(&frame.pending),
+diff --git a/crates/engine/tests/integration/as_enters_life_payment_to_zero.rs b/crates/engine/tests/integration/as_enters_life_payment_to_zero.rs
+new file mode 100644
+index 000000000..4e873f27b
+--- /dev/null
++++ b/crates/engine/tests/integration/as_enters_life_payment_to_zero.rs
+@@ -0,0 +1,230 @@
++//! CR 119.4 + CR 704.3: a land's "as this land enters ... you may pay 2 life"
++//! payment may take its controller to 0 life. The entry finishes first; the
++//! player loses when state-based actions are next checked.
++
++use engine::game::scenario::{GameScenario, P0, P1};
++use engine::types::actions::GameAction;
++use engine::types::game_state::WaitingFor;
++use engine::types::mana::ManaCost;
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const PASSAGE: &str = "As this land enters, choose a basic land type. Then you may pay 2 life. If you don't, it enters tapped.\nThis land is the chosen type.";
++
++fn play_passage_and_pay(
++    life: i32,
++) -> (
++    engine::game::scenario::GameRunner,
++    engine::types::identifiers::ObjectId,
++) {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    scenario.with_life(P0, life);
++    let land = scenario
++        .add_land_to_hand(P0, "Multiversal Passage")
++        .from_oracle_text(PASSAGE)
++        .id();
++    let mut runner = scenario.build();
++    let card_id = runner.state().objects[&land].card_id;
++    runner
++        .act(GameAction::PlayLand {
++            object_id: land,
++            card_id,
++        })
++        .expect("the land play is legal");
++    assert!(
++        matches!(runner.state().waiting_for, WaitingFor::ReplacementChoice { player, .. } if player == P0),
++        "the pay-2-life choice is offered, got {:?}",
++        runner.state().waiting_for
++    );
++    runner
++        .act(GameAction::ChooseReplacement { index: 0 })
++        .expect("paying 2 life is legal at this life total");
++    (runner, land)
++}
++
++#[test]
++fn paying_life_to_zero_as_a_land_enters_finishes_the_entry_then_loses() {
++    let (mut runner, _land) = play_passage_and_pay(2);
++
++    assert_eq!(runner.state().players[0].life, 0);
++    let WaitingFor::NamedChoice {
++        player, options, ..
++    } = runner.state().waiting_for.clone()
++    else {
++        panic!(
++            "the land-type choice must still be asked, got {:?}",
++            runner.state().waiting_for
++        );
++    };
++    assert_eq!(player, P0);
++    assert!(options.iter().any(|option| option == "Swamp"));
++
++    runner
++        .act(GameAction::ChooseOption {
++            choice: "Swamp".to_string(),
++        })
++        .expect("the land-type choice is accepted");
++
++    assert!(
++        matches!(runner.state().waiting_for, WaitingFor::GameOver { winner: Some(winner) } if winner == P1),
++        "P0 loses at 0 life once the entry is complete, got {:?}",
++        runner.state().waiting_for
++    );
++}
++
++#[test]
++fn paying_life_above_zero_as_a_land_enters_keeps_the_game_going() {
++    let (mut runner, land) = play_passage_and_pay(3);
++
++    assert_eq!(runner.state().players[0].life, 1);
++    runner
++        .act(GameAction::ChooseOption {
++            choice: "Swamp".to_string(),
++        })
++        .expect("the land-type choice is accepted");
++
++    assert!(matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P0));
++    let object = &runner.state().objects[&land];
++    assert_eq!(object.zone, Zone::Battlefield);
++    assert!(
++        !object.tapped,
++        "the land enters untapped when the life is paid"
++    );
++}
++
++fn cast_free_sorcery(
++    life: i32,
++    text: &str,
++    graveyard_passages: usize,
++) -> engine::game::scenario::GameRunner {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    scenario.with_life(P0, life);
++    for name in ["Library Card A", "Library Card B"] {
++        scenario.add_card_to_library_top(P0, name);
++    }
++    for _ in 0..graveyard_passages {
++        scenario
++            .add_land_to_graveyard(P0, "Multiversal Passage")
++            .from_oracle_text(PASSAGE);
++    }
++    let spell = scenario
++        .add_spell_to_hand_from_oracle(P0, "Test Sorcery", false, text)
++        .with_mana_cost(ManaCost::zero())
++        .id();
++    let mut runner = scenario.build();
++    let card_id = runner.state().objects[&spell].card_id;
++    runner
++        .act(GameAction::CastSpell {
++            object_id: spell,
++            card_id,
++            targets: Vec::new(),
++            payment_mode: Default::default(),
++        })
++        .expect("the sorcery is castable");
++    for _ in 0..4 {
++        if !matches!(runner.state().waiting_for, WaitingFor::Priority { .. })
++            || runner.state().stack.is_empty()
++        {
++            break;
++        }
++        runner
++            .act(GameAction::PassPriority)
++            .expect("passing priority is legal");
++    }
++    runner
++}
++
++/// CR 704.3 + CR 704.4: state-based actions are not checked while a spell
++/// resolves. A spell that takes its controller to 0 life, asks that player
++/// something, and then gains life leaves the player in the game.
++#[test]
++fn zero_life_during_a_resolution_is_not_a_loss_when_the_spell_restores_it() {
++    let mut runner = cast_free_sorcery(2, "You lose 2 life, then scry 1. You gain 5 life.", 0);
++
++    assert_eq!(runner.state().players[0].life, 0);
++    let WaitingFor::ScryChoice { cards, .. } = runner.state().waiting_for.clone() else {
++        panic!(
++            "the scry is still asked at 0 life, got {:?}",
++            runner.state().waiting_for
++        );
++    };
++    runner
++        .act(GameAction::SelectCards { cards })
++        .expect("keeping the card on top is legal");
++
++    assert_eq!(runner.state().players[0].life, 5);
++    assert!(
++        matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P0),
++        "the game continues, got {:?}",
++        runner.state().waiting_for
++    );
++}
++
++/// CR 704.3: the loss still happens once the spell has finished resolving.
++#[test]
++fn zero_life_after_a_resolution_with_a_choice_is_a_loss() {
++    let mut runner = cast_free_sorcery(2, "You lose 2 life, then scry 1.", 0);
++
++    assert_eq!(runner.state().players[0].life, 0);
++    let WaitingFor::ScryChoice { cards, .. } = runner.state().waiting_for.clone() else {
++        panic!(
++            "the scry is still asked at 0 life, got {:?}",
++            runner.state().waiting_for
++        );
++    };
++    runner
++        .act(GameAction::SelectCards { cards })
++        .expect("keeping the card on top is legal");
++
++    assert!(
++        matches!(runner.state().waiting_for, WaitingFor::GameOver { winner: Some(winner) } if winner == P1),
++        "P0 loses when the spell has resolved, got {:?}",
++        runner.state().waiting_for
++    );
++}
++
++/// CR 614.1c + CR 704.4: two lands entering during one resolution, the first
++/// paid for at 2 life. The second land's choices and the rest of the spell
++/// still happen, and the life gained keeps the player in the game.
++#[test]
++fn paying_life_to_zero_for_a_land_entering_during_a_resolution_finishes_the_spell() {
++    let mut runner = cast_free_sorcery(
++        2,
++        "Return all land cards from your graveyard to the battlefield. You gain 5 life.",
++        2,
++    );
++    for _ in 0..12 {
++        let action = match runner.state().waiting_for.clone() {
++            WaitingFor::ReplacementChoice { .. } => {
++                // Pay for the first land only.
++                let index = if runner.state().players[0].life >= 2 {
++                    0
++                } else {
++                    1
++                };
++                GameAction::ChooseReplacement { index }
++            }
++            WaitingFor::NamedChoice { .. } => GameAction::ChooseOption {
++                choice: "Swamp".to_string(),
++            },
++            _ => break,
++        };
++        runner.act(action).expect("the entry choice is accepted");
++    }
++
++    assert!(
++        matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P0),
++        "the game continues, got {:?}",
++        runner.state().waiting_for
++    );
++    assert_eq!(runner.state().players[0].life, 5);
++    let passages = runner
++        .state()
++        .objects
++        .values()
++        .filter(|object| object.name == "Multiversal Passage" && object.zone == Zone::Battlefield)
++        .count();
++    assert_eq!(passages, 2);
++}
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index ba6203252..7af4f2a02 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -334,6 +334,7 @@ mod through_the_forest_gate;
+ 
+ mod resolution_progress_contract;
+ 
++mod as_enters_life_payment_to_zero;
+ mod ignite_memories_random_reveal;
+ mod niambi_granted_trigger_once_each_turn;
+ mod q_stacking_the_deck;
+diff --git a/crates/engine/tests/integration/resolution_optional_payments.rs b/crates/engine/tests/integration/resolution_optional_payments.rs
+index c47ef95f9..637e6edc5 100644
+--- a/crates/engine/tests/integration/resolution_optional_payments.rs
++++ b/crates/engine/tests/integration/resolution_optional_payments.rs
+@@ -1937,14 +1937,15 @@ fn triggered_stack_entries(runner: &GameRunner) -> Vec<(PlayerId, ObjectId)> {
+ const GRAVEYARD_ARCHIVIST: &str =
+     "Whenever a card is put into your graveyard from anywhere, you gain 1 life.";
+ 
+-/// CR 704.5a + CR 800.4a + CR 608.2m + CR 608.2n: the payer the resolution
+-/// waits on is at 0 life when they answer, so the action boundary's
+-/// state-based net eliminates them; their pending choice is canonically
+-/// declined and the instructions resume against the remaining opponent and
+-/// finish. The spell's final part then runs inside that same action, and its
+-/// own graveyard move triggers Graveyard Archivist before the action returns.
++/// CR 704.3 + CR 704.4 + CR 608.2n: the payer the resolution waits on is at 0
++/// life when they answer. State-based actions are not checked while the spell
++/// resolves, so that player is still in the game: they make the payment they
++/// chose and the remaining instructions run, each opponent losing 1 life and
++/// then gaining 3. When a player next receives priority the payer is at 2 life
++/// and has not lost. The spell's final part has put it into the graveyard and
++/// triggered Graveyard Archivist by then.
+ #[test]
+-fn a_payer_lost_to_the_state_based_net_finishes_the_spell_before_the_action_returns() {
++fn a_payer_at_zero_life_finishes_the_resolution_and_is_judged_when_priority_is_next_given() {
+     let mut scenario = GameScenario::new_n_player(3, 42);
+     scenario.at_phase(Phase::PreCombatMain);
+     let spell = scenario
+@@ -1955,7 +1956,7 @@ fn a_payer_lost_to_the_state_based_net_finishes_the_spell_before_the_action_retu
+     let archivist = scenario
+         .add_enchantment_from_oracle(P0, "Graveyard Archivist", GRAVEYARD_ARCHIVIST)
+         .id();
+-    scenario.add_creature(P1, "Foreign Fodder", 1, 1);
++    let fodder = scenario.add_creature(P1, "Foreign Fodder", 1, 1).id();
+     let mut runner = scenario.build();
+     let p2 = PlayerId(2);
+     let p2_life = runner.state().players[p2.0 as usize].life;
+@@ -1971,16 +1972,33 @@ fn a_payer_lost_to_the_state_based_net_finishes_the_spell_before_the_action_retu
+     )
+     .unwrap();
+ 
+-    let state = runner.state();
+-    // Reach: the net eliminated the payer and the decline resumed against
+-    // the remaining opponent.
+-    assert!(state.players[P1.0 as usize].is_eliminated);
+-    assert_eq!(state.players[p2.0 as usize].life, p2_life - 1);
+-    assert_eq!(state.waiting_for, WaitingFor::Priority { player: P0 });
++    // Reach: the spell is still resolving and asks the 0-life payer for the
++    // permanent to sacrifice; that player has not lost.
++    assert!(!runner.state().players[P1.0 as usize].is_eliminated);
++    assert!(runner.state().resolving_stack_entry.is_some());
++    assert!(matches!(
++        runner.state().waiting_for,
++        WaitingFor::PayCost { player, .. } if player == P1
++    ));
++
++    apply(
++        runner.state_mut(),
++        P1,
++        GameAction::SelectCards {
++            cards: vec![fodder],
++        },
++    )
++    .unwrap();
+ 
++    let state = runner.state();
++    assert_eq!(state.objects[&fodder].zone, Zone::Graveyard);
++    assert_eq!(state.players[p2.0 as usize].life, p2_life - 1 + 3);
++    assert_eq!(state.players[P1.0 as usize].life, 2);
++    assert!(!state.players[P1.0 as usize].is_eliminated);
+     assert_eq!(state.objects[&spell].zone, Zone::Graveyard);
+     assert!(state.resolving_stack_entry.is_none());
+     assert!(state.owed_spell_final_part().is_none());
++    assert_eq!(state.waiting_for, WaitingFor::Priority { player: P0 });
+     assert_eq!(
+         triggered_stack_entries(&runner),
+         vec![(P0, archivist)],
+diff --git a/crates/engine/tests/integration/yenna_aura_token_copy.rs b/crates/engine/tests/integration/yenna_aura_token_copy.rs
+index 5029d26a2..c7f3f446d 100644
+--- a/crates/engine/tests/integration/yenna_aura_token_copy.rs
++++ b/crates/engine/tests/integration/yenna_aura_token_copy.rs
+@@ -938,6 +938,18 @@ fn an_open_host_prompt_does_not_expose_the_token_to_sbas() {
+         Some(AttachTarget::Object(host_a)),
+         "the token was still on the battlefield to be attached when the prompt closed"
+     );
++    // CR 704.4: Yenna's scry is still part of this resolution, so the loss is
++    // not processed while it is open.
++    let WaitingFor::ScryChoice { cards, .. } = runner.state().waiting_for.clone() else {
++        panic!(
++            "expected the scry that ends the resolution, got {:?}",
++            runner.state().waiting_for
++        );
++    };
++    assert!(!runner.state().players[1].is_eliminated);
++    runner
++        .act(GameAction::SelectCards { cards })
++        .expect("answer the scry");
+     assert!(
+         runner.state().players[1].is_eliminated,
+         "CR 704.5a: the 0-life loss still processes once resolution finishes"
+-- 
+2.56.0
+

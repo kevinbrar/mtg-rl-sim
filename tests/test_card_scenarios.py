@@ -896,6 +896,97 @@ script = [{action}]
         load_specs([spec])
 
 
+def test_load_specs_accepts_play_land_entry_choices_and_lost_reach(
+    tmp_path: Path,
+) -> None:
+    spec = tmp_path / "play-land-entry.toml"
+    spec.write_text(
+        """
+[[scenarios]]
+name = "play a land and pay life"
+script = [{ action = "play_land", card = "passage", land_type = "Swamp", pay_life = true }]
+
+[scenarios.setup.P0]
+life = 2
+hand = [{ card = "Multiversal Passage", label = "passage" }]
+
+[scenarios.reach]
+all = [{ player = "P0", lost = true }, { player = "P1", lost = false }]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = load_specs([spec])
+
+    assert loaded["scenarios"][0]["script"][0] == {
+        "action": "play_land",
+        "card": "passage",
+        "land_type": "Swamp",
+        "pay_life": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("action", "reach", "message"),
+    [
+        (
+            '{ action = "play_land", card = "passage", pay_life = "yes" }',
+            '{ player = "P0", life = 20 }',
+            ".pay_life must be a boolean",
+        ),
+        (
+            '{ action = "play_land", card = "passage", land_type = "Desert" }',
+            '{ player = "P0", life = 20 }',
+            ".land_type must be one of",
+        ),
+        (
+            '{ action = "play_land", card = "passage", behold = "passage", pay_life = true }',
+            '{ player = "P0", life = 20 }',
+            "behold cannot be combined with pay_life or land_type",
+        ),
+        (
+            '{ action = "cast", card = "passage", pay_life = true }',
+            '{ player = "P0", life = 20 }',
+            "pay_life is only valid for play_land",
+        ),
+        (
+            '{ action = "cast", card = "passage", land_type = "Swamp" }',
+            '{ player = "P0", life = 20 }',
+            "land_type is only valid for play_land",
+        ),
+        (
+            '{ action = "play_land", card = "passage" }',
+            '{ player = "P0", lost = "yes" }',
+            ".lost must be a boolean",
+        ),
+        (
+            '{ action = "play_land", card = "passage" }',
+            '{ player = "P0", lost = true, zone = "battlefield" }',
+            ".lost can only be combined with player",
+        ),
+    ],
+)
+def test_load_specs_rejects_invalid_play_land_entry_choices_and_lost_reach(
+    tmp_path: Path, action: str, reach: str, message: str
+) -> None:
+    spec = tmp_path / "invalid-play-land-entry.toml"
+    spec.write_text(
+        f"""
+[[scenarios]]
+name = "invalid play land entry"
+script = [{action}]
+reach = {reach}
+
+[scenarios.setup.P0]
+hand = [{{ card = "Multiversal Passage", label = "passage" }}]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        load_specs([spec])
+
+
 def test_load_specs_accepts_rottenmouth_viper_choice_scripts(tmp_path: Path) -> None:
     spec = tmp_path / "rottenmouth-choices.toml"
     spec.write_text(
