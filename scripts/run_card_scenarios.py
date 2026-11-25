@@ -1393,6 +1393,10 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                 raise ValueError(
                     f"{context}.resolve must list at least two ability text prefixes"
                 )
+            if "@unlabeled" in resolve and action.get("only") != "phase":
+                raise ValueError(
+                    f'{context}.resolve may use @unlabeled only with only = "phase"'
+                )
         if action.get("action") == "copy_choice":
             context = f"{name}: script[{index}].copy_choice"
             unknown = action.keys() - {"action", "player", "decision", "new_targets"}

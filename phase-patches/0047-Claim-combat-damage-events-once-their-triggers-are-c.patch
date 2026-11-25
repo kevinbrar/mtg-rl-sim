@@ -1,0 +1,596 @@
+From 6962d0b9f367d54390813fc9c900e212e006041c Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Wed, 25 Nov 2026 15:50:21 +0000
+Subject: [PATCH] Claim combat-damage events once their triggers are collected
+ (CR 603.2c)
+
+The combat-damage step collects the abilities its events trigger. The
+post-action scan skipped those events only when the batch reached the stack;
+behind an ordering or target prompt the stack is still empty and an ordinary
+ability beside a delayed one was collected a second time.
+
+The claim covers the step's own events only (the damage batch and the
+state-based actions after it). Earlier events of the same pass, such as life
+lost to unspent mana when the previous step ended, were not scanned by the
+step and stay visible to the post-action scan.
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/combat_damage.rs       |  64 +++-
+ ...t_damage_trigger_beside_delayed_trigger.rs | 300 ++++++++++++++++++
+ .../combat_lifelink_replacement_ordering.rs   |  94 ++++++
+ crates/engine/tests/integration/main.rs       |   1 +
+ 4 files changed, 450 insertions(+), 9 deletions(-)
+ create mode 100644 crates/engine/tests/integration/combat_damage_trigger_beside_delayed_trigger.rs
+
+diff --git a/crates/engine/src/game/combat_damage.rs b/crates/engine/src/game/combat_damage.rs
+index 36006b2f4..05869bcc2 100644
+--- a/crates/engine/src/game/combat_damage.rs
++++ b/crates/engine/src/game/combat_damage.rs
+@@ -54,12 +54,30 @@ fn process_combat_damage_triggers(
+     state: &mut GameState,
+     damage_events: &[GameEvent],
+     all_events: &mut Vec<GameEvent>,
++    batch_event_start: usize,
+     include_phase_event: bool,
+ ) {
+     // Step 1: Collect triggers from damage events while creatures are still alive.
+     // CR 603.2: Triggers fire at the moment the event occurs — process_triggers
+     // scans state.battlefield, so this must run before SBAs remove dying objects.
+-    let mut before_priority_events = Vec::new();
++    //
++    // CR 603.3b: abilities that triggered earlier in this pass (life lost to
++    // unspent mana as the previous step ended) are still waiting, and go on
++    // the stack with this step's abilities the next time a player would
++    // receive priority. They join this batch so each controller orders all of
++    // their abilities together; a second batch would replace this one's
++    // ordering prompt.
++    let mut before_priority_events: Vec<GameEvent> =
++        triggers::filter_already_collected_trigger_events_from(
++            state,
++            &all_events[..batch_event_start],
++            0,
++            &state.consumed_before_priority_trigger_events,
++        )
++        .into_iter()
++        // CR 510.1: the step's own beginning is added below, once.
++        .filter(|event| !matches!(event, GameEvent::PhaseChanged { .. }))
++        .collect();
+     if include_phase_event {
+         before_priority_events.push(GameEvent::PhaseChanged {
+             phase: crate::types::phase::Phase::CombatDamage,
+@@ -101,9 +119,10 @@ fn process_combat_damage_triggers(
+     // priority yet. CR 603.3b: the abilities that have triggered wait in the
+     // deferred queue and are put on the stack, with those of the remaining
+     // state-based actions, the next time a player would receive priority.
+-    // CR 603.2c: this step and the steps before it in the same pass collected
+-    // their own ordinary triggers, so the pass's events are claimed from the
+-    // post-action collector.
++    // CR 603.2c: this step collected the ordinary triggers of every event of
++    // the pass so far (the earlier events, the damage batch and the
++    // state-based actions after it), so they are claimed from the post-action
++    // collector.
+     if matches!(
+         pending_combat_damage_waiting(state),
+         Some(WaitingFor::ReplacementChoice { .. })
+@@ -120,12 +139,19 @@ fn process_combat_damage_triggers(
+     // player before constructing the APNAP ordering pass.
+     pending.retain(|ctx| crate::game::players::is_alive(state, ctx.pending.controller));
+ 
+-    triggers::process_collected_triggers_with_delayed_events(
++    let outcome = triggers::process_collected_triggers_with_delayed_events(
+         state,
+         pending,
+         &before_priority_events,
+         all_events,
+     );
++    // CR 603.2c: this step collected the ordinary triggers of every event of
++    // the pass so far. When the batch leaves the stack empty (an ordering or
++    // target prompt), the post-action collector would otherwise collect them
++    // a second time.
++    if outcome.fired {
++        triggers::claim_events_for_ordinary_collection(state, all_events, 0);
++    }
+ }
+ 
+ /// Resolve combat damage with first strike / double strike support (CR 510.1).
+@@ -215,6 +241,7 @@ pub fn resolve_combat_damage(
+                     CombatDamageSubStep::FirstStrike,
+                     &damage_events,
+                     events,
++                    batch_event_start,
+                 ) {
+                     return Some(wf);
+                 }
+@@ -258,6 +285,7 @@ pub fn resolve_combat_damage(
+             CombatDamageSubStep::Regular,
+             &damage_events,
+             events,
++            batch_event_start,
+         ),
+     }
+ }
+@@ -272,6 +300,7 @@ fn finish_combat_damage_sub_step(
+     sub_step: CombatDamageSubStep,
+     damage_events: &[GameEvent],
+     events: &mut Vec<GameEvent>,
++    batch_event_start: usize,
+ ) -> Option<WaitingFor> {
+     // CR 500.6: "at the beginning of that step" abilities trigger when the step
+     // begins. `process_combat_damage_triggers` synthesizes the PhaseChanged
+@@ -308,7 +337,13 @@ fn finish_combat_damage_sub_step(
+             }
+ 
+             // CR 510.4: SBAs and triggers run between first-strike and regular damage sub-steps.
+-            process_combat_damage_triggers(state, damage_events, events, include_phase_event);
++            process_combat_damage_triggers(
++                state,
++                damage_events,
++                events,
++                batch_event_start,
++                include_phase_event,
++            );
+ 
+             // CR 510.4 + CR 603.3b: if the first-strike sub-step produced a same-
+             // controller trigger-ordering prompt, surface it now — before the regular
+@@ -350,7 +385,13 @@ fn finish_combat_damage_sub_step(
+                 c.damage_step_index = None;
+             }
+ 
+-            process_combat_damage_triggers(state, damage_events, events, include_phase_event);
++            process_combat_damage_triggers(
++                state,
++                damage_events,
++                events,
++                batch_event_start,
++                include_phase_event,
++            );
+             pending_combat_damage_waiting(state)
+         }
+     }
+@@ -425,8 +466,13 @@ pub(crate) fn resume_pending_combat_lifelink(
+         }
+         CombatDamageBatch::Complete(damage_events) => {
+             events.extend_from_slice(&damage_events[owed_from..]);
+-            let waiting_for =
+-                finish_combat_damage_sub_step(state, sub_step, &damage_events, events);
++            let waiting_for = finish_combat_damage_sub_step(
++                state,
++                sub_step,
++                &damage_events,
++                events,
++                action_event_start,
++            );
+             claim_combat_lifelink_batch_events_for_ordinary_collection(
+                 state,
+                 events,
+diff --git a/crates/engine/tests/integration/combat_damage_trigger_beside_delayed_trigger.rs b/crates/engine/tests/integration/combat_damage_trigger_beside_delayed_trigger.rs
+new file mode 100644
+index 000000000..10277b44f
+--- /dev/null
++++ b/crates/engine/tests/integration/combat_damage_trigger_beside_delayed_trigger.rs
+@@ -0,0 +1,300 @@
++//! CR 603.2c: an ability triggers once per event. A delayed triggered ability
++//! that triggers on the same combat damage does not make the creature's own
++//! combat damage ability trigger a second time.
++
++use engine::game::combat::AttackTarget;
++use engine::game::scenario::{GameScenario, P0, P1};
++use engine::types::actions::GameAction;
++use engine::types::game_state::WaitingFor;
++use engine::types::identifiers::ObjectId;
++use engine::types::mana::{ManaType, ManaUnit};
++use engine::types::phase::Phase;
++
++const HUNTERS_INSIGHT: &str = "Choose target creature you control. Whenever that creature deals combat damage to a player or planeswalker this turn, draw that many cards.";
++
++fn attack_with_insight_bear(cast_insight: bool, with_trade: bool) -> (i32, usize) {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let bear = scenario
++        .add_creature(P0, "Insight Bear", 3, 3)
++        .from_oracle_text(
++            "Whenever this creature deals combat damage to a player, you gain 1 life.",
++        )
++        .id();
++    let attacker = scenario.add_creature(P0, "Attacker", 1, 1).id();
++    let blocker = scenario.add_creature(P1, "Blocker", 1, 1).id();
++    let insight = scenario
++        .add_spell_to_hand_from_oracle(P0, "Hunter's Insight", true, HUNTERS_INSIGHT)
++        .id();
++    for name in ["A", "B", "C", "D", "E", "F", "G", "H"] {
++        scenario.add_card_to_library_top(P0, name);
++    }
++    let mut runner = scenario.build();
++    if cast_insight {
++        runner.cast(insight).target_object(bear).resolve();
++    }
++    let hand_before = runner.state().players[0].hand.len();
++
++    for _ in 0..60 {
++        let state = runner.state();
++        if state.phase == Phase::PostCombatMain {
++            break;
++        }
++        match state.waiting_for.clone() {
++            WaitingFor::DeclareAttackers { .. } => {
++                let mut attacks = vec![(bear, AttackTarget::Player(P1))];
++                if with_trade {
++                    attacks.push((attacker, AttackTarget::Player(P1)));
++                }
++                runner
++                    .act(GameAction::DeclareAttackers {
++                        attacks,
++                        bands: vec![],
++                    })
++                    .expect("attack is legal");
++            }
++            WaitingFor::DeclareBlockers { .. } => {
++                let assignments = if with_trade {
++                    vec![(blocker, attacker)]
++                } else {
++                    vec![]
++                };
++                runner
++                    .act(GameAction::DeclareBlockers { assignments })
++                    .expect("block is legal");
++            }
++            WaitingFor::OrderTriggers { triggers, .. } => {
++                runner
++                    .act(GameAction::OrderTriggers {
++                        order: (0..triggers.len()).collect(),
++                    })
++                    .expect("ordering is legal");
++            }
++            WaitingFor::Priority { .. } => {
++                runner.act(GameAction::PassPriority).expect("pass is legal");
++            }
++            other => panic!("unexpected prompt {other:?}"),
++        }
++    }
++
++    let state = runner.state();
++    assert_eq!(state.players[1].life, 17);
++    (
++        state.players[0].life,
++        state.players[0].hand.len() - hand_before,
++    )
++}
++
++#[test]
++fn own_trigger_fires_once_without_a_delayed_trigger() {
++    assert_eq!(attack_with_insight_bear(false, false), (21, 0));
++}
++
++#[test]
++fn own_trigger_fires_once_beside_a_delayed_trigger() {
++    assert_eq!(attack_with_insight_bear(true, false), (21, 3));
++}
++
++#[test]
++fn own_trigger_fires_once_beside_a_delayed_trigger_and_a_death() {
++    assert_eq!(attack_with_insight_bear(true, true), (21, 3));
++}
++
++/// CR 603.3b: two different abilities of one controller raise the ordering
++/// prompt without any delayed trigger; each still triggers once.
++#[test]
++fn two_ordinary_triggers_of_one_controller_fire_once_each() {
++    assert_eq!(
++        attack_with_two_ordinary_triggers(0, false, true),
++        (17, 21, 1)
++    );
++}
++
++/// CR 603.3b: life lost to unspent mana as the declare blockers step ends is
++/// an earlier event of the same pass. Its trigger waits and goes on the stack
++/// with the damage batch, whether or not that batch opens an order prompt.
++#[test]
++fn earlier_event_of_the_pass_still_triggers_beside_an_order_prompt() {
++    assert_eq!(
++        attack_with_two_ordinary_triggers(1, false, true),
++        (18, 20, 1)
++    );
++}
++
++/// CR 603.3b: the same with a single combat damage ability, which goes on
++/// the stack without a prompt.
++#[test]
++fn earlier_event_of_the_pass_still_triggers_beside_one_combat_trigger() {
++    assert_eq!(
++        attack_with_two_ordinary_triggers(1, false, false),
++        (18, 20, 0)
++    );
++}
++
++/// CR 603.3b: the earlier event's abilities need an order of their own. Both
++/// order prompts are answered and every ability resolves once.
++#[test]
++fn earlier_event_with_its_own_order_prompt_keeps_the_combat_triggers() {
++    assert_eq!(
++        attack_with_two_ordinary_triggers(2, false, true),
++        (20, 20, 1)
++    );
++    assert_eq!(
++        attack_with_two_ordinary_triggers(2, true, true),
++        (20, 20, 3)
++    );
++}
++
++/// CR 603.7: with two ordinary abilities beside it, the delayed ability still
++/// triggers: 2 cards for the Gainer's damage plus the Drawer's own card.
++#[test]
++fn delayed_trigger_fires_beside_two_ordinary_triggers() {
++    assert_eq!(
++        attack_with_two_ordinary_triggers(0, true, true),
++        (17, 21, 3)
++    );
++}
++
++/// Returns (defender life, attacker life, cards drawn).
++fn attack_with_two_ordinary_triggers(
++    life_loss_observers: usize,
++    cast_insight: bool,
++    drawer_triggers: bool,
++) -> (i32, i32, usize) {
++    attack_with_observers(life_loss_observers, cast_insight, drawer_triggers, false)
++}
++
++fn attack_with_observers(
++    life_loss_observers: usize,
++    cast_insight: bool,
++    drawer_triggers: bool,
++    step_observer: bool,
++) -> (i32, i32, usize) {
++    let lose_unspent_mana = life_loss_observers > 0;
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    if lose_unspent_mana {
++        scenario.add_creature_from_oracle(
++            P0,
++            "Mana Burner",
++            0,
++            4,
++            "A player losing unspent mana causes that player to lose that much life.",
++        );
++        scenario.add_creature_from_oracle(
++            P1,
++            "Bystander",
++            0,
++            4,
++            "Whenever an opponent loses life, you gain 1 life.",
++        );
++        if step_observer {
++            scenario.add_creature_from_oracle(
++                P1,
++                "Step Watcher",
++                0,
++                4,
++                "At the beginning of each combat damage step, you gain 1 life.",
++            );
++        }
++        if life_loss_observers > 1 {
++            scenario.add_creature_from_oracle(
++                P1,
++                "Second Bystander",
++                0,
++                4,
++                "Whenever an opponent loses life, you gain 2 life.",
++            );
++        }
++    }
++    let gainer = scenario
++        .add_creature(P0, "Gainer", 2, 2)
++        .from_oracle_text(
++            "Whenever this creature deals combat damage to a player, you gain 1 life.",
++        )
++        .id();
++    let mut drawer = scenario.add_creature(P0, "Drawer", 1, 1);
++    if drawer_triggers {
++        drawer.from_oracle_text(
++            "Whenever this creature deals combat damage to a player, draw a card.",
++        );
++    }
++    let drawer = drawer.id();
++    for name in ["A", "B", "C", "D"] {
++        scenario.add_card_to_library_top(P0, name);
++    }
++    let insight = scenario
++        .add_spell_to_hand_from_oracle(P0, "Hunter's Insight", true, HUNTERS_INSIGHT)
++        .id();
++    let mut runner = scenario.build();
++    if cast_insight {
++        runner.cast(insight).target_object(gainer).resolve();
++    }
++    let hand_before = runner.state().players[0].hand.len();
++    let mut order_prompts = 0;
++    for _ in 0..60 {
++        let state = runner.state();
++        if state.phase == Phase::PostCombatMain {
++            break;
++        }
++        match state.waiting_for.clone() {
++            WaitingFor::DeclareAttackers { .. } => {
++                runner
++                    .act(GameAction::DeclareAttackers {
++                        attacks: vec![
++                            (gainer, AttackTarget::Player(P1)),
++                            (drawer, AttackTarget::Player(P1)),
++                        ],
++                        bands: vec![],
++                    })
++                    .expect("attack is legal");
++            }
++            WaitingFor::DeclareBlockers { .. } => {
++                if lose_unspent_mana {
++                    runner.state_mut().players[0].mana_pool.add(ManaUnit::new(
++                        ManaType::Red,
++                        ObjectId(9_999),
++                        false,
++                        vec![],
++                    ));
++                }
++                runner
++                    .act(GameAction::DeclareBlockers {
++                        assignments: vec![],
++                    })
++                    .expect("block is legal");
++            }
++            WaitingFor::OrderTriggers { triggers, .. } => {
++                order_prompts += 1;
++                runner
++                    .act(GameAction::OrderTriggers {
++                        order: (0..triggers.len()).collect(),
++                    })
++                    .expect("ordering is legal");
++            }
++            WaitingFor::Priority { .. } => {
++                runner.act(GameAction::PassPriority).expect("pass is legal");
++            }
++            other => panic!("unexpected prompt {other:?}"),
++        }
++    }
++    let state = runner.state();
++    let expected_prompts = if drawer_triggers {
++        life_loss_observers.max(1)
++    } else {
++        0
++    };
++    assert_eq!(order_prompts, expected_prompts);
++    (
++        state.players[1].life,
++        state.players[0].life,
++        state.players[0].hand.len() - hand_before,
++    )
++}
++
++/// CR 510.1: the step's beginning is an earlier event of the same pass as the
++/// life lost to unspent mana. Its ability triggers once.
++#[test]
++fn beginning_of_the_damage_step_triggers_once_beside_an_earlier_event() {
++    assert_eq!(attack_with_observers(1, false, false, true), (19, 20, 0));
++}
+diff --git a/crates/engine/tests/integration/combat_lifelink_replacement_ordering.rs b/crates/engine/tests/integration/combat_lifelink_replacement_ordering.rs
+index 7132c292a..eca59f59d 100644
+--- a/crates/engine/tests/integration/combat_lifelink_replacement_ordering.rs
++++ b/crates/engine/tests/integration/combat_lifelink_replacement_ordering.rs
+@@ -35,6 +35,7 @@ use engine::types::events::GameEvent;
+ use engine::types::game_state::{DelayedTrigger, LoopDetectSample, StackEntryKind};
+ use engine::types::identifiers::ObjectId;
+ use engine::types::keywords::Keyword;
++use engine::types::mana::{ManaType, ManaUnit};
+ use engine::types::player::PlayerId;
+ use engine::types::replacements::ReplacementEvent;
+ use engine::types::triggers::TriggerMode;
+@@ -1984,3 +1985,96 @@ fn single_observer_gain_receipt_fires_once_without_a_pause() {
+          never parks"
+     );
+ }
++
++/// CR 603.3b on the PAUSED batch: life lost to unspent mana as the declare
++/// blockers step ends happened earlier in the same pass than the combat
++/// damage. Its "whenever an opponent loses life" observer is still waiting
++/// when the batch parks on the CR 616.1 choice, and goes on the stack exactly
++/// once with the resumed batch.
++#[test]
++fn earlier_event_of_the_pass_triggers_once_after_the_resume() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    let lifelinker = add_lifelinker(&mut scenario, P0, "Lifelinker", 3, 3);
++    scenario.add_creature_from_oracle(
++        P0,
++        "Mana Burner",
++        0,
++        4,
++        "A player losing unspent mana causes that player to lose that much life.",
++    );
++    scenario.add_creature_from_oracle(
++        P1,
++        "Bystander",
++        0,
++        4,
++        "Whenever an opponent loses life, you gain 1 life.",
++    );
++    install_competing_life_gain_replacements(&mut scenario, P0);
++    let mut runner = scenario.build();
++
++    for _ in 0..8 {
++        if matches!(
++            runner.state().waiting_for,
++            WaitingFor::DeclareAttackers { .. }
++        ) {
++            break;
++        }
++        runner
++            .act(GameAction::PassPriority)
++            .expect("reach declare attackers");
++    }
++    runner
++        .act(GameAction::DeclareAttackers {
++            attacks: vec![(lifelinker, AttackTarget::Player(P1))],
++            bands: vec![],
++        })
++        .expect("attack is legal");
++    for _ in 0..8 {
++        if matches!(
++            runner.state().waiting_for,
++            WaitingFor::DeclareBlockers { .. }
++        ) {
++            break;
++        }
++        runner
++            .act(GameAction::PassPriority)
++            .expect("reach declare blockers");
++    }
++    runner.state_mut().players[0].mana_pool.add(ManaUnit::new(
++        ManaType::Red,
++        ObjectId(9_999),
++        false,
++        vec![],
++    ));
++    runner
++        .act(GameAction::DeclareBlockers {
++            assignments: vec![],
++        })
++        .expect("block is legal");
++    advance_through_combat_damage(&mut runner);
++
++    assert!(
++        matches!(
++            runner.state().waiting_for,
++            WaitingFor::ReplacementChoice { .. }
++        ),
++        "reach guard: the batch must PARK on the CR 616.1 choice; got {:?}",
++        runner.state().waiting_for
++    );
++    assert_eq!(
++        runner.life(P0),
++        19,
++        "reach guard: the unspent mana cost 1 life before the damage"
++    );
++
++    let (answered, _) = answer_ordering_prompts(&mut runner, DOUBLER);
++    assert!(
++        answered > 0,
++        "reach guard: the CR 616.1 choice was answered"
++    );
++    advance_through_combat_damage(&mut runner);
++
++    // 19 + (3 * 2 + 1) for the controller; 20 - 3 + 1 for the defender.
++    assert_eq!((runner.life(P0), runner.life(P1)), (26, 18));
++}
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index 9262a1542..65181cc0b 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -335,6 +335,7 @@ mod through_the_forest_gate;
+ mod resolution_progress_contract;
+ 
+ mod as_enters_life_payment_to_zero;
++mod combat_damage_trigger_beside_delayed_trigger;
+ mod ignite_memories_random_reveal;
+ mod niambi_granted_trigger_once_each_turn;
+ mod q_stacking_the_deck;
+-- 
+2.56.0
+

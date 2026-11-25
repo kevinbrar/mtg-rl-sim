@@ -1275,6 +1275,16 @@ def test_load_specs_rejects_invalid_uldaros_choice_scripts(
             "resolve must list at least two ability text prefixes",
         ),
         (
+            '{ action = "order_triggers", player = "P0", resolve = ["a", "@unlabeled"] }',
+            "[scenarios.setup.P0]",
+            "may use @unlabeled only with only",
+        ),
+        (
+            '{ action = "order_triggers", player = "P0", resolve = ["a", "@unlabeled"], only = "xmage" }',
+            "[scenarios.setup.P0]",
+            "may use @unlabeled only with only",
+        ),
+        (
             '{ action = "order_triggers", player = "P0", resolve = ["a", "b"], first = "a" }',
             "[scenarios.setup.P0]",
             "order_triggers has unknown keys",

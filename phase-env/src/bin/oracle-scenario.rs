@@ -932,12 +932,23 @@ fn parse_trigger_order(action: &Value) -> Result<Option<TriggerOrderChoice>, Str
                 .ok_or("order_triggers.resolve entries must be non-empty strings".to_string())
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if resolve.iter().any(|prefix| prefix == UNLABELED_TRIGGER)
+        && action.get("only").and_then(Value::as_str) != Some("phase")
+    {
+        return Err(
+            "order_triggers.resolve may use @unlabeled only with only = \"phase\"".to_string(),
+        );
+    }
     Ok(queued.then_some(TriggerOrderChoice { player, resolve }))
 }
 
 /// CR 603.3b: map a scripted resolve order onto the engine's placement order.
 /// `descriptions` are the prompted triggers; the result lists prompt indices,
 /// first placed first (so it resolves last, CR 405.3).
+/// `order_triggers` entry for a trigger Phase offers without ability text
+/// (a delayed triggered ability).
+const UNLABELED_TRIGGER: &str = "@unlabeled";
+
 fn trigger_placement_order(
     resolve: &[String],
     descriptions: &[String],
@@ -955,12 +966,24 @@ fn trigger_placement_order(
             .iter()
             .enumerate()
             .filter(|(index, description)| {
-                !placement.contains(index) && description.starts_with(prefix.as_str())
+                !placement.contains(index)
+                    && if prefix == UNLABELED_TRIGGER {
+                        description.is_empty()
+                    } else {
+                        description.starts_with(prefix.as_str())
+                    }
             })
             .map(|(index, _)| index);
         let index = matches.next().ok_or_else(|| {
             format!("order_triggers prefix {prefix:?} matches no trigger in {descriptions:?}")
         })?;
+        // Triggers without text cannot be told apart, so more than one of
+        // them is never treated as identical.
+        if prefix == UNLABELED_TRIGGER && matches.next().is_some() {
+            return Err(format!(
+                "order_triggers prefix {prefix:?} is ambiguous in {descriptions:?}"
+            ));
+        }
         if matches.any(|other| descriptions[other] != descriptions[index]) {
             return Err(format!(
                 "order_triggers prefix {prefix:?} is ambiguous in {descriptions:?}"
@@ -8974,6 +8997,41 @@ mod trigger_order_tests {
         );
         assert!(
             error(&["whenever you attack", "whenever you attack"]).contains("matches no trigger")
+        );
+    }
+
+    #[test]
+    fn unlabeled_entry_matches_only_a_trigger_without_text() {
+        let pending = texts(&["whenever ~ deals combat damage", ""]);
+        assert_eq!(
+            trigger_placement_order(&texts(&["@unlabeled", "whenever ~ deals"]), &pending),
+            Ok(vec![0, 1])
+        );
+        assert_eq!(
+            trigger_placement_order(&texts(&["whenever ~ deals", "@unlabeled"]), &pending),
+            Ok(vec![1, 0])
+        );
+        assert!(
+            trigger_placement_order(&texts(&["@unlabeled", "@unlabeled"]), &texts(&["", ""]))
+                .unwrap_err()
+                .contains("is ambiguous")
+        );
+        for only in [json!(null), json!("xmage")] {
+            let mut action = json!({
+                "action": "order_triggers", "player": "P0", "resolve": ["@unlabeled", "a"],
+            });
+            if !only.is_null() {
+                action["only"] = only;
+            }
+            assert!(parse_trigger_order(&action)
+                .unwrap_err()
+                .contains("@unlabeled"));
+        }
+        let labeled = texts(&["whenever ~ deals combat damage", "draw a card"]);
+        assert!(
+            trigger_placement_order(&texts(&["@unlabeled", "whenever ~ deals"]), &labeled)
+                .unwrap_err()
+                .contains("matches no trigger")
         );
     }
 

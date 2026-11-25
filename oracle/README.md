@@ -136,7 +136,9 @@ to resolve backwards, each against the triggers not yet placed. Identical
 triggers need no entry; any other unscripted order, a wrong count, an unmatched
 or ambiguous prefix, and an unconsumed entry fail closed. `only = "xmage"` or
 `only = "phase"` marks a prompt that just one engine asks; the other engine
-skips the entry, and each use must be backed by a `STATUS.md` entry. Forge rejects this action as unsupported.
+skips the entry, and each use must be backed by a `STATUS.md` entry. Phase offers a
+delayed triggered ability without ability text; the entry `@unlabeled`
+(`only = "phase"`) matches such a trigger, and fails as ambiguous when the prompt holds two of them. Forge rejects this action as unsupported.
 `reach.damage` checks marked damage on a battlefield permanent; Feral F5
 asserts that the target receives damage equal to the source's power.
 
