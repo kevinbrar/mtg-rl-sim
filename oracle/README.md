@@ -46,9 +46,12 @@ characteristics and counters. Both runners support `pass_priority`,
 `choose_discard`, and `trigger_targets`.
 `choose_scry` answers one scry: `cards` lists the labels put on the bottom of
 the library, and the other looked-at cards stay on top in their current order
-(`cards = []` keeps everything). Reordering the kept cards is not scriptable.
+(`cards = []` keeps everything). Neither order is scriptable: kept cards and
+bottomed cards both keep the order in which they were looked at, whatever
+the order of `cards`. A scry with no cards to look at takes no entry.
 A scry with no `choose_scry` entry fails in both runners, a `choose_scry`
-entry cannot answer a surveil (or the reverse) in Phase, and the loader
+entry cannot answer a surveil (or the reverse) in Phase (Forge keeps separate
+queues and does not check the order between the two), and the loader
 rejects `choose_scry` outside Forge-oracle suites because the XMage runner
 does not implement it. In Phase, a resolution step ends only at a priority
 window or a finished game; any other prompt left open fails the scenario.
