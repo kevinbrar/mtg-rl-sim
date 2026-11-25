@@ -1,3 +1,17 @@
+## Invariant fuzzer (random games, no oracle)
+
+- New tool, no engine change: `invariant-fuzz` (phase-env) plays seeded random games, picking uniformly among the actions Phase offers, and checks after every decision: every card is in exactly one zone list that agrees with its own `zone`; an offered action is not rejected or stale; a non-final state has an actor and an action; no panic; the game ends within 20,000 decisions. `scripts/run_invariant_fuzz.py` runs every ordered pair of the 6 decks in `oracle/decks`.
+- CI: `xmage-diff` runs 5 seeds per pair (180 games) on engine-path changes and fails on any violation whose signature is not in `ci/fuzz-known.txt`. Local run of that shape: 180 games, 121,913 decisions, 43 known rejections, 0 failures.
+- Sweep, seeds 1–100 per pair (3,600 games, 2.6 million decisions), found these Phase bugs. None is fixed here; all are open:
+  1. Crash: playing Multiversal Passage at exactly 2 life and paying the 2 life panics (`stack.rs:179`, "resolution abandonment cannot clear a buried ability continuation"). 6 games. Legal play: the life is paid, the land enters untapped, the player then loses (CR 119.4, 704.5a). Repro: lifegain vs lifegain seed 89.
+  2. Endless game: priority is handed out in the cleanup step with an empty stack forever; turn 30 never ends. 2 games. Repro: azorius-control mirror seeds 38 and 66. Cause not yet known.
+  3. Card in no zone: after a Map token's explore with Rest in Peace and a second replacement effect out, the explored card has `zone = Library` but is in no zone list while the replacement choice is open. 6 games. Repro: azorius-control mirror seed 43. Not yet known whether it is only a transient state.
+  4. Offered then rejected (the engine refuses correctly; the offer is wrong): (a) Firebending Lesson offered as castable with no creature on the battlefield, 400 games; (b) "X or Y" additional costs offer the alternative that cannot be paid (Bitter Triumph's 3 life, the `{1}` of "behold a Jace or pay {1}"), 198 games; (c) Great Arashin City's "exile a creature card from your graveyard" cost offers an empty selection, 191 games; (d) a teamwork tap cost offers Restless Reef as the creature to tap and rejects it, 1 game (azorius-control vs dimir-midrange seed 85). (a)–(c) are in `ci/fuzz-known.txt`; (d) is not, and neither are 1–3, so CI's seeds 1–5 avoid them and a fix adds its repro seed.
+- Known representation, counted not failed: Phase puts a spell's entry on the stack while the card stays in its origin zone until the cast is finalized (CR 601.2a moves the card first). The fuzzer fails only if that state survives to a priority window; it never did.
+- For RL: 1 and 2 would crash or hang self-play; 4 means the legal-action list is not exact, so the environment must drop rejected actions until the offers are fixed.
+- Not checked by the fuzzer: whether any offered action or outcome is rules-correct (that is the XMage/Forge scenarios' job), hidden-information leaks, mulligans other than the engine default, decks outside the 6, and non-uniform play (random play rarely builds deep board states).
+- Evidence: `runs/fuzz/sweep-100/summary.json`, `runs/fuzz/ci-shape/summary.json`.
+
 ## Scripted scry choices (Uldaros U7–U9)
 
 - Harness only, no engine change: `choose_scry` answers one scry; `cards` lists the labels put on the bottom, the rest stay on top in order. Implemented in the Phase and Forge runners (Forge patch 0007). Not implemented in the XMage runner; the loader rejects it outside Forge-oracle suites.

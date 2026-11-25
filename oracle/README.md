@@ -216,6 +216,14 @@ Working recipe (verified 2026-11-10, pinned mage-bench revision):
    `pass_priority`, `get_game_state`, `get_game_log`; `src/magebench/pilot/replay.py`
    shows scripted driving + assert steps.
 
+## Invariant fuzzer
+
+`scripts/run_invariant_fuzz.py --games N --outdir runs/fuzz/<name>` plays N seeded random games for every ordered deck pair in `oracle/decks` with `target/release/invariant-fuzz` and writes one JSONL per pair plus `summary.json`. It needs no oracle. A violation fails the run unless its `signature` is a line of `ci/fuzz-known.txt`. To replay one game with the last 40 decisions:
+
+```
+FUZZ_TRACE=1 target/release/invariant-fuzz phase/client/public oracle/decks/<a>.txt oracle/decks/<b>.txt <seed> 1
+```
+
 ## Lockstep differential game
 
 `decks/mono-green-v0.txt` is the 60-card Standard test deck (24 Forests and six
