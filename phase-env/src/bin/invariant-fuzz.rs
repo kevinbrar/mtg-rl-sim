@@ -512,6 +512,9 @@ fn main() {
     std::panic::set_hook(Box::new(|info| {
         let location = info.location().map(|l| l.to_string()).unwrap_or_default();
         PANIC_LOCATION.with(|slot| *slot.borrow_mut() = location);
+        if std::env::var_os("FUZZ_BACKTRACE").is_some() {
+            eprintln!("{}", std::backtrace::Backtrace::force_capture());
+        }
     }));
     let trace_wanted = std::env::var_os("FUZZ_TRACE").is_some();
     let mut totals: HashMap<String, u64> = HashMap::new();

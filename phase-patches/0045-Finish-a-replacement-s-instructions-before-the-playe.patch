@@ -1,0 +1,183 @@
+From 36278d954206a8d293d390f8c2387bcbed91d9b1 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Wed, 25 Nov 2026 06:21:01 +0000
+Subject: [PATCH] Finish a replacement's instructions before the player-loss
+ check (CR 614.1c, CR 704.3)
+
+A land's "as this land enters, choose a basic land type. Then you may pay
+2 life" taken at exactly 2 life left its controller at 0 life with the
+land-type choice still open. The terminal player-loss safety net ran
+state-based actions inside that event; eliminating the player then tried to
+abandon the resolution carrier with the post-replacement frame on top and
+panicked. The net now waits while a replacement effect's own instructions
+are the innermost unfinished work, as it already does for casts,
+activations and mana abilities.
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/engine.rs              | 11 ++-
+ crates/engine/src/types/game_state.rs         | 12 +++
+ .../as_enters_life_payment_to_zero.rs         | 93 +++++++++++++++++++
+ crates/engine/tests/integration/main.rs       |  1 +
+ 4 files changed, 116 insertions(+), 1 deletion(-)
+ create mode 100644 crates/engine/tests/integration/as_enters_life_payment_to_zero.rs
+
+diff --git a/crates/engine/src/game/engine.rs b/crates/engine/src/game/engine.rs
+index a969c9b53..3cd3b3c37 100644
+--- a/crates/engine/src/game/engine.rs
++++ b/crates/engine/src/game/engine.rs
+@@ -2574,7 +2574,16 @@ fn reconcile_terminal_sba(state: &mut GameState, result: &mut ActionResult) {
+     // player would next receive priority. Until then that player is still in
+     // the game, so waiting on their choices is not the #962 softlock; prompts
+     // owned by a resolution keep the net.
+-    if sba::has_pending_player_loss_sba(state) && !state.withholds_priority() {
++    //
++    // CR 614.1c + CR 704.3 + CR 119.4: nor while a replacement effect's instructions are
++    // unfinished. A land's "as this enters, choose a basic land type, then you
++    // may pay 2 life" taken at 2 life leaves its controller at 0 with the
++    // choice still open; that player is still in the game and answers it, and
++    // loses when a player would next receive priority.
++    if sba::has_pending_player_loss_sba(state)
++        && !state.withholds_priority()
++        && !state.replacement_instructions_unfinished()
++    {
+         sba::check_state_based_actions(state, &mut result.events);
+         // SBA may have advanced waiting_for (e.g., GameOver, or Priority for
+         // the next living player). Sync the result.
+diff --git a/crates/engine/src/types/game_state.rs b/crates/engine/src/types/game_state.rs
+index ef5589840..87bb137d0 100644
+--- a/crates/engine/src/types/game_state.rs
++++ b/crates/engine/src/types/game_state.rs
+@@ -31886,6 +31886,18 @@ impl GameState {
+         installed
+     }
+ 
++    /// CR 614.1c + CR 704.3: Whether a replacement effect's own instructions are
++    /// the innermost unfinished work, so the event that effect modified is not
++    /// complete yet: an "as this enters" choice still open after the optional
++    /// payment that came with it, for example. No player receives priority
++    /// inside an event, whichever process raised it.
++    pub fn replacement_instructions_unfinished(&self) -> bool {
++        matches!(
++            self.resolution_stack.last(),
++            Some(super::resolution::ResolutionFrame::PostReplacement(_))
++        )
++    }
++
+     /// True when the exact active general drain has ready continuation work.
+     pub fn has_active_post_replacement_drain(&self) -> bool {
+         self.active_post_replacement_drains()
+diff --git a/crates/engine/tests/integration/as_enters_life_payment_to_zero.rs b/crates/engine/tests/integration/as_enters_life_payment_to_zero.rs
+new file mode 100644
+index 000000000..b49c6eec1
+--- /dev/null
++++ b/crates/engine/tests/integration/as_enters_life_payment_to_zero.rs
+@@ -0,0 +1,93 @@
++//! CR 119.4 + CR 704.3: a land's "as this land enters ... you may pay 2 life"
++//! payment may take its controller to 0 life. The entry finishes first; the
++//! player loses when state-based actions are next checked.
++
++use engine::game::scenario::{GameScenario, P0, P1};
++use engine::types::actions::GameAction;
++use engine::types::game_state::WaitingFor;
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const PASSAGE: &str = "As this land enters, choose a basic land type. Then you may pay 2 life. If you don't, it enters tapped.\nThis land is the chosen type.";
++
++fn play_passage_and_pay(
++    life: i32,
++) -> (
++    engine::game::scenario::GameRunner,
++    engine::types::identifiers::ObjectId,
++) {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    scenario.with_life(P0, life);
++    let land = scenario
++        .add_land_to_hand(P0, "Multiversal Passage")
++        .from_oracle_text(PASSAGE)
++        .id();
++    let mut runner = scenario.build();
++    let card_id = runner.state().objects[&land].card_id;
++    runner
++        .act(GameAction::PlayLand {
++            object_id: land,
++            card_id,
++        })
++        .expect("the land play is legal");
++    assert!(
++        matches!(runner.state().waiting_for, WaitingFor::ReplacementChoice { player, .. } if player == P0),
++        "the pay-2-life choice is offered, got {:?}",
++        runner.state().waiting_for
++    );
++    runner
++        .act(GameAction::ChooseReplacement { index: 0 })
++        .expect("paying 2 life is legal at this life total");
++    (runner, land)
++}
++
++#[test]
++fn paying_life_to_zero_as_a_land_enters_finishes_the_entry_then_loses() {
++    let (mut runner, _land) = play_passage_and_pay(2);
++
++    assert_eq!(runner.state().players[0].life, 0);
++    let WaitingFor::NamedChoice {
++        player, options, ..
++    } = runner.state().waiting_for.clone()
++    else {
++        panic!(
++            "the land-type choice must still be asked, got {:?}",
++            runner.state().waiting_for
++        );
++    };
++    assert_eq!(player, P0);
++    assert!(options.iter().any(|option| option == "Swamp"));
++
++    runner
++        .act(GameAction::ChooseOption {
++            choice: "Swamp".to_string(),
++        })
++        .expect("the land-type choice is accepted");
++
++    assert!(
++        matches!(runner.state().waiting_for, WaitingFor::GameOver { winner: Some(winner) } if winner == P1),
++        "P0 loses at 0 life once the entry is complete, got {:?}",
++        runner.state().waiting_for
++    );
++}
++
++#[test]
++fn paying_life_above_zero_as_a_land_enters_keeps_the_game_going() {
++    let (mut runner, land) = play_passage_and_pay(3);
++
++    assert_eq!(runner.state().players[0].life, 1);
++    runner
++        .act(GameAction::ChooseOption {
++            choice: "Swamp".to_string(),
++        })
++        .expect("the land-type choice is accepted");
++
++    assert!(matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P0));
++    let object = &runner.state().objects[&land];
++    assert_eq!(object.zone, Zone::Battlefield);
++    assert!(
++        !object.tapped,
++        "the land enters untapped when the life is paid"
++    );
++}
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index ba6203252..7af4f2a02 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -334,6 +334,7 @@ mod through_the_forest_gate;
+ 
+ mod resolution_progress_contract;
+ 
++mod as_enters_life_payment_to_zero;
+ mod ignite_memories_random_reveal;
+ mod niambi_granted_trigger_once_each_turn;
+ mod q_stacking_the_deck;
+-- 
+2.56.0
+

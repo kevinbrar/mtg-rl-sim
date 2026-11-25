@@ -55,6 +55,14 @@ queues and does not check the order between the two), and the loader
 rejects `choose_scry` outside Forge-oracle suites because the XMage runner
 does not implement it. In Phase, a resolution step ends only at a priority
 window or a finished game; any other prompt left open fails the scenario.
+A `play_land` action may answer the land's "as this land enters" prompts:
+`land_type` names the basic land type and `pay_life` (a boolean) accepts or
+declines an optional life payment. An answer nothing asked for and a prompt
+with no answer both fail. Phase and XMage only; `behold` cannot be combined
+with them. When a player has lost, the game is over (CR 104.1, 104.2a) and
+both runners project only `game_over`, each player's `life` and `lost`, since
+what an engine does with the board after the game is not game state. The
+reach check `{ player = "P0", lost = true }` asserts who lost (XMage suites).
 An `attack` action may set `through = "damage"` to continue past declare
 attackers, declare blockers, and combat damage, resolving scripted triggers
 before stopping with an empty stack and priority at the active player. Omitted
@@ -223,6 +231,8 @@ Working recipe (verified 2026-11-10, pinned mage-bench revision):
 ```
 FUZZ_TRACE=1 target/release/invariant-fuzz phase/client/public oracle/decks/<a>.txt oracle/decks/<b>.txt <seed> 1
 ```
+
+Set `FUZZ_BACKTRACE=1` as well to print the backtrace of a panic to stderr.
 
 ## Lockstep differential game
 

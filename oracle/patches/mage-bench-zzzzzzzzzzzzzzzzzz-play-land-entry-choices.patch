@@ -1,0 +1,147 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+index cb0c063e..90e7a1f0 100644
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -49,10 +49,11 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+     private static final Gson GSON = new GsonBuilder().serializeNulls().create();
+     private static final String RESULT_PREFIX = "CARD_SCENARIO_RESULT:";
+     private static final Set<String> REACH_FIELDS = Set.of(
+-            "all", "player", "life", "zone", "card", "count", "tapped_labels", "types", "subtypes",
++            "all", "player", "life", "lost", "zone", "card", "count", "tapped_labels", "types", "subtypes",
+             "colors", "power", "toughness", "damage", "power_is_null", "toughness_is_null", "creature",
+             "tapped", "attached_to", "counters", "solved"
+     );
++    private final List<Runnable> afterExecute = new ArrayList<>();
+     private final String scenarioName;
+     private final JsonObject scenario;
+     private final Map<String, UUID> labels = new LinkedHashMap<>();
+@@ -127,6 +128,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         player(1).setStrictCardChoiceQueue(true);
+         setStopAt(finalTurn, finalStep);
+         execute();
++        afterExecute.forEach(Runnable::run);
+         for (int index = 0; index < 2; index++) {
+             if (!player(index).getTargets().isEmpty()) {
+                 throw new IllegalStateException("target group(s) were unconsumed when the script ended: "
+@@ -268,27 +270,62 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+                             actingPlayer.addCardChoiceGroupFirst(List.of(behold));
+                         }
+                     });
++                    // As-enters answers are consumed in the order the card asks:
++                    // the basic land type, then the optional life payment.
++                    if (action.has("land_type")) {
++                        String landType = requiredString(action, "land_type");
++                        if (behold != null) {
++                            throw new IllegalArgumentException(
++                                    "play_land.behold cannot be combined with pay_life or land_type");
++                        }
++                        setChoice(actingPlayer, landType);
++                    }
++                    if (action.has("pay_life")) {
++                        if (behold != null) {
++                            throw new IllegalArgumentException(
++                                    "play_land.behold cannot be combined with pay_life or land_type");
++                        }
++                        if (!action.get("pay_life").isJsonPrimitive()
++                                || !action.getAsJsonPrimitive("pay_life").isBoolean()) {
++                            throw new IllegalArgumentException("play_land.pay_life must be a boolean");
++                        }
++                        setChoice(actingPlayer, action.get("pay_life").getAsBoolean());
++                    }
+                     playLand(turn, step, actingPlayer, card);
+-                    runCode("assert play_land choice was consumed", turn, step, actingPlayer,
+-                            (info, player, game) -> {
+-                                if (!actingPlayer.getChoices().isEmpty()) {
+-                                    throw new IllegalStateException(
+-                                            "play_land behold choice was provided but not consumed");
+-                                }
+-                                actingPlayer.assertNoPendingBeholdChoice();
+-                                if (game.getPermanent(landId) == null) {
+-                                    throw new IllegalStateException(
+-                                            "play_land did not put the labeled land onto the battlefield");
+-                                }
+-                                if (behold != null && !behold.equals("decline")
+-                                        && labelZones.get(behold) == Zone.HAND
+-                                        && actingPlayer.getHand().getCards(game).stream()
+-                                        .noneMatch(candidate -> candidate.getId().equals(labels.get(behold)))
+-                                ) {
+-                                    throw new IllegalStateException(
+-                                            "beholding a hand card moved it out of the hand");
+-                                }
+-                            });
++                    boolean paysLife = action.has("pay_life") && action.get("pay_life").getAsBoolean();
++                    if (paysLife) {
++                        // A life payment can end the game, after which no queued
++                        // action runs; check consumption once execution is over.
++                        afterExecute.add(() -> {
++                            if (!actingPlayer.getChoices().isEmpty()) {
++                                throw new IllegalStateException(
++                                        "play_land choice was provided but not consumed: "
++                                                + actingPlayer.getChoices());
++                            }
++                        });
++                    } else {
++                        runCode("assert play_land choice was consumed", turn, step, actingPlayer,
++                                (info, player, game) -> {
++                                    if (!actingPlayer.getChoices().isEmpty()) {
++                                        throw new IllegalStateException(
++                                                "play_land choice was provided but not consumed: "
++                                                        + actingPlayer.getChoices());
++                                    }
++                                    actingPlayer.assertNoPendingBeholdChoice();
++                                    if (game.getPermanent(landId) == null) {
++                                        throw new IllegalStateException(
++                                                "play_land did not put the labeled land onto the battlefield");
++                                    }
++                                    if (behold != null && !behold.equals("decline")
++                                            && labelZones.get(behold) == Zone.HAND
++                                            && actingPlayer.getHand().getCards(game).stream()
++                                            .noneMatch(candidate -> candidate.getId().equals(labels.get(behold)))
++                                    ) {
++                                        throw new IllegalStateException(
++                                                "beholding a hand card moved it out of the hand");
++                                    }
++                                });
++                    }
+                     lastStep = step;
+                 }
+                 case "cast" -> {
+@@ -1064,6 +1101,24 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             projection.add("legal_targets", legalTargets);
+         }
+         projection.addProperty("reach", reached);
++        // CR 104.1 + CR 104.2a: the game ends immediately when a player has lost.
++        // What each engine does with the board afterwards is not game state, so a
++        // finished game projects only who lost and the life totals.
++        if (player(0).hasLost() || player(1).hasLost()) {
++            JsonObject finished = new JsonObject();
++            finished.addProperty("game_over", true);
++            JsonObject finishedPlayers = new JsonObject();
++            for (int index = 0; index < 2; index++) {
++                JsonObject finishedPlayer = new JsonObject();
++                finishedPlayer.addProperty("life", player(index).getLife());
++                finishedPlayer.addProperty("lost", player(index).hasLost());
++                finishedPlayers.add("P" + index, finishedPlayer);
++            }
++            finished.add("players", finishedPlayers);
++            finished.add("legal_targets", projection.get("legal_targets"));
++            finished.addProperty("reach", reached);
++            projection = finished;
++        }
+         JsonObject result = new JsonObject();
+         result.addProperty("scenario", scenarioName);
+         result.add("projection", projection);
+@@ -1163,6 +1218,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+             rejectUnknownKeys(reach, Set.of("player", "life"), "reach.life");
+             return player.getLife() == reach.get("life").getAsInt();
+         }
++        if (reach.has("lost")) {
++            rejectUnknownKeys(reach, Set.of("player", "lost"), "reach.lost");
++            if (!reach.get("lost").isJsonPrimitive() || !reach.getAsJsonPrimitive("lost").isBoolean()) {
++                throw new IllegalArgumentException("reach.lost must be a boolean");
++            }
++            return player.hasLost() == reach.get("lost").getAsBoolean();
++        }
+         String zone = string(reach, "zone", "graveyard");
+         if (reach.has("solved") && !zone.equals("battlefield")) {
+             throw new IllegalArgumentException("reach.solved is only valid for battlefield Cases");
