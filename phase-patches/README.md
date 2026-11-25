@@ -508,3 +508,14 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
   source incarnation follows the rebind (CR 400.7j). Needed once a sole-target
   reflexive is auto-placed with a stamped source.
 - Runtime-only; no parser or card-data change.
+
+## Patch 0047 — combat-damage events are claimed once collected (CR 603.2c)
+
+- `process_combat_damage_triggers` claims its events for ordinary collection
+  whenever its batch put an ability on the stack or opened a trigger prompt.
+  Before, an ordinary combat-damage trigger beside a delayed one (Hunter's
+  Insight) was collected again by the post-action scan while the controller
+  ordered the two.
+- Regression: `combat_damage_trigger_beside_delayed_trigger.rs` (with and
+  without the delayed trigger, beside a combat death, two ordinary triggers).
+- Runtime-only; no parser or card-data change.

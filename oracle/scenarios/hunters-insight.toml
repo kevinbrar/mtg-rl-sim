@@ -1,0 +1,70 @@
+# Hunter's Insight: "Choose target creature you control. Whenever that creature
+# deals combat damage to a player or planeswalker this turn, draw that many
+# cards." CR 603.2c: the delayed ability and the creature's own combat damage
+# ability each trigger once for the one damage event.
+
+[[scenarios]]
+name = "HI1 the delayed trigger draws cards equal to the damage"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Hunter's Insight", targets = ["courser"] },
+  { action = "pass_until_resolved" },
+  { action = "attack", attackers = ["courser"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+hand = ["Hunter's Insight"]
+library_top = ["Island", "Island", "Island", "Island", "Island"]
+battlefield = [
+  { label = "courser", card = "Centaur Courser" },
+  { label = "forest.0", card = "Forest" },
+  { label = "forest.1", card = "Forest" },
+  { label = "forest.2", card = "Forest" },
+]
+
+[scenarios.setup.P1]
+battlefield = []
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Island", count = 3 },
+  { zone = "library", player = "P0", card = "Island", count = 2 },
+  { zone = "graveyard", player = "P0", card = "Hunter's Insight", count = 1 },
+  { player = "P1", life = 17 },
+]
+
+[[scenarios]]
+name = "HI2 the creature's own combat damage trigger fires once beside the delayed trigger"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "cast", card = "Hunter's Insight", targets = ["thief"] },
+  { action = "pass_until_resolved" },
+  { action = "order_triggers", player = "P0", resolve = ["whenever this creature deals combat damage to a player or planeswalker", "whenever ~ deals combat damage to a player, draw"], only = "xmage" },
+  { action = "order_triggers", player = "P0", resolve = ["@unlabeled", "whenever ~ deals combat damage to a player, draw"], only = "phase" },
+  { action = "attack", attackers = ["thief"], through = "damage" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+hand = ["Hunter's Insight"]
+library_top = ["Island", "Island", "Island", "Island", "Island"]
+battlefield = [
+  { label = "thief", card = "Scroll Thief" },
+  { label = "forest.0", card = "Forest" },
+  { label = "forest.1", card = "Forest" },
+  { label = "forest.2", card = "Forest" },
+]
+
+[scenarios.setup.P1]
+battlefield = []
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Island", count = 2 },
+  { zone = "library", player = "P0", card = "Island", count = 3 },
+  { zone = "graveyard", player = "P0", card = "Hunter's Insight", count = 1 },
+  { player = "P1", life = 19 },
+]
