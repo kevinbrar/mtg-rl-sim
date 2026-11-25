@@ -275,3 +275,47 @@ all = [
   { zone = "library", player = "P0", card = "Island", count = 1 },
   { zone = "battlefield", player = "P0", card = "Merfolk Branchwalker", count = 1 },
 ]
+
+[[scenarios]]
+name = "RIP9 an explore answer is used with a later card pick already queued"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_optional", answers = ["yes"] },
+  { action = "choose_cards", cards = ["plotted"] },
+  { action = "cast", card = "Merfolk Branchwalker" },
+  { action = "pass_until_resolved" },
+  { action = "cast", player = "P0", card = "Make Your Own Luck" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+hand = ["Merfolk Branchwalker", "Make Your Own Luck"]
+library_top = [
+  { label = "explored", card = "Centaur Courser" },
+  { label = "plotted", card = "Grizzly Bears" },
+  { label = "hand.land", card = "Island" },
+  { label = "hand.nonland", card = "Divination" },
+  { label = "left", card = "Mountain" },
+]
+battlefield = [
+  { label = "rip.p0", card = "Rest in Peace" },
+  { label = "mana.1", card = "Forest" },
+  { label = "mana.2", card = "Forest" },
+  { label = "mana.3", card = "Forest" },
+  { label = "mana.4", card = "Island" },
+  { label = "mana.5", card = "Plains" },
+  { label = "mana.6", card = "Swamp" },
+  { label = "mana.7", card = "Mountain" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Centaur Courser", count = 1 },
+  { zone = "exile", player = "P0", card = "Grizzly Bears", count = 1 },
+  { zone = "exile", player = "P0", card = "Make Your Own Luck", count = 1 },
+  { zone = "hand", player = "P0", card = "Island", count = 1 },
+  { zone = "hand", player = "P0", card = "Divination", count = 1 },
+  { zone = "library", player = "P0", card = "Mountain", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Merfolk Branchwalker", count = 1 },
+]

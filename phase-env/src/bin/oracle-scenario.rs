@@ -3488,10 +3488,7 @@ fn pass_until_resolved(
                 rest_destination: Some(Zone::Graveyard),
                 source_id,
                 ..
-            } if cards.len() == 1
-                && card_choice_groups.is_empty()
-                && !optional_choice_groups[player.0 as usize].is_empty() =>
-            {
+            } if cards.len() == 1 && !optional_choice_groups[player.0 as usize].is_empty() => {
                 let to_graveyard = take_optional_choice(optional_choice_groups, player, source_id)?;
                 discard_reconciler.act(
                     runner,
