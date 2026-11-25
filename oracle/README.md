@@ -42,8 +42,19 @@ Tournament "outside the game" choices are represented by the sideboard.
 
 Forge projects ordered libraries, exile contents, and each permanent's
 characteristics and counters. Both runners support `pass_priority`,
-`label_permanent`, `activate`, `choose_surveil`, `choose_discard`, and
-`trigger_targets`.
+`label_permanent`, `activate`, `choose_surveil`, `choose_scry`,
+`choose_discard`, and `trigger_targets`.
+`choose_scry` answers one scry: `cards` lists the labels put on the bottom of
+the library, and the other looked-at cards stay on top in their current order
+(`cards = []` keeps everything). Neither order is scriptable: kept cards and
+bottomed cards both keep the order in which they were looked at, whatever
+the order of `cards`. A scry with no cards to look at takes no entry.
+A scry with no `choose_scry` entry fails in both runners, a `choose_scry`
+entry cannot answer a surveil (or the reverse) in Phase (Forge keeps separate
+queues and does not check the order between the two), and the loader
+rejects `choose_scry` outside Forge-oracle suites because the XMage runner
+does not implement it. In Phase, a resolution step ends only at a priority
+window or a finished game; any other prompt left open fails the scenario.
 An `attack` action may set `through = "damage"` to continue past declare
 attackers, declare blockers, and combat damage, resolving scripted triggers
 before stopping with an empty stack and priority at the active player. Omitted

@@ -2344,6 +2344,29 @@ library_top = [{ label = "top", card = "Island" }]
     with pytest.raises(ValueError, match="must be in P0's library_top"):
         load_specs([invalid_surveil])
 
+    scry_body = """
+[[scenarios]]
+name = "scry"
+script = [{ action = "choose_scry", player = "P0", cards = ["%s"] }]
+[scenarios.setup.P0]
+library_top = [{ label = "top", card = "Island" }]
+"""
+    xmage_scry = tmp_path / "xmage-scry.toml"
+    xmage_scry.write_text(scry_body % "top", encoding="utf-8")
+    with pytest.raises(ValueError, match="choose_scry needs a Forge-oracle suite"):
+        load_specs([xmage_scry])
+
+    invalid_scry = tmp_path / "invalid-scry.toml"
+    invalid_scry.write_text(
+        'oracle = "forge"\n' + scry_body % "not-top", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="must be in P0's library_top"):
+        load_specs([invalid_scry])
+
+    forge_scry = tmp_path / "forge-scry.toml"
+    forge_scry.write_text('oracle = "forge"\n' + scry_body % "top", encoding="utf-8")
+    load_specs([forge_scry])
+
 
 def test_choose_outside_game_requires_sideboard_labels(tmp_path: Path) -> None:
     valid = tmp_path / "outside-game.toml"

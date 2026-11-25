@@ -1,0 +1,104 @@
+diff --git a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
+index dec84ec..4768d2e 100644
+--- a/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
++++ b/forge-gui-desktop/src/test/java/forge/ai/CardScenarioProjectionTest.java
+@@ -615,7 +615,7 @@ public final class CardScenarioProjectionTest extends AITest {
+                                 scriptedTargets(action, labels));
+                     }
+                 }
+-                case "choose_outside_game", "choose_mana", "choose_surveil", "choose_discard",
++                case "choose_outside_game", "choose_mana", "choose_surveil", "choose_scry", "choose_discard",
+                         "trigger_targets", "graveyard_targets", "copy_targets", "choose_copies",
+                         "choose_replacement", "choose_entity" -> { }
+                 case "pass_priority" -> passPriority(action, game);
+@@ -1044,7 +1044,7 @@ public final class CardScenarioProjectionTest extends AITest {
+                     sources.add(source.getAsString());
+                 }
+                 chooser.addManaChoices(sources);
+-            } else if ("choose_surveil".equals(actionName)) {
++            } else if ("choose_surveil".equals(actionName) || "choose_scry".equals(actionName)) {
+                 ScriptedController chooser = controllerFor(action, controller0, controller1);
+                 List<String> graveyardLabels = new ArrayList<>();
+                 for (JsonElement card : action.getAsJsonArray("cards")) {
+@@ -1052,11 +1052,15 @@ public final class CardScenarioProjectionTest extends AITest {
+                     Card selected = labels.get(label);
+                     if (selected == null || selected.getOwner() != chooser.getPlayer()) {
+                         throw new IllegalArgumentException(
+-                                "choose_surveil label must name the chooser's card: " + label);
++                                actionName + " label must name the chooser's card: " + label);
+                     }
+                     graveyardLabels.add(label);
+                 }
+-                chooser.addSurveilChoice(graveyardLabels);
++                if ("choose_scry".equals(actionName)) {
++                    chooser.addScryChoice(graveyardLabels);
++                } else {
++                    chooser.addSurveilChoice(graveyardLabels);
++                }
+             } else if ("choose_discard".equals(actionName)) {
+                 ScriptedController chooser = controllerFor(action, controller0, controller1);
+                 List<String> discardLabels = new ArrayList<>();
+@@ -1833,6 +1837,7 @@ public final class CardScenarioProjectionTest extends AITest {
+         private final Deque<OutsideGameChoice> outsideGameChoices = new ArrayDeque<>();
+         private final Deque<ManaScriptPayment> manaChoices = new ArrayDeque<>();
+         private final Deque<List<String>> surveilChoices = new ArrayDeque<>();
++        private final Deque<List<String>> scryChoices = new ArrayDeque<>();
+         private final Deque<List<String>> discardChoices = new ArrayDeque<>();
+         private final Deque<List<Card>> discardZoneOrders = new ArrayDeque<>();
+         private final Deque<TriggerTargetChoice> triggerTargetChoices;
+@@ -2017,6 +2022,10 @@ public final class CardScenarioProjectionTest extends AITest {
+             surveilChoices.addLast(List.copyOf(graveyardLabels));
+         }
+ 
++        private void addScryChoice(List<String> bottomLabels) {
++            scryChoices.addLast(List.copyOf(bottomLabels));
++        }
++
+         private void addDiscardChoice(List<String> discardLabels) {
+             discardChoices.addLast(List.copyOf(discardLabels));
+         }
+@@ -2163,6 +2172,9 @@ public final class CardScenarioProjectionTest extends AITest {
+             assertTrue(
+                     surveilChoices.isEmpty(),
+                     "unconsumed surveil choices for " + player.getName() + ": " + surveilChoices);
++            assertTrue(
++                    scryChoices.isEmpty(),
++                    "unconsumed scry choices for " + player.getName() + ": " + scryChoices);
+             assertTrue(
+                     discardChoices.isEmpty(),
+                     "unconsumed discard choices for " + player.getName() + ": " + discardChoices);
+@@ -2464,6 +2476,34 @@ public final class CardScenarioProjectionTest extends AITest {
+             return ordered;
+         }
+ 
++        @Override
++        public ImmutablePair<CardCollection, CardCollection> arrangeForScry(CardCollection topN) {
++            if (topN.isEmpty()) {
++                // Nothing to look at: no decision exists, as in Phase.
++                return ImmutablePair.of(topN, null);
++            }
++            List<String> scripted = scryChoices.pollFirst();
++            if (scripted == null) {
++                throw failClosed("unscripted scry choice");
++            }
++            Set<Card> toBottom = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
++            for (String label : scripted) {
++                Card card = labels.get(label);
++                if (card == null || !topN.contains(card)) {
++                    throw failClosed("scripted scry card not offered: " + label);
++                }
++                if (!toBottom.add(card)) {
++                    throw failClosed("duplicate scripted scry card: " + label);
++                }
++            }
++            CardCollection top = new CardCollection();
++            CardCollection bottom = new CardCollection();
++            for (Card card : topN) {
++                (toBottom.contains(card) ? bottom : top).add(card);
++            }
++            return ImmutablePair.of(top, bottom);
++        }
++
+         @Override
+         public ImmutablePair<CardCollection, CardCollection> arrangeForSurveil(CardCollection topN) {
+             List<String> scripted = surveilChoices.pollFirst();

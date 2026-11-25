@@ -37,8 +37,26 @@ struct ManaScriptChoice {
     sources: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LibraryLookKind {
+    Surveil,
+    Scry,
+}
+
+impl LibraryLookKind {
+    fn action(self) -> &'static str {
+        match self {
+            Self::Surveil => "choose_surveil",
+            Self::Scry => "choose_scry",
+        }
+    }
+}
+
+/// `graveyard` holds the cards that leave the top: to the graveyard for a
+/// surveil, to the bottom of the library for a scry.
 #[derive(Debug)]
 struct SurveilScriptChoice {
+    kind: LibraryLookKind,
     player: PlayerId,
     graveyard: Vec<ObjectId>,
 }
@@ -657,12 +675,54 @@ fn parse_surveil_choice(
     action: &Value,
     labels: &HashMap<ObjectId, String>,
 ) -> Result<SurveilScriptChoice, String> {
-    let player = parse_script_player(action["player"].as_str(), "choose_surveil")?;
+    parse_library_look_choice(LibraryLookKind::Surveil, action, labels)
+}
+
+fn parse_library_look_choice(
+    kind: LibraryLookKind,
+    action: &Value,
+    labels: &HashMap<ObjectId, String>,
+) -> Result<SurveilScriptChoice, String> {
+    let player = parse_script_player(action["player"].as_str(), kind.action())?;
     let graveyard = resolve_card_choice_labels(action, labels)?;
     if graveyard.iter().collect::<HashSet<_>>().len() != graveyard.len() {
-        return Err("choose_surveil.cards cannot repeat labels".to_string());
+        return Err(format!("{}.cards cannot repeat labels", kind.action()));
     }
-    Ok(SurveilScriptChoice { player, graveyard })
+    Ok(SurveilScriptChoice {
+        kind,
+        player,
+        graveyard,
+    })
+}
+
+/// Pops the scripted answer for a surveil or scry prompt and returns the cards
+/// that stay on top, in the offered order.
+fn take_library_look_choice(
+    kind: LibraryLookKind,
+    choices: &mut VecDeque<SurveilScriptChoice>,
+    player: PlayerId,
+    cards: &[ObjectId],
+    labels: &HashMap<ObjectId, String>,
+) -> Result<Vec<ObjectId>, String> {
+    let action = kind.action();
+    let choice = choices
+        .pop_front()
+        .ok_or_else(|| format!("{kind:?} prompt has no {action} entry"))?;
+    if choice.kind != kind {
+        return Err(format!(
+            "{kind:?} prompt was answered by a {} entry",
+            choice.kind.action()
+        ));
+    }
+    if choice.player != player {
+        return Err(format!("{action} prompt was offered to a different player"));
+    }
+    validate_card_choice_group(&choice.graveyard, cards, 0, cards.len(), labels)?;
+    Ok(cards
+        .iter()
+        .copied()
+        .filter(|id| !choice.graveyard.contains(id))
+        .collect())
 }
 
 #[derive(Debug, Clone)]
@@ -1068,7 +1128,7 @@ fn ensure_surveil_choices_consumed(choices: &VecDeque<SurveilScriptChoice>) -> R
         return Ok(());
     }
     Err(format!(
-        "{} choose_surveil choice(s) were unconsumed when the script ended",
+        "{} choose_surveil / choose_scry choice(s) were unconsumed when the script ended",
         choices.len()
     ))
 }
@@ -3222,21 +3282,15 @@ fn pass_until_resolved(
                     discard_choice_groups,
                 )?;
             }
-            WaitingFor::SurveilChoice { player, cards } => {
-                let choice = surveil_choices
-                    .pop_front()
-                    .ok_or("SurveilChoice prompt has no choose_surveil entry")?;
-                if choice.player != player {
-                    return Err(
-                        "choose_surveil prompt was offered to a different player".to_string()
-                    );
-                }
-                validate_card_choice_group(&choice.graveyard, &cards, 0, cards.len(), labels)?;
-                let top_cards = cards
-                    .iter()
-                    .copied()
-                    .filter(|id| !choice.graveyard.contains(id))
-                    .collect();
+            WaitingFor::SurveilChoice { player, cards }
+            | WaitingFor::ScryChoice { player, cards } => {
+                let kind = if matches!(runner.state().waiting_for, WaitingFor::ScryChoice { .. }) {
+                    LibraryLookKind::Scry
+                } else {
+                    LibraryLookKind::Surveil
+                };
+                let top_cards =
+                    take_library_look_choice(kind, surveil_choices, player, &cards, labels)?;
                 discard_reconciler.act(
                     runner,
                     GameAction::SelectCards { cards: top_cards },
@@ -3404,25 +3458,13 @@ fn pass_until_resolved(
                 )?;
             }
         }
+        // Only a priority window or a finished game ends the step; any other
+        // prompt left open with an empty stack is an unscripted decision.
         if runner.state().stack.is_empty()
-            && !matches!(
+            && matches!(
                 runner.state().waiting_for,
-                WaitingFor::TriggerTargetSelection { .. }
-                    | WaitingFor::TargetSelection { .. }
-                    | WaitingFor::SurveilChoice { .. }
-                    | WaitingFor::EffectZoneChoice { .. }
-                    | WaitingFor::ChooseFromZoneChoice { .. }
-                    | WaitingFor::DigChoice { .. }
-                    | WaitingFor::DiscardChoice { .. }
-                    | WaitingFor::OptionalEffectChoice { .. }
-                    | WaitingFor::OutsideGameChoice { .. }
-                    | WaitingFor::CopyRetarget { .. }
-                    | WaitingFor::UnlessPaymentChooseCost { .. }
-                    | WaitingFor::WardSacrificeChoice { .. }
-                    | WaitingFor::WardDiscardChoice { .. }
+                WaitingFor::Priority { .. } | WaitingFor::GameOver { .. }
             )
-            && (!fail_closed_unscripted_prompts
-                || matches!(runner.state().waiting_for, WaitingFor::Priority { .. }))
         {
             if pending_unless_choice.is_some() {
                 return Err("unless cost branch was not followed by its choice prompt".to_string());
@@ -4941,6 +4983,13 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
             }
             "choose_surveil" => {
                 surveil_choices.push_back(parse_surveil_choice(action, &labels)?);
+            }
+            "choose_scry" => {
+                surveil_choices.push_back(parse_library_look_choice(
+                    LibraryLookKind::Scry,
+                    action,
+                    &labels,
+                )?);
             }
             "choose_outside_game" => {
                 outside_game_choices.push_back(parse_outside_game_choice(action)?);
@@ -8278,6 +8327,145 @@ mod surveil_script_choice_tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    /// Casts a one-line spell with two labelled library cards ("top", "second")
+    /// and resolves it with the given scripted library-look answers.
+    fn resolve_library_look_spell(
+        oracle_text: &'static str,
+        answers: Vec<(LibraryLookKind, Value)>,
+    ) -> (Result<(), String>, Vec<String>) {
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let mut scenario = GameScenario::new();
+                scenario.at_phase(Phase::PreCombatMain);
+                let second = scenario.add_card_to_library_top(PlayerId(0), "Second Card");
+                let top = scenario.add_card_to_library_top(PlayerId(0), "Top Card");
+                let spell = scenario
+                    .add_spell_to_hand_from_oracle(PlayerId(0), "Look Spell", true, oracle_text)
+                    .id();
+                let mut runner = scenario.build();
+                runner.cast(spell).commit();
+
+                let labels =
+                    HashMap::from([(top, "top".to_string()), (second, "second".to_string())]);
+                let mut surveil_choices = answers
+                    .into_iter()
+                    .map(|(kind, action)| {
+                        parse_library_look_choice(kind, &action, &labels).unwrap()
+                    })
+                    .collect::<VecDeque<_>>();
+                let result = pass_until_resolved(
+                    "library look test",
+                    &mut runner,
+                    &labels,
+                    &mut VecDeque::new(),
+                    &mut VecDeque::new(),
+                    &mut VecDeque::new(),
+                    &mut VecDeque::new(),
+                    &mut VecDeque::new(),
+                    &mut VecDeque::new(),
+                    &mut [VecDeque::new(), VecDeque::new()],
+                    &mut surveil_choices,
+                    &HashMap::new(),
+                    &mut VecDeque::new(),
+                    &mut VecDeque::new(),
+                    &mut [VecDeque::new(), VecDeque::new()],
+                    &mut [VecDeque::new(), VecDeque::new()],
+                    &mut DiscardChoiceReconciler::default(),
+                    false,
+                )
+                .and_then(|()| ensure_surveil_choices_consumed(&surveil_choices));
+                let library = runner.state().players[0]
+                    .library
+                    .iter()
+                    .map(|id| labels[id].clone())
+                    .collect();
+                (result, library)
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    #[test]
+    fn scripted_scry_puts_the_named_card_on_the_bottom() {
+        let (result, library) = resolve_library_look_spell(
+            "Scry 2.",
+            vec![(
+                LibraryLookKind::Scry,
+                json!({"player": "P0", "cards": ["top"]}),
+            )],
+        );
+        result.unwrap();
+        assert_eq!(library, ["second", "top"]);
+
+        let (result, library) = resolve_library_look_spell(
+            "Scry 2.",
+            vec![(LibraryLookKind::Scry, json!({"player": "P0", "cards": []}))],
+        );
+        result.unwrap();
+        assert_eq!(library, ["top", "second"]);
+    }
+
+    #[test]
+    fn unscripted_scry_prompt_fails_instead_of_ending_the_step() {
+        let (result, library) = resolve_library_look_spell("Scry 2.", vec![]);
+        assert!(result.unwrap_err().contains("no choose_scry entry"));
+        assert_eq!(library, ["top", "second"]);
+    }
+
+    #[test]
+    fn a_prompt_the_runner_cannot_answer_does_not_end_the_step() {
+        let (result, _) = resolve_library_look_spell("Choose a color. Draw a card.", vec![]);
+        let error = result.unwrap_err();
+        assert!(error.contains("stack did not resolve"), "{error}");
+    }
+
+    #[test]
+    fn scry_and_surveil_entries_are_not_interchangeable() {
+        let surveil = (
+            LibraryLookKind::Surveil,
+            json!({"player": "P0", "cards": ["top"]}),
+        );
+        let (result, _) = resolve_library_look_spell("Scry 2.", vec![surveil]);
+        assert!(result
+            .unwrap_err()
+            .contains("answered by a choose_surveil entry"));
+
+        let scry = (
+            LibraryLookKind::Scry,
+            json!({"player": "P0", "cards": ["top"]}),
+        );
+        let (result, _) = resolve_library_look_spell("Surveil 2.", vec![scry]);
+        assert!(result
+            .unwrap_err()
+            .contains("answered by a choose_scry entry"));
+    }
+
+    #[test]
+    fn scry_entry_for_the_wrong_player_or_an_unoffered_card_fails() {
+        let (result, _) = resolve_library_look_spell(
+            "Scry 1.",
+            vec![(LibraryLookKind::Scry, json!({"player": "P1", "cards": []}))],
+        );
+        assert!(result.unwrap_err().contains("different player"));
+
+        let (result, _) = resolve_library_look_spell(
+            "Scry 1.",
+            vec![(
+                LibraryLookKind::Scry,
+                json!({"player": "P0", "cards": ["second"]}),
+            )],
+        );
+        assert!(result.is_err());
+
+        let (result, _) = resolve_library_look_spell(
+            "Draw a card.",
+            vec![(LibraryLookKind::Scry, json!({"player": "P0", "cards": []}))],
+        );
+        assert!(result.unwrap_err().contains("unconsumed"));
     }
 
     #[test]
