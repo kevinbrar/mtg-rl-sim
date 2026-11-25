@@ -1032,8 +1032,10 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                 raise TypeError(f"{context}.token must be a boolean")
             labels.add(action["label"])
             label_locations[action["label"]] = (player, "battlefield", action["card"])
-        if action.get("action") == "choose_surveil":
-            context = f"{name}: script[{index}].choose_surveil"
+        if action.get("action") in {"choose_surveil", "choose_scry"}:
+            context = f"{name}: script[{index}].{action['action']}"
+            if action["action"] == "choose_scry" and oracle != "forge":
+                raise ValueError(f"{context} needs a Forge-oracle suite")
             unknown = action.keys() - {"action", "player", "cards"}
             if unknown:
                 raise ValueError(f"{context}.{min(unknown)} is unsupported")
@@ -1447,6 +1449,7 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
         "choose_discard",
         "choose_mana",
         "choose_outside_game",
+        "choose_scry",
         "choose_surveil",
         "copy_choice",
         "copy_targets",
