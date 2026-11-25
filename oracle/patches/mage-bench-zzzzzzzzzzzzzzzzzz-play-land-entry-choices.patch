@@ -1,8 +1,8 @@
 diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-index cb0c063e..90e7a1f0 100644
+index cb0c063e..2acc540c 100644
 --- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
 +++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
-@@ -49,10 +49,11 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -49,10 +49,12 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
      private static final Gson GSON = new GsonBuilder().serializeNulls().create();
      private static final String RESULT_PREFIX = "CARD_SCENARIO_RESULT:";
      private static final Set<String> REACH_FIELDS = Set.of(
@@ -12,18 +12,21 @@ index cb0c063e..90e7a1f0 100644
              "tapped", "attached_to", "counters", "solved"
      );
 +    private final List<Runnable> afterExecute = new ArrayList<>();
++    private final List<Runnable> beforeExecute = new ArrayList<>();
      private final String scenarioName;
      private final JsonObject scenario;
      private final Map<String, UUID> labels = new LinkedHashMap<>();
-@@ -127,6 +128,7 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -126,7 +128,9 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+         player(0).setStrictCardChoiceQueue(true);
          player(1).setStrictCardChoiceQueue(true);
          setStopAt(finalTurn, finalStep);
++        beforeExecute.forEach(Runnable::run);
          execute();
 +        afterExecute.forEach(Runnable::run);
          for (int index = 0; index < 2; index++) {
              if (!player(index).getTargets().isEmpty()) {
                  throw new IllegalStateException("target group(s) were unconsumed when the script ended: "
-@@ -268,27 +270,62 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -268,27 +272,70 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
                              actingPlayer.addCardChoiceGroupFirst(List.of(behold));
                          }
                      });
@@ -69,12 +72,20 @@ index cb0c063e..90e7a1f0 100644
 -                                            "beholding a hand card moved it out of the hand");
 -                                }
 -                            });
++                    // Choices are queued for the whole script before it runs, so
++                    // answers scripted for later actions are still queued when
++                    // this land has been played.
++                    int queuedThroughThisLand = actingPlayer.getChoices().size();
++                    int[] queuedForLaterActions = {0};
++                    beforeExecute.add(() -> queuedForLaterActions[0] =
++                            actingPlayer.getChoices().size() - queuedThroughThisLand);
 +                    boolean paysLife = action.has("pay_life") && action.get("pay_life").getAsBoolean();
 +                    if (paysLife) {
 +                        // A life payment can end the game, after which no queued
 +                        // action runs; check consumption once execution is over.
 +                        afterExecute.add(() -> {
-+                            if (!actingPlayer.getChoices().isEmpty()) {
++                            int expectedLeft = actingPlayer.hasLost() ? queuedForLaterActions[0] : 0;
++                            if (actingPlayer.getChoices().size() != expectedLeft) {
 +                                throw new IllegalStateException(
 +                                        "play_land choice was provided but not consumed: "
 +                                                + actingPlayer.getChoices());
@@ -83,7 +94,7 @@ index cb0c063e..90e7a1f0 100644
 +                    } else {
 +                        runCode("assert play_land choice was consumed", turn, step, actingPlayer,
 +                                (info, player, game) -> {
-+                                    if (!actingPlayer.getChoices().isEmpty()) {
++                                    if (actingPlayer.getChoices().size() != queuedForLaterActions[0]) {
 +                                        throw new IllegalStateException(
 +                                                "play_land choice was provided but not consumed: "
 +                                                        + actingPlayer.getChoices());
@@ -106,7 +117,7 @@ index cb0c063e..90e7a1f0 100644
                      lastStep = step;
                  }
                  case "cast" -> {
-@@ -1064,6 +1101,24 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -1064,6 +1111,24 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
              projection.add("legal_targets", legalTargets);
          }
          projection.addProperty("reach", reached);
@@ -131,7 +142,7 @@ index cb0c063e..90e7a1f0 100644
          JsonObject result = new JsonObject();
          result.addProperty("scenario", scenarioName);
          result.add("projection", projection);
-@@ -1163,6 +1218,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
+@@ -1163,6 +1228,13 @@ public final class CardScenarioProjectionTest extends CardTestPlayerBase {
              rejectUnknownKeys(reach, Set.of("player", "life"), "reach.life");
              return player.getLife() == reach.get("life").getAsInt();
          }
