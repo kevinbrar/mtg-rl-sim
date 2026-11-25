@@ -2448,7 +2448,7 @@ battlefield = [{{ label = "rip", card = "Rest in Peace" }}]
 
 def test_load_specs_accepts_blocks_and_replacement_sources() -> None:
     specs = load_specs([Path("oracle/scenarios/rest-in-peace.toml")])
-    assert len(specs["scenarios"]) == 5
+    assert len(specs["scenarios"]) == 6
 
 
 def test_load_specs_rejects_invalid_single_entity_choice(tmp_path: Path) -> None:
