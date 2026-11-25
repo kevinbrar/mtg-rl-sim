@@ -1,4 +1,4 @@
-From 2b10c0d72b5e6fc218f4d2db984dcae116463986 Mon Sep 17 00:00:00 2001
+From 969e085287bce53260fdc80678b6e059d689b419 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Wed, 25 Nov 2026 12:30:14 +0000
 Subject: [PATCH] Keep a state-based action's replacement choice open after
@@ -17,17 +17,17 @@ with them.
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
- crates/engine/src/game/combat_damage.rs       |  49 ++++-
+ crates/engine/src/game/combat_damage.rs       |  47 ++++-
  crates/engine/tests/integration/main.rs       |   1 +
  .../sba_death_replacement_choice_in_combat.rs | 176 ++++++++++++++++++
- 3 files changed, 224 insertions(+), 2 deletions(-)
+ 3 files changed, 222 insertions(+), 2 deletions(-)
  create mode 100644 crates/engine/tests/integration/sba_death_replacement_choice_in_combat.rs
 
 diff --git a/crates/engine/src/game/combat_damage.rs b/crates/engine/src/game/combat_damage.rs
-index 5050880ca..d2031f501 100644
+index 5050880ca..36006b2f4 100644
 --- a/crates/engine/src/game/combat_damage.rs
 +++ b/crates/engine/src/game/combat_damage.rs
-@@ -95,6 +95,28 @@ fn process_combat_damage_triggers(
+@@ -95,6 +95,26 @@ fn process_combat_damage_triggers(
      ) {
          return;
      }
@@ -40,12 +40,10 @@ index 5050880ca..d2031f501 100644
 +    // CR 603.2c: this step and the steps before it in the same pass collected
 +    // their own ordinary triggers, so the pass's events are claimed from the
 +    // post-action collector.
-+    if state.pending_replacement.is_some()
-+        && matches!(
-+            state.waiting_for,
-+            crate::types::game_state::WaitingFor::ReplacementChoice { .. }
-+        )
-+    {
++    if matches!(
++        pending_combat_damage_waiting(state),
++        Some(WaitingFor::ReplacementChoice { .. })
++    ) {
 +        state.deferred_triggers.extend(pending);
 +        // CR 603.7: delayed abilities that triggered on these events wait in
 +        // the same queue; no later scan sees the damage events again.
@@ -56,7 +54,7 @@ index 5050880ca..d2031f501 100644
      // CR 800.4a: If combat-damage SBAs eliminated a player before this
      // collect-only batch is put on the stack, drop triggers controlled by that
      // player before constructing the APNAP ordering pass.
-@@ -441,9 +463,11 @@ fn claim_combat_lifelink_batch_events_for_ordinary_collection(
+@@ -441,9 +461,11 @@ fn claim_combat_lifelink_batch_events_for_ordinary_collection(
      triggers::claim_events_for_ordinary_collection(state, events, event_start);
  }
  
@@ -70,7 +68,7 @@ index 5050880ca..d2031f501 100644
  /// states of the combat-damage resolver, so callers must receive them rather than
  /// replacing them with a fresh priority window.
  fn pending_combat_damage_waiting(state: &GameState) -> Option<WaitingFor> {
-@@ -451,6 +475,10 @@ fn pending_combat_damage_waiting(state: &GameState) -> Option<WaitingFor> {
+@@ -451,6 +473,10 @@ fn pending_combat_damage_waiting(state: &GameState) -> Option<WaitingFor> {
          WaitingFor::OrderTriggers { .. } | WaitingFor::GameOver { .. } => {
              Some(state.waiting_for.clone())
          }
@@ -81,7 +79,7 @@ index 5050880ca..d2031f501 100644
          _ => None,
      }
  }
-@@ -6094,4 +6122,21 @@ mod tests {
+@@ -6094,4 +6120,21 @@ mod tests {
          assert_eq!(runner.state().objects[&cadet_2].zone, Zone::Graveyard);
          assert_eq!(combat_damage_steps(&runner), 2);
      }
