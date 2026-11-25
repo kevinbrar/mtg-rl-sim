@@ -134,3 +134,38 @@ all = [
   { player = "P0", life = 20 },
   { player = "P1", life = 20 },
 ]
+
+[[scenarios]]
+name = "RIP5 a combat damage trigger beside the replacement choices resolves once"
+active_player = 0
+step = "precombat_main"
+script = [
+  { action = "choose_replacement", player = "P0", source = "rip.p0" },
+  { action = "choose_replacement", player = "P1", source = "rip.p1" },
+  { action = "attack", attackers = ["thief", "attacker"], through = "damage", blocks = [{ blocker = "blocker", attacker = "attacker" }] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+library_top = ["Island", "Island", "Island"]
+battlefield = [
+  { label = "thief", card = "Scroll Thief" },
+  { label = "attacker", card = "Centaur Courser" },
+  { label = "rip.p0", card = "Rest in Peace" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "blocker", card = "Centaur Courser" },
+  { label = "rip.p1", card = "Rest in Peace" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "exile", player = "P0", card = "Centaur Courser", count = 1 },
+  { zone = "exile", player = "P1", card = "Centaur Courser", count = 1 },
+  { zone = "hand", player = "P0", card = "Island", count = 1 },
+  { zone = "library", player = "P0", card = "Island", count = 2 },
+  { player = "P0", life = 20 },
+  { player = "P1", life = 19 },
+]

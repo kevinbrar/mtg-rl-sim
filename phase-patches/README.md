@@ -62,9 +62,12 @@
 - `process_combat_damage_triggers` stops at that prompt: the collected triggers
   go to `deferred_triggers` and the pass's events are claimed with
   `claim_events_for_ordinary_collection`, so the post-action collector does not
-  collect them a second time (CR 603.2c, CR 603.3b).
+  collect them a second time (CR 603.2c, CR 603.3b). Delayed abilities that
+  triggered on those events are parked with them
+  (`collect_delayed_trigger_contexts_into_deferred`, CR 603.7).
 - Test: `sba_death_replacement_choice_in_combat.rs` (two Rest in Peace, a 1/1
-  trade, each creature with a combat-damage trigger).
+  trade, each creature with a combat-damage trigger; the same board with
+  Hunter's Insight on an unblocked attacker).
 - Runtime-only; no parser or card-data change.
 
 ## Patch 0045 — player loss is checked after a resolution or replacement finishes
