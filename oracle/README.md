@@ -139,7 +139,9 @@ targets fail closed in Phase, XMage, and Forge.
 identify the exact setup-labeled card, and the selected engine must offer that
 object as a legal cast from the requested zone.
 
-`expect = "refused"` is valid only on `cast` and `activate` steps. The runners
+`expect = "refused"` is valid on `cast` and `activate` steps and, in
+Forge-oracle suites, on `choose_copies` and `trigger_targets` (see below). On
+`cast` and `activate` the runners
 preserve normal label, priority, zone, and ability preconditions, attempt the
 action through the engine, and require the state projection to remain unchanged
 when the engine declines it. Accepted actions and refusals that change state
@@ -150,6 +152,31 @@ Hand casts select the first card with the matching name, including expected-
 refused casts, because same-named cards in hand are interchangeable. Graveyard
 casts use setup labels to identify the specific object; ordinary graveyard casts
 retain the original setup-zone validation.
+
+On `choose_copies` and `trigger_targets`, `expect = "refused"` marks the last
+entry of `cards` / `targets` as a pick the engine must refuse after the earlier
+entries were accepted; the earlier entries are then applied as the real choice.
+Phase submits the whole `choose_copies` selection, requires the engine to
+reject it with the prompt and projection unchanged, and then submits the
+accepted prefix. For `trigger_targets`, Phase requires that no further target
+slot offers the refused target. Forge requires that the refused card is not
+offered by the next copy prompt (or that the effect stops asking and the card
+stays in exile), and that the refused target exceeds the ability's target
+maximum or is not a legal target. An entry that the engine would accept fails
+the scenario. The refused entry must also be legal on its own, so that the
+earlier entries are what make it illegal: Phase requires a cloned state to
+accept the refused card alone and the first target slot to offer the refused
+target; Forge requires the first copy prompt to offer the refused card and the
+ability to accept the refused target before any target is chosen. A refused
+step therefore needs at least one accepted entry, no `@skip`, and no repeated
+entry. Limits: the checks assume an "up to N of one kind" prompt (Phase looks
+for the refused target in the first slot), "legal on its own" means
+selectable or offered, not proven castable, a player (`@P0`/`@P1`) cannot be
+the refused entry, and in Forge the refused target must be a permanent that
+started on the battlefield (a label for a card that changed zones during the
+script fails closed). The script index is recorded in `refusals` like an action-level
+refusal. The XMage runner does not implement this, so the loader rejects it
+outside Forge-oracle suites.
 
 During an expected-refusal attempt only, a card-selection prompt raised while
 paying a recognized monotone cost may be answered with every legal candidate

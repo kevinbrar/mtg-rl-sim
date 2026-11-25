@@ -2424,8 +2424,62 @@ script = [{action}]
     ("action", "error"),
     [
         (
+            '{ action = "choose_copies", source = "s", cards = [], expect = "refused" }',
+            "needs the refused entry last in cards",
+        ),
+        (
+            '{ action = "trigger_targets", targets = ["a", "@skip"], expect = "refused" }',
+            "needs the refused entry last in targets",
+        ),
+        (
+            '{ action = "trigger_targets", targets = ["a", "@skip", "b"], expect = "refused" }',
+            "cannot be combined with @skip",
+        ),
+        (
+            '{ action = "trigger_targets", targets = ["a"], expect = "refused" }',
+            "needs an accepted entry before the refused entry",
+        ),
+        (
+            '{ action = "trigger_targets", targets = ["a", "b", "a"], expect = "refused" }',
+            "cannot repeat entries in targets",
+        ),
+        (
+            '{ action = "choose_copies", player = "P0", source = "s", cards = ["a", "b"], bogus = 1, expect = "refused" }',
+            "choose_copies",
+        ),
+    ],
+)
+def test_load_specs_rejects_refused_choice_without_a_refused_entry(
+    tmp_path: Path, action: str, error: str
+) -> None:
+    spec = tmp_path / "refused-choice.toml"
+    spec.write_text(
+        f"""
+oracle = "forge"
+
+[[scenarios]]
+name = "refused choice"
+script = [{action}]
+
+[scenarios.setup.P0]
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=error):
+        load_specs([spec])
+
+
+@pytest.mark.parametrize(
+    ("action", "error"),
+    [
+        (
             '{ action = "pass_until_resolved", expect = "refused" }',
-            "expect is only valid for cast or activate",
+            "expect is only valid for cast, activate, choose_copies",
+        ),
+        (
+            '{ action = "trigger_targets", targets = ["a", "b"], expect = "refused" }',
+            "on trigger_targets needs a Forge-oracle suite",
         ),
         (
             '{ action = "cast", card = "spell", expect = "accepted" }',
@@ -2610,3 +2664,9 @@ def test_refusal_cost_prompts_are_required_but_not_compared() -> None:
         "Forge",
     )
     assert errors == ["Forge scenario S1 has missing or invalid refusal_cost_prompts"]
+
+
+def test_every_repository_suite_loads() -> None:
+    paths = sorted((Path(__file__).parents[1] / "oracle/scenarios").glob("*.toml"))
+
+    assert set(load_specs(paths)["suite_oracles"].values()) == {"xmage", "forge"}

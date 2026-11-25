@@ -48,6 +48,8 @@ struct CopyCastChoice {
     player: PlayerId,
     source: ObjectId,
     cards: Vec<ObjectId>,
+    /// Script index when the last card is expected to be refused.
+    refused: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -62,7 +64,21 @@ struct OptionalChoice {
     source: Option<ObjectId>,
 }
 
-type TriggerTargetGroup = Vec<Option<ObjectId>>;
+#[derive(Clone, Debug, PartialEq)]
+struct TriggerTargetGroup {
+    targets: Vec<Option<ObjectId>>,
+    /// Script index when the last target is expected to be refused.
+    refused: Option<usize>,
+}
+
+impl From<Vec<Option<ObjectId>>> for TriggerTargetGroup {
+    fn from(targets: Vec<Option<ObjectId>>) -> Self {
+        Self {
+            targets,
+            refused: None,
+        }
+    }
+}
 
 fn card_name(state: &GameState, id: ObjectId) -> String {
     state.objects.get(&id).expect("object exists").name.clone()
@@ -405,9 +421,12 @@ fn script_expected_refusal(action: &Value, index: usize) -> Result<bool, String>
     if expected.as_str() != Some("refused") {
         return Err(format!("script[{index}].expect must be 'refused'"));
     }
-    if !matches!(action["action"].as_str(), Some("cast" | "activate")) {
+    if !matches!(
+        action["action"].as_str(),
+        Some("cast" | "activate" | "choose_copies" | "trigger_targets")
+    ) {
         return Err(format!(
-            "script[{index}].expect is only valid for cast or activate"
+            "script[{index}].expect is only valid for cast, activate, choose_copies or trigger_targets"
         ));
     }
     if action.get("sacrifice").is_some()
@@ -501,6 +520,7 @@ fn script_player(action: &Value, action_name: &str) -> Result<PlayerId, String> 
 fn parse_copy_cast_choice(
     action: &Value,
     labels: &HashMap<ObjectId, String>,
+    refused: Option<usize>,
 ) -> Result<CopyCastChoice, String> {
     let player = script_player(action, "choose_copies")?;
     let source_label = action
@@ -512,10 +532,16 @@ fn parse_copy_cast_choice(
     if cards.iter().copied().collect::<HashSet<_>>().len() != cards.len() {
         return Err("choose_copies.cards cannot repeat labels".to_string());
     }
+    if refused.is_some() && cards.len() < 2 {
+        return Err(
+            "refused choose_copies needs an accepted card before the refused card".to_string(),
+        );
+    }
     Ok(CopyCastChoice {
         player,
         source,
         cards,
+        refused,
     })
 }
 
@@ -860,6 +886,8 @@ fn ensure_trigger_orders_consumed(orders: &VecDeque<TriggerOrderChoice>) -> Resu
 struct DiscardChoiceReconciler {
     pending_events: Vec<GameEvent>,
     trigger_orders: VecDeque<TriggerOrderChoice>,
+    /// Script indices of `expect = "refused"` choices the engine refused.
+    choice_refusals: Vec<usize>,
 }
 
 enum ClassifiedActError {
@@ -1294,10 +1322,60 @@ fn apply_card_choice_group(
                 if choice.source != source_id {
                     return Err("choose_copies prompt came from a different source".to_string());
                 }
-                copy_cast_choices
+                let choice = copy_cast_choices
                     .pop_front()
-                    .expect("front copy-cast choice was present")
-                    .cards
+                    .expect("front copy-cast choice was present");
+                match choice.refused {
+                    Some(index) => {
+                        validate_card_choice_group(&choice.cards, &cards, 0, count, labels)?;
+                        let (refused_card, accepted) = choice
+                            .cards
+                            .split_last()
+                            .filter(|(_, accepted)| !accepted.is_empty())
+                            .ok_or("refused choose_copies needs an accepted card first")?;
+                        // Only a card the engine accepts on its own shows that the
+                        // accepted cards caused the refusal.
+                        if GameRunner::from_state(runner.state().clone())
+                            .act(GameAction::SelectCards {
+                                cards: vec![*refused_card],
+                            })
+                            .is_err()
+                        {
+                            return Err(format!(
+                                "script[{index}] choose_copies refused card is not selectable on its own"
+                            ));
+                        }
+                        let accepted = accepted.to_vec();
+                        let before = project(runner.state(), labels, None, true);
+                        let prompt = runner.state().waiting_for.clone();
+                        if runner
+                            .act(GameAction::SelectCards {
+                                cards: choice.cards.clone(),
+                            })
+                            .is_ok()
+                        {
+                            return Err(format!(
+                                "script[{index}] choose_copies was accepted but expected refused"
+                            ));
+                        }
+                        if runner.state().waiting_for != prompt {
+                            return Err(format!(
+                                "script[{index}] refused choose_copies changed the prompt"
+                            ));
+                        }
+                        let after = project(runner.state(), labels, None, true);
+                        record_refusal(
+                            index,
+                            "choose_copies",
+                            RefusalMode::OfferedThenErr,
+                            &before,
+                            &after,
+                            &mut discard_reconciler.choice_refusals,
+                        )?;
+                        accepted
+                    }
+                    None => choice.cards,
+                }
             } else {
                 take_card_choice_group(
                     groups,
@@ -2518,6 +2596,24 @@ fn apply_trigger_target_group(
         .pending_trigger_entry
         .ok_or("trigger target prompt has no pending stack entry")?;
     let group = take_trigger_target_group(groups)?;
+    let (group, refused) = match group.refused {
+        Some(index) => {
+            let (last, accepted) = group
+                .targets
+                .split_last()
+                .ok_or("refused trigger_targets needs the refused target last")?;
+            let last = last.ok_or("refused trigger_targets cannot end with @skip")?;
+            if accepted.is_empty() {
+                return Err("refused trigger_targets needs an accepted target first".to_string());
+            }
+            if accepted.contains(&None) {
+                // A skipped slot could hide a slot that offers the refused target.
+                return Err("refused trigger_targets cannot contain @skip".to_string());
+            }
+            (accepted.to_vec(), Some((index, TargetRef::Object(last))))
+        }
+        None => (group.targets, None),
+    };
     let mut target_index = 0;
     loop {
         let WaitingFor::TriggerTargetSelection {
@@ -2534,6 +2630,26 @@ fn apply_trigger_target_group(
         let slot = target_slots
             .get(selection.current_slot)
             .ok_or("trigger target slot is missing")?;
+        if target_index == 0 {
+            if let Some((index, target)) = &refused {
+                // Only a target that is legal on its own shows that the accepted
+                // targets caused the refusal.
+                if !slot.legal_targets.contains(target) {
+                    return Err(format!(
+                        "script[{index}] trigger_targets refused target is not legal on its own"
+                    ));
+                }
+            }
+        }
+        if target_index >= group.len() {
+            if let Some((index, target)) = &refused {
+                if slot.legal_targets.contains(target) {
+                    return Err(format!(
+                        "script[{index}] trigger_targets last target was offered but expected refused"
+                    ));
+                }
+            }
+        }
         let (target, consume_choice) = match group.get(target_index).copied() {
             Some(None) if !slot.optional => {
                 return Err(format!(
@@ -2573,7 +2689,12 @@ fn apply_trigger_target_group(
             target_index += 1;
         }
     }
-    ensure_trigger_target_group_consumed(group.len(), target_index)
+    ensure_trigger_target_group_consumed(group.len(), target_index)?;
+    if let Some((index, _)) = refused {
+        eprintln!("Phase refusal: script[{index}] trigger_targets: no longer a legal target");
+        discard_reconciler.choice_refusals.push(index);
+    }
+    Ok(())
 }
 
 fn take_trigger_target_group(
@@ -4755,7 +4876,10 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 if targets.is_empty() {
                     return Err("trigger_targets needs at least one target".to_string());
                 }
-                trigger_target_groups.push_back(targets);
+                trigger_target_groups.push_back(TriggerTargetGroup {
+                    targets,
+                    refused: expect_refused.then_some(action_index),
+                });
             }
             "graveyard_targets" => {
                 graveyard_target_choices.push_back(parse_target_script_choice(
@@ -4802,7 +4926,11 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 card_choice_groups.push_back(resolve_card_choice_labels(action, &labels)?);
             }
             "choose_copies" => {
-                copy_cast_choices.push_back(parse_copy_cast_choice(action, &labels)?);
+                copy_cast_choices.push_back(parse_copy_cast_choice(
+                    action,
+                    &labels,
+                    expect_refused.then_some(action_index),
+                )?);
             }
             "choose_discard" => {
                 let (player, choice) = parse_discard_choice(action, &labels)?;
@@ -4900,6 +5028,8 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
         return Err("attack action was not followed by pass_until_resolved".to_string());
     }
     let reached = check_reach(runner.state(), &labels, spec.get("reach"))?;
+    refusals.extend(std::mem::take(&mut discard_reconciler.choice_refusals));
+    refusals.sort_unstable();
     Ok(json!({
         "scenario": name,
         "projection": project(runner.state(), &labels, legal, reached),
@@ -6279,6 +6409,54 @@ mod tests {
     }
 
     #[test]
+    fn expected_refusal_is_limited_to_actions_and_refusable_choices() {
+        for action in ["cast", "activate", "choose_copies", "trigger_targets"] {
+            let script = json!({ "action": action, "expect": "refused" });
+            assert_eq!(script_expected_refusal(&script, 0), Ok(true));
+        }
+        let plain = json!({ "action": "choose_copies" });
+        assert_eq!(script_expected_refusal(&plain, 0), Ok(false));
+        let unsupported = json!({ "action": "choose_cards", "expect": "refused" });
+        assert!(script_expected_refusal(&unsupported, 2)
+            .unwrap_err()
+            .contains("script[2].expect is only valid for"));
+    }
+
+    #[test]
+    fn refused_copy_choice_needs_a_refused_card() {
+        let source = ObjectId(7);
+        let card = ObjectId(8);
+        let labels = HashMap::from([
+            (source, "source".to_string()),
+            (card, "grave.card".to_string()),
+        ]);
+        let empty =
+            json!({ "action": "choose_copies", "player": "P0", "source": "source", "cards": [] });
+        assert!(parse_copy_cast_choice(&empty, &labels, Some(3))
+            .unwrap_err()
+            .contains("needs an accepted card before the refused card"));
+        assert_eq!(
+            parse_copy_cast_choice(&empty, &labels, None)
+                .unwrap()
+                .refused,
+            None
+        );
+        let one = json!({
+            "action": "choose_copies", "player": "P0", "source": "source", "cards": ["grave.card"]
+        });
+        assert!(parse_copy_cast_choice(&one, &labels, Some(3))
+            .unwrap_err()
+            .contains("needs an accepted card before the refused card"));
+        let two = json!({
+            "action": "choose_copies", "player": "P0", "source": "source",
+            "cards": ["source", "grave.card"]
+        });
+        let choice = parse_copy_cast_choice(&two, &labels, Some(3)).unwrap();
+        assert_eq!(choice.cards, vec![source, card]);
+        assert_eq!(choice.refused, Some(3));
+    }
+
+    #[test]
     fn trigger_target_groups_fail_closed_when_empty_illegal_or_unconsumed() {
         let mut groups = VecDeque::new();
         assert!(take_trigger_target_group(&mut groups)
@@ -6288,14 +6466,17 @@ mod tests {
         let target = ObjectId(17);
         let labels = HashMap::from([(target, "p1.creature".to_string())]);
         let second_target = ObjectId(18);
-        let mut groups = VecDeque::from(vec![vec![Some(target)], vec![Some(second_target)]]);
+        let mut groups = VecDeque::from(vec![
+            TriggerTargetGroup::from(vec![Some(target)]),
+            TriggerTargetGroup::from(vec![Some(second_target)]),
+        ]);
         assert_eq!(
             take_trigger_target_group(&mut groups),
-            Ok(vec![Some(target)])
+            Ok(vec![Some(target)].into())
         );
         assert_eq!(
             take_trigger_target_group(&mut groups),
-            Ok(vec![Some(second_target)])
+            Ok(vec![Some(second_target)].into())
         );
 
         assert!(
@@ -6310,7 +6491,7 @@ mod tests {
             .unwrap_err()
             .contains("used 1"));
 
-        let groups = VecDeque::from(vec![vec![Some(target)]]);
+        let groups = VecDeque::from(vec![TriggerTargetGroup::from(vec![Some(target)])]);
         assert!(ensure_trigger_target_groups_consumed(&groups)
             .unwrap_err()
             .contains("unconsumed"));
@@ -6724,7 +6905,7 @@ mod tests {
     #[test]
     fn targeted_cast_rejects_pending_trigger_target_groups() {
         let action = json!({"action": "cast", "targets": ["artifact"]});
-        let groups = VecDeque::from([vec![Some(ObjectId(17))]]);
+        let groups = VecDeque::from([TriggerTargetGroup::from(vec![Some(ObjectId(17))])]);
 
         assert_eq!(
             ensure_targeted_cast_has_no_pending_trigger_targets(&action, &groups),
@@ -6737,7 +6918,7 @@ mod tests {
 
     #[test]
     fn targeted_cast_order_guard_allows_untargeted_actions_or_empty_queue() {
-        let groups = VecDeque::from([vec![Some(ObjectId(17))]]);
+        let groups = VecDeque::from([TriggerTargetGroup::from(vec![Some(ObjectId(17))])]);
         assert!(ensure_targeted_cast_has_no_pending_trigger_targets(
             &json!({"action": "cast"}),
             &groups
@@ -7208,7 +7389,7 @@ mod tests {
                     (first_target, "first".to_string()),
                     (second_target, "second".to_string()),
                 ]);
-                let mut groups = VecDeque::from(vec![vec![Some(first_target)], vec![Some(second_target)]]);
+                let mut groups = VecDeque::from(vec![TriggerTargetGroup::from(vec![Some(first_target)]), TriggerTargetGroup::from(vec![Some(second_target)])]);
                 let (mut discard_reconciler, mut discard_choices) = empty_discard_context();
 
                 runner.cast(entering_creature).commit();

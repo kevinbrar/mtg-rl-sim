@@ -406,3 +406,64 @@ all = [
   { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.1", tapped = false, counters = { stun = 0 } },
   { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.2", tapped = false, counters = { stun = 0 } },
 ]
+
+[[scenarios]]
+# "Up to that many": one nonland card was discarded, so a second target is refused.
+name = "C8-one-nonland-second-target-refused"
+active_player = 0
+step = "precombat_main"
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "mana.1", card = "Island", tapped = true },
+  { label = "mana.2", card = "Island", tapped = true },
+  { label = "mana.3", card = "Island", tapped = true },
+]
+mana_pool = [
+  { color = "U", source = "mana.1" },
+  { color = "U", source = "mana.2" },
+  { color = "U", source = "mana.3" },
+]
+hand = ["Seasoned Cryomancer"]
+library_top = [
+  { label = "draw.land", card = "Island" },
+  { label = "draw.nonland", card = "Opt" },
+]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "bear.1", card = "Grizzly Bears" },
+  { label = "bear.2", card = "Grizzly Bears" },
+]
+
+[[scenarios.script]]
+action = "choose_mana"
+player = "P0"
+sources = ["mana.1", "mana.2", "mana.3"]
+
+[[scenarios.script]]
+action = "cast"
+player = "P0"
+card = "Seasoned Cryomancer"
+
+[[scenarios.script]]
+action = "choose_discard"
+player = "P0"
+cards = ["draw.land", "draw.nonland"]
+
+[[scenarios.script]]
+action = "trigger_targets"
+targets = ["bear.1", "bear.2"]
+expect = "refused"
+
+[[scenarios.script]]
+action = "pass_until_resolved"
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P0", card = "Seasoned Cryomancer", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Island", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Opt", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.1", tapped = true, counters = { stun = 1 } },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", label = "bear.2", tapped = false, counters = { stun = 0 } },
+]
