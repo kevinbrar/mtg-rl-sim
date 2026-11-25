@@ -17,3 +17,7 @@ im = "15.1"
 name = "oracle-scenario"
 path = "src/bin/oracle-scenario.rs"
 required-features = ["oracle-scenario"]
+
+[[bin]]
+name = "invariant-fuzz"
+path = "src/bin/invariant-fuzz.rs"

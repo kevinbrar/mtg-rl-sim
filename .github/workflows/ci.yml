@@ -546,6 +546,9 @@ jobs:
           test -s "runs/card-scenarios/ci-${GITHUB_RUN_ID}/forge-surefire-report.xml"
           test -s "runs/card-scenarios/ci-${GITHUB_RUN_ID}/forge-projection.json"
           test -s "runs/card-scenarios/ci-${GITHUB_RUN_ID}/known-diffs-report.json"
+      - name: Run invariant fuzz games
+        if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
+        run: python scripts/run_invariant_fuzz.py --games 5 --outdir "runs/fuzz/ci-${GITHUB_RUN_ID}"
       - name: Run two-seed mono-green differential smoke
         if: steps.scope.outputs.mode == 'smoke' || steps.scope.outputs.mode == 'per-card'
         env:
