@@ -1,4 +1,4 @@
-From 5a606ee5c11002c21b2870f8ae1214fcdfab000b Mon Sep 17 00:00:00 2001
+From 33c31495657d02f8e729e919649558812eb74576 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Wed, 25 Nov 2026 06:21:01 +0000
 Subject: [PATCH] Check player loss only after a resolution or replacement
@@ -30,13 +30,14 @@ after the scry that ends that resolution.
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
  crates/engine/src/game/engine.rs              |  16 +-
+ crates/engine/src/game/engine_tests.rs        |  40 +++
  crates/engine/src/types/game_state.rs         |  21 +-
  crates/engine/src/types/resolution.rs         |   8 +
  .../as_enters_life_payment_to_zero.rs         | 230 ++++++++++++++++++
  crates/engine/tests/integration/main.rs       |   1 +
  .../resolution_optional_payments.rs           |  46 ++--
  .../integration/yenna_aura_token_copy.rs      |  12 +
- 7 files changed, 312 insertions(+), 22 deletions(-)
+ 8 files changed, 352 insertions(+), 22 deletions(-)
  create mode 100644 crates/engine/tests/integration/as_enters_life_payment_to_zero.rs
 
 diff --git a/crates/engine/src/game/engine.rs b/crates/engine/src/game/engine.rs
@@ -66,6 +67,57 @@ index a969c9b53..ab6a351a8 100644
          sba::check_state_based_actions(state, &mut result.events);
          // SBA may have advanced waiting_for (e.g., GameOver, or Priority for
          // the next living player). Sync the result.
+diff --git a/crates/engine/src/game/engine_tests.rs b/crates/engine/src/game/engine_tests.rs
+index 1405c3edf..ad6d582ef 100644
+--- a/crates/engine/src/game/engine_tests.rs
++++ b/crates/engine/src/game/engine_tests.rs
+@@ -551,6 +551,46 @@ fn terminal_reconcile_runs_player_loss_sba_for_unprotected_player() {
+     ));
+ }
+ 
++/// CR 704.3 + CR 704.4: the same 0-life player is not judged while a spell or
++/// ability is still resolving, and is judged once it has finished.
++#[test]
++fn terminal_reconcile_waits_for_a_resolving_stack_entry() {
++    let mut state = GameState::new_two_player(42);
++    state.players[0].life = 0;
++    state.waiting_for = WaitingFor::DiscardChoice {
++        player: PlayerId(0),
++        count: 1,
++        cards: Vec::new(),
++        source_id: ObjectId(999),
++        effect_kind: EffectKind::DiscardCard,
++        up_to: false,
++        unless_filter: None,
++        discard_frame: None,
++    };
++    state.resolving_stack_entry = Some(no_op_stack_entry(998, PlayerId(0)));
++    let mut result = ActionResult::applied(Vec::new(), state.waiting_for.clone());
++
++    reconcile_terminal_result(&mut state, &mut result);
++
++    assert!(!state.players[0].is_eliminated);
++    assert!(matches!(
++        result.waiting_for,
++        WaitingFor::DiscardChoice { .. }
++    ));
++
++    state.resolving_stack_entry = None;
++    reconcile_terminal_result(&mut state, &mut result);
++
++    assert!(state.players[0].is_eliminated);
++    assert!(matches!(
++        result.waiting_for,
++        WaitingFor::GameOver {
++            winner: Some(PlayerId(1)),
++            ..
++        }
++    ));
++}
++
+ /// Create a DealDamage ability for testing.
+ fn make_damage_ability(amount: i32, cost: Option<AbilityCost>) -> AbilityDefinition {
+     let kind = if cost.is_some() {
 diff --git a/crates/engine/src/types/game_state.rs b/crates/engine/src/types/game_state.rs
 index ef5589840..f2a2ec588 100644
 --- a/crates/engine/src/types/game_state.rs

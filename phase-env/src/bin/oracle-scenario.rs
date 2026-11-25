@@ -196,14 +196,21 @@ fn project(
     }
     // CR 104.1 + CR 104.2a: the game ends immediately when a player has lost.
     // What each engine does with the loser's cards afterwards is not game
-    // state, so a finished game projects the loser's life only, and the zones
-    // of the player still in the game.
-    if state
+    // state: the loser projects as life and `lost` only, and the battlefield
+    // and exile leave out cards the loser owns or controls.
+    let lost = |player: PlayerId| {
+        player.0 < 2
+            && state
+                .players
+                .get(player.0 as usize)
+                .is_some_and(|player| player.is_eliminated)
+    };
+    let any_lost = state
         .players
         .iter()
         .take(2)
-        .any(|player| player.is_eliminated)
-    {
+        .any(|player| player.is_eliminated);
+    if any_lost {
         for (index, player) in state.players.iter().take(2).enumerate() {
             let key = format!("P{index}");
             if player.is_eliminated {
@@ -212,18 +219,15 @@ fn project(
                 fields.insert("lost".to_string(), json!(false));
             }
         }
-        return json!({
-            "game_over": true,
-            "players": players,
-            "legal_targets": legal_targets,
-            "reach": reached,
-        });
     }
     let mut battlefield = state
         .battlefield
         .iter()
         .filter_map(|id| {
             let object = state.objects.get(id)?;
+            if lost(object.owner) || lost(object.controller) {
+                return None;
+            }
             let attached_to = object.attached_to.as_ref().and_then(|target| match target {
                 engine::types::object_data::AttachTarget::Object(host) => {
                     labels.get(host).cloned()
@@ -273,13 +277,23 @@ fn project(
         .collect::<Vec<_>>();
     battlefield
         .sort_by_key(|permanent| permanent["label"].as_str().unwrap_or_default().to_string());
-    json!({
+    let exile = state.exile.iter().copied().filter(|id| {
+        state
+            .objects
+            .get(id)
+            .is_none_or(|object| !lost(object.owner))
+    });
+    let mut projection = json!({
         "players": players,
         "battlefield": battlefield,
-        "exile": names(state, state.exile.iter().copied()),
+        "exile": names(state, exile),
         "legal_targets": legal_targets,
         "reach": reached,
-    })
+    });
+    if any_lost {
+        projection["game_over"] = json!(matches!(state.waiting_for, WaitingFor::GameOver { .. }));
+    }
+    projection
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
