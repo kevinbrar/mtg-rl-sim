@@ -49,17 +49,31 @@ def summarize(reports: dict[str, list[dict]]) -> dict:
     }
 
 
+def check_complete(pair: str, records: list[dict], first_seed: int, games: int):
+    """Fail unless there is exactly one game record per requested seed."""
+    seeds = [record["seed"] for record in records if "seed" in record]
+    if seeds != list(range(first_seed, first_seed + games)):
+        raise RuntimeError(
+            f"{pair}: expected one game per seed {first_seed}..{first_seed + games - 1}, "
+            f"got seeds {seeds}"
+        )
+
+
 def run_pair(binary: Path, data_root: Path, a: Path, b: Path, args, outdir: Path):
     pair = f"{a.stem}--{b.stem}"
     command = [str(binary), str(data_root), str(a), str(b)]
     command += [str(args.first_seed), str(args.games), str(args.known)]
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = subprocess.run(
+        command, capture_output=True, text=True, timeout=args.timeout
+    )
     (outdir / f"{pair}.jsonl").write_text(result.stdout)
     if result.returncode not in (0, 1):
         raise RuntimeError(
             f"{pair}: invariant-fuzz exited {result.returncode}: {result.stderr}"
         )
-    return pair, [json.loads(line) for line in result.stdout.splitlines() if line]
+    records = [json.loads(line) for line in result.stdout.splitlines() if line]
+    check_complete(pair, records, args.first_seed, args.games)
+    return pair, records
 
 
 def main() -> int:
@@ -73,6 +87,9 @@ def main() -> int:
         "--binary", type=Path, default=ROOT / "target/release/invariant-fuzz"
     )
     parser.add_argument("--outdir", type=Path, required=True)
+    parser.add_argument(
+        "--timeout", type=float, default=1800, help="seconds per deck pair"
+    )
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     args = parser.parse_args()
 

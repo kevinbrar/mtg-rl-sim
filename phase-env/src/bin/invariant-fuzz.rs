@@ -165,10 +165,21 @@ fn zone_violations(state: &GameState) -> Vec<String> {
         }
     }
     for (id, object) in state.objects.iter() {
-        let listed = matches!(
-            object.zone,
-            Zone::Hand | Zone::Library | Zone::Graveyard | Zone::Battlefield | Zone::Exile
+        // A resolving spell is off the stack list until its resolution ends,
+        // so a stack object in no list is a fault only between resolutions.
+        let between_resolutions = matches!(
+            state.waiting_for,
+            WaitingFor::Priority { .. } | WaitingFor::GameOver { .. }
         );
+        let listed = match object.zone {
+            Zone::Hand
+            | Zone::Library
+            | Zone::Graveyard
+            | Zone::Battlefield
+            | Zone::Exile
+            | Zone::Command => true,
+            Zone::Stack => between_resolutions,
+        };
         if listed && !seen.contains_key(id) {
             violations.push(format!(
                 "object {} ({}) has zone {:?} but is in no zone list",
@@ -211,6 +222,47 @@ fn waiting_for_name(waiting_for: &WaitingFor) -> String {
         .to_string()
 }
 
+/// Name of the card whose cast or activation opened the current prompt: the
+/// first `object_id` or `source_id` in the serialized prompt. Empty when the
+/// prompt names none, so a signature never matches a different card's prompt.
+fn prompt_source_name(state: &GameState) -> String {
+    fn first_source(value: &Value) -> Option<u64> {
+        match value {
+            Value::Object(map) => ["object_id", "source_id"]
+                .iter()
+                .find_map(|key| map.get(*key).and_then(Value::as_u64))
+                .or_else(|| map.values().find_map(first_source)),
+            Value::Array(items) => items.iter().find_map(first_source),
+            _ => None,
+        }
+    }
+    serde_json::to_value(&state.waiting_for)
+        .ok()
+        .and_then(|value| first_source(&value))
+        .and_then(|id| state.objects.get(&ObjectId(id)))
+        .map(|object| object.name.clone())
+        .unwrap_or_default()
+}
+
+/// The part of an action that distinguishes one offer from another without
+/// naming objects: scalar fields as `key=value`, lists as `key=#len`.
+fn action_shape(action: &impl serde::Serialize) -> String {
+    let value = serde_json::to_value(action).unwrap_or_default();
+    let Some(data) = value.get("data").and_then(Value::as_object) else {
+        return String::new();
+    };
+    let mut parts: Vec<String> = data
+        .iter()
+        .filter_map(|(key, field)| match field {
+            Value::Bool(_) | Value::String(_) => Some(format!("{key}={field}")),
+            Value::Array(items) => Some(format!("{key}=#{}", items.len())),
+            _ => None,
+        })
+        .collect();
+    parts.sort();
+    parts.join(",")
+}
+
 fn play_game(db: &CardDatabase, decks: &[Vec<String>; 2], seed: u64) -> GameReport {
     let deck_list = DeckList {
         booster_pack_pool: None,
@@ -227,6 +279,16 @@ fn play_game(db: &CardDatabase, decks: &[Vec<String>; 2], seed: u64) -> GameRepo
         draft_set_codes: vec![],
     };
     let payload = resolve_deck_list(db, &deck_list);
+    for (label, resolved, wanted) in [
+        ("first", &payload.player.main_deck, decks[0].len()),
+        ("second", &payload.opponent.main_deck, decks[1].len()),
+    ] {
+        let resolved: usize = resolved.iter().map(|entry| entry.count as usize).sum();
+        assert_eq!(
+            resolved, wanted,
+            "{label} deck: {resolved} of {wanted} cards found in the card data"
+        );
+    }
     let mut state = GameState::new_two_player(seed);
     load_and_hydrate_decks(&mut state, &payload, Some(db));
     start_game_with_starting_player(&mut state, PlayerId((seed % 2) as u8));
@@ -357,10 +419,12 @@ fn play_game(db: &CardDatabase, decks: &[Vec<String>; 2], seed: u64) -> GameRepo
                     .and_then(|value| value["type"].as_str().map(str::to_string))
                     .unwrap_or_default();
                 let signature = format!(
-                    "offered_action_rejected|{}|{action_type}|{:?}|{}",
+                    "offered_action_rejected|{}|{action_type}|{:?}|{}|{}|{}",
                     waiting_for_name(&state.waiting_for),
                     rejection.code,
-                    names.join(";")
+                    names.join(";"),
+                    prompt_source_name(&state),
+                    action_shape(&action_for_signature)
                 );
                 if reported.insert(signature.clone()) {
                     let mut entry = violation("offered_action_rejected", decision, &state, message);
@@ -574,5 +638,33 @@ mod tests {
         let first: Vec<usize> = (0..5).map(|_| a.below(10)).collect();
         assert_eq!(first, (0..5).map(|_| b.below(10)).collect::<Vec<_>>());
         assert!(first.iter().all(|value| *value < 10));
+    }
+
+    #[test]
+    fn a_stack_or_command_object_in_no_list_is_reported() {
+        for zone in [Zone::Stack, Zone::Command] {
+            let (mut state, id) = state_with_hand_card();
+            state.players[0].hand.clear();
+            state.objects.get_mut(&id).unwrap().zone = zone;
+            state.waiting_for = WaitingFor::Priority {
+                player: PlayerId(0),
+            };
+            let violations = zone_violations(&state);
+            assert_eq!(violations.len(), 1, "{zone:?}: {violations:?}");
+            assert!(violations[0].contains("is in no zone list"));
+        }
+    }
+
+    #[test]
+    fn action_shape_separates_branches_and_empty_selections() {
+        let pay = json!({"type": "DecideOptionalCost", "data": {"pay": true}});
+        let decline = json!({"type": "DecideOptionalCost", "data": {"pay": false}});
+        assert_eq!(action_shape(&pay), "pay=true");
+        assert_eq!(action_shape(&decline), "pay=false");
+        let none = json!({"type": "SelectCards", "data": {"cards": []}});
+        let one = json!({"type": "SelectCards", "data": {"cards": [7]}});
+        assert_eq!(action_shape(&none), "cards=#0");
+        assert_eq!(action_shape(&one), "cards=#1");
+        assert_eq!(action_shape(&json!({"type": "PassPriority"})), "");
     }
 }

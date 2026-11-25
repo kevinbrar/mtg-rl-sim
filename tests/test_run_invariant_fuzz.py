@@ -1,4 +1,6 @@
 import importlib.util
+
+import pytest
 from pathlib import Path
 
 SPEC = importlib.util.spec_from_file_location(
@@ -34,3 +36,15 @@ def test_unknown_violation_and_panic_fail_with_pair_and_seed():
         ("a--b", 3, "zone"),
         ("c--d", 9, "panic"),
     ]
+
+
+def test_missing_game_records_fail():
+    with pytest.raises(RuntimeError, match="expected one game per seed 1..2"):
+        fuzz.check_complete("a--b", [{"seed": 1, "violations": []}], 1, 2)
+    with pytest.raises(RuntimeError):
+        fuzz.check_complete("a--b", [{"summary": True}], 1, 1)
+
+
+def test_complete_game_records_pass():
+    records = [{"seed": 3, "violations": []}, {"seed": 4, "violations": []}]
+    fuzz.check_complete("a--b", [*records, {"summary": True}], 3, 2)
