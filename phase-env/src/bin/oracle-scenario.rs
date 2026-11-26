@@ -5335,7 +5335,12 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                         .iter()
                         .find(|entry| entry.id == spell)
                         .and_then(|entry| entry.ability())
-                        .is_some_and(|ability| ability.context.additional_cost_paid);
+                        .map(|ability| ability.context.additional_cost_paid)
+                        .ok_or_else(|| {
+                            format!(
+                                "script[{action_index}] cast.cost_choice could not find {card} on the stack to read the cost it paid"
+                            )
+                        })?;
                     if paid_first != first {
                         return Err(format!(
                             "script[{action_index}] cast.cost_choice = {} but {card} was cast paying its {} cost",
@@ -5367,18 +5372,34 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                         }
                     }
                 }
-                // A cast whose life payment ends the game (CR 704.5a) leaves
-                // no stack entry to read the targets back from.
-                let game_over =
-                    matches!(committed.state().waiting_for, WaitingFor::GameOver { .. });
-                if let Some(decision_slot_count) = target_decision_slot_count.filter(|_| !game_over)
-                {
-                    validate_engine_chosen_cast_targets(
-                        committed.state(),
-                        spell,
-                        &target_slots,
-                        decision_slot_count,
-                    )?;
+                if let Some(decision_slot_count) = target_decision_slot_count {
+                    if matches!(committed.state().waiting_for, WaitingFor::GameOver { .. }) {
+                        // CR 704.5a + CR 800.4a: a cast whose life payment ends
+                        // the game leaves no stack entry; the targets it
+                        // announced are read from its events.
+                        let announced: Vec<TargetRef> = committed
+                            .events()
+                            .iter()
+                            .filter_map(|event| match event {
+                                GameEvent::BecomesTarget {
+                                    target, source_id, ..
+                                } if *source_id == spell => Some(target.clone()),
+                                _ => None,
+                            })
+                            .collect();
+                        validate_cast_target_entries(
+                            &target_slots,
+                            decision_slot_count,
+                            &announced,
+                        )?;
+                    } else {
+                        validate_engine_chosen_cast_targets(
+                            committed.state(),
+                            spell,
+                            &target_slots,
+                            decision_slot_count,
+                        )?;
+                    }
                 }
             }
             "activate" => activate(
