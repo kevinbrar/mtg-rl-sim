@@ -1,0 +1,262 @@
+From 6a5824a7f7cf4aaaf844f0c5404c99f2a81217f2 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Wed, 25 Nov 2026 23:34:48 +0000
+Subject: [PATCH] Keep a dig's routed remainder in the library until its move
+ happens (CR 616.1, CR 701.44a)
+
+A DigChoice that keeps cards on top of the library lifted every looked-at
+card out of the library's list before routing the remainder. When the
+remainder goes to another zone and that move waits on a choice between
+replacement effects, the card was a library object in no zone list. Only a
+remainder routed back into the library is lifted now; the zone pipeline
+removes the others when they move.
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ .../src/game/engine_resolution_choices.rs     |  14 +-
+ ...est_pile_stays_in_library_during_choice.rs | 190 ++++++++++++++++++
+ crates/engine/tests/integration/main.rs       |   1 +
+ 3 files changed, 201 insertions(+), 4 deletions(-)
+ create mode 100644 crates/engine/tests/integration/explore_rest_pile_stays_in_library_during_choice.rs
+
+diff --git a/crates/engine/src/game/engine_resolution_choices.rs b/crates/engine/src/game/engine_resolution_choices.rs
+index 4e53d13cb..d338e6c6d 100644
+--- a/crates/engine/src/game/engine_resolution_choices.rs
++++ b/crates/engine/src/game/engine_resolution_choices.rs
+@@ -4981,15 +4981,21 @@ pub(super) fn handle_resolution_choice(
+                         .iter_mut()
+                         .find(|candidate| candidate.id == holder)
+                         .expect("player exists");
+-                    // CR 701.20e: a ROUTED remainder is lifted out with the kept
+-                    // cards so it can be re-delivered (bottom or another zone). A
++                    // CR 701.20e: a remainder ROUTED to the bottom is lifted out
++                    // with the kept cards so it can be re-delivered there. A
+                     // SILENT remainder is never moved, so only the kept cards leave
+                     // their slots — the unchosen ones keep the positions they
+                     // already had, relative to every card the instruction never
+-                    // touched.
++                    // touched. CR 616.1: a remainder routed to ANOTHER zone also
++                    // stays where it is; the zone-change pipeline below takes each
++                    // card out of the library when its move happens, so a card
++                    // whose move is waiting on a CR 616.1 choice is still in the
++                    // library's list.
++                    let lift_remainder =
++                        rest_remainder.is_route() && rest_destination == Some(Zone::Library);
+                     // allow-raw-zone: looked-at cards remain library objects until a keep decision (CR 701.20b/e).
+                     player_state.library.retain(|id| {
+-                        if rest_remainder.is_route() {
++                        if lift_remainder {
+                             !cards.contains(id)
+                         } else {
+                             !kept.contains(id)
+diff --git a/crates/engine/tests/integration/explore_rest_pile_stays_in_library_during_choice.rs b/crates/engine/tests/integration/explore_rest_pile_stays_in_library_during_choice.rs
+new file mode 100644
+index 000000000..9b3ed56cd
+--- /dev/null
++++ b/crates/engine/tests/integration/explore_rest_pile_stays_in_library_during_choice.rs
+@@ -0,0 +1,190 @@
++//! CR 701.44a + CR 616.1: a card an explore puts into the graveyard stays in
++//! its owner's library until the move happens. While its controller chooses
++//! between two replacement effects for that move, the card is still a library
++//! card and is in the library's list.
++
++use engine::game::scenario::{GameScenario, P0, P1};
++use engine::types::ability::{DigRestOrder, DigRestRemainder};
++use engine::types::actions::GameAction;
++use engine::types::game_state::WaitingFor;
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const REST_IN_PEACE: &str = "When this enchantment enters, exile all graveyards.\nIf a card or token would be put into a graveyard from anywhere, exile it instead.";
++
++#[test]
++fn explored_card_is_in_the_library_while_its_graveyard_move_awaits_a_choice() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    for player in [P0, P1] {
++        scenario
++            .add_creature(player, "Rest in Peace", 0, 0)
++            .as_enchantment()
++            .from_oracle_text(REST_IN_PEACE);
++    }
++    let explorer = scenario.add_creature(P0, "Explorer", 2, 2).id();
++    scenario.add_card_to_library_top(P0, "Below");
++    let top = scenario.add_card_to_library_top(P0, "Top");
++    let spell = scenario
++        .add_spell_to_hand_from_oracle(
++            P0,
++            "Scouting",
++            false,
++            "Target creature you control explores.",
++        )
++        .id();
++    let mut runner = scenario.build();
++    runner.cast(spell).target_object(explorer).resolve();
++
++    let mut seen_choice = false;
++    for _ in 0..20 {
++        match runner.state().waiting_for.clone() {
++            WaitingFor::DigChoice { .. } => {
++                runner
++                    .act(GameAction::SelectCards { cards: vec![] })
++                    .expect("putting the card into the graveyard is legal");
++            }
++            WaitingFor::ReplacementChoice { .. } => {
++                // The spell itself asks the same question later, on its way
++                // to the graveyard; only the first choice is the explored card's.
++                if !seen_choice {
++                    let state = runner.state();
++                    assert_eq!(state.objects[&top].zone, Zone::Library);
++                    assert_eq!(
++                        state.players[0].library.front(),
++                        Some(&top),
++                        "the explored card is still the top card of the library"
++                    );
++                }
++                seen_choice = true;
++                runner
++                    .act(GameAction::ChooseReplacement { index: 0 })
++                    .expect("choosing a replacement is legal");
++            }
++            _ => break,
++        }
++    }
++    assert!(seen_choice, "two replacement effects apply to the move");
++    let state = runner.state();
++    assert_eq!(state.objects[&top].zone, Zone::Exile);
++    assert!(!state.players[0].library.contains(&top));
++    assert_eq!(state.players[0].library.len(), 1);
++    assert_eq!(state.objects[&explorer].power, Some(3));
++}
++
++/// Every object outside the stack and command zone is in exactly one zone
++/// list, and that list agrees with the object's own zone.
++fn zone_faults(state: &engine::types::game_state::GameState) -> Vec<String> {
++    use std::collections::HashSet;
++    let mut lists = vec![
++        (
++            Zone::Battlefield,
++            state.battlefield.iter().copied().collect::<Vec<_>>(),
++        ),
++        (Zone::Exile, state.exile.iter().copied().collect()),
++    ];
++    for player in &state.players {
++        lists.push((Zone::Hand, player.hand.iter().copied().collect()));
++        lists.push((Zone::Library, player.library.iter().copied().collect()));
++        lists.push((Zone::Graveyard, player.graveyard.iter().copied().collect()));
++    }
++    let mut faults = Vec::new();
++    let mut seen = HashSet::new();
++    for (zone, ids) in lists {
++        for id in ids {
++            if !seen.insert(id) {
++                faults.push(format!("{id:?} is in two zone lists"));
++            }
++            if state.objects[&id].zone != zone {
++                faults.push(format!("{id:?} is listed in {zone:?}"));
++            }
++        }
++    }
++    for (id, object) in state.objects.iter() {
++        if !matches!(object.zone, Zone::Stack | Zone::Command) && !seen.contains(id) {
++            faults.push(format!(
++                "{id:?} has zone {:?} but is in no list",
++                object.zone
++            ));
++        }
++    }
++    faults
++}
++
++/// CR 616.1: each card of a multi-card remainder can pause on its own
++/// replacement choice. The cards not yet moved stay in the library, below the
++/// kept cards and in their original order.
++#[test]
++fn multi_card_remainder_stays_in_the_library_while_each_move_awaits_a_choice() {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    for player in [P0, P1] {
++        scenario
++            .add_creature(player, "Rest in Peace", 0, 0)
++            .as_enchantment()
++            .from_oracle_text(REST_IN_PEACE);
++    }
++    let bottom = scenario.add_card_to_library_top(P0, "Bottom");
++    let d = scenario.add_card_to_library_top(P0, "D");
++    let c = scenario.add_card_to_library_top(P0, "C");
++    let b = scenario.add_card_to_library_top(P0, "B");
++    let a = scenario.add_card_to_library_top(P0, "A");
++    let mut runner = scenario.build();
++    // No card text was found that the parser turns into a keep-on-top dig with
++    // a multi-card remainder, so the prompt is set up directly.
++    runner.state_mut().waiting_for = WaitingFor::DigChoice {
++        player: P0,
++        library_owner: P0,
++        cards: vec![a, b, c, d],
++        selectable_cards: vec![a, b, c, d],
++        keep_count: 4,
++        up_to: true,
++        kept_destination: Some(Zone::Library),
++        rest_destination: Some(Zone::Graveyard),
++        rest_remainder: DigRestRemainder::Route,
++        rest_split_top_count: None,
++        rest_order: DigRestOrder::Preserve,
++        source_id: None,
++        enter_tapped: false,
++        enters_attacking: false,
++    };
++
++    let mut choices = 0;
++    for _ in 0..20 {
++        assert_eq!(zone_faults(runner.state()), Vec::<String>::new());
++        match runner.state().waiting_for.clone() {
++            WaitingFor::DigChoice { .. } => {
++                runner
++                    .act(GameAction::SelectCards { cards: vec![c] })
++                    .expect("keeping one card on top is legal");
++            }
++            WaitingFor::ReplacementChoice { .. } => {
++                let library: Vec<_> = runner.state().players[0].library.iter().copied().collect();
++                assert_eq!(library[0], c, "the kept card is on top");
++                let waiting: Vec<_> = [a, b, d]
++                    .into_iter()
++                    .filter(|id| library.contains(id))
++                    .collect();
++                assert_eq!(library[1..], [waiting.as_slice(), &[bottom]].concat());
++                choices += 1;
++                runner
++                    .act(GameAction::ChooseReplacement { index: choices % 2 })
++                    .expect("choosing a replacement is legal");
++            }
++            _ => break,
++        }
++    }
++    assert_eq!(
++        choices, 3,
++        "each of the three cards asks for its replacement"
++    );
++    let state = runner.state();
++    assert_eq!(zone_faults(state), Vec::<String>::new());
++    assert_eq!(
++        state.players[0].library.iter().copied().collect::<Vec<_>>(),
++        vec![c, bottom]
++    );
++    for id in [a, b, d] {
++        assert_eq!(state.objects[&id].zone, Zone::Exile);
++    }
++}
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index 65181cc0b..5bf9d89e4 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -85,6 +85,7 @@ mod essence_burn;
+ mod etali_primal_sickness_poison;
+ mod etrata_cloak_enters_under_cloaker_5944;
+ mod exiled_card_power_linked_pile;
++mod explore_rest_pile_stays_in_library_during_choice;
+ mod extrapolate_the_impossible;
+ mod exuberant_wolfbear_base_pt_target;
+ mod fantastic_four_bounded_loop;
+-- 
+2.56.0
+

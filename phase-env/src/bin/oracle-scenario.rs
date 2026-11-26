@@ -994,8 +994,8 @@ fn trigger_placement_order(
     Ok(placement)
 }
 
-/// Scripted blocks and replacement choices for an `attack` continued through
-/// combat damage.
+/// Scripted blocks for an `attack` continued through combat damage, and
+/// scripted replacement choices for any resolution.
 #[derive(Default)]
 struct CombatScript {
     /// (blocker, attacker) pairs for the next declare-blockers prompt.
@@ -3256,6 +3256,7 @@ fn pass_until_resolved(
     optional_choice_groups: &mut [VecDeque<OptionalChoice>; 2],
     unless_choice_groups: &mut [VecDeque<UnlessScriptChoice>; 2],
     discard_reconciler: &mut DiscardChoiceReconciler,
+    combat_script: &mut CombatScript,
     fail_closed_unscripted_prompts: bool,
 ) -> Result<(), String> {
     let mut pending_unless_choice = None;
@@ -3275,6 +3276,16 @@ fn pass_until_resolved(
             ));
         }
         match runner.state().waiting_for.clone() {
+            WaitingFor::ReplacementChoice {
+                kind: engine::types::game_state::ReplacementChoiceKind::Order,
+                ..
+            } => apply_replacement_source_choice(
+                runner,
+                combat_script,
+                labels,
+                discard_reconciler,
+                discard_choice_groups,
+            )?,
             WaitingFor::TriggerTargetSelection { .. } if !graveyard_target_choices.is_empty() => {
                 let choice = graveyard_target_choices
                     .pop_front()
@@ -3461,6 +3472,29 @@ fn pass_until_resolved(
                 discard_reconciler.act_for_discard_selection(
                     runner,
                     selected,
+                    discard_choice_groups,
+                    labels,
+                )?;
+            }
+            // CR 701.44a: an explore's "may put the revealed card into their
+            // graveyard" is a yes/no question in XMage and a keep-on-top pick
+            // here. A `choose_optional` answer scripts it: yes keeps nothing.
+            WaitingFor::DigChoice {
+                player,
+                cards,
+                keep_count: 1,
+                up_to: true,
+                kept_destination: Some(Zone::Library),
+                rest_destination: Some(Zone::Graveyard),
+                source_id,
+                ..
+            } if cards.len() == 1 && !optional_choice_groups[player.0 as usize].is_empty() => {
+                let to_graveyard = take_optional_choice(optional_choice_groups, player, source_id)?;
+                discard_reconciler.act(
+                    runner,
+                    GameAction::SelectCards {
+                        cards: if to_graveyard { Vec::new() } else { cards },
+                    },
                     discard_choice_groups,
                     labels,
                 )?;
@@ -4242,6 +4276,7 @@ fn advance_through_combat_damage(
                     optional_choice_groups,
                     unless_choice_groups,
                     discard_reconciler,
+                    combat_script,
                     true,
                 )?;
             }
@@ -4292,6 +4327,7 @@ fn advance_through_combat_damage(
                     optional_choice_groups,
                     unless_choice_groups,
                     discard_reconciler,
+                    combat_script,
                     true,
                 )?;
             }
@@ -5348,6 +5384,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     &mut optional_choice_groups,
                     &mut unless_choice_groups,
                     &mut discard_reconciler,
+                    &mut combat_script,
                     attack_through_damage,
                 )?;
                 if attack_needs_resolution {
@@ -5863,6 +5900,7 @@ mod tests {
             &mut optional_choices,
             &mut unless_choices,
             discard_reconciler,
+            &mut CombatScript::default(),
             false,
         )
     }
@@ -7073,6 +7111,7 @@ mod tests {
                     &mut optional_choices,
                     &mut unless_choices,
                     &mut discard_reconciler,
+                    &mut CombatScript::default(),
                     false,
                 )
                 .unwrap();
@@ -7137,6 +7176,7 @@ mod tests {
                     &mut optional_choices,
                     &mut unless_choices,
                     &mut discard_reconciler,
+                    &mut CombatScript::default(),
                     true,
                 )
                 .unwrap();
@@ -8691,6 +8731,7 @@ mod surveil_script_choice_tests {
                     &mut optional_choices,
                     &mut unless_choices,
                     &mut discard_reconciler,
+                    &mut CombatScript::default(),
                     false,
                 )
                 .unwrap();
@@ -8748,6 +8789,7 @@ mod surveil_script_choice_tests {
                     &mut [VecDeque::new(), VecDeque::new()],
                     &mut [VecDeque::new(), VecDeque::new()],
                     &mut DiscardChoiceReconciler::default(),
+                    &mut CombatScript::default(),
                     false,
                 )
                 .and_then(|()| ensure_surveil_choices_consumed(&surveil_choices));
@@ -8923,6 +8965,7 @@ mod combat_damage_card_choice_tests {
             &mut optional_choices,
             &mut unless_choices,
             &mut discard_reconciler,
+            &mut CombatScript::default(),
             true,
         )
     }
