@@ -5269,6 +5269,20 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 let committed = cast
                     .commit_with_card_choices(&mut card_choice_groups)
                     .map_err(|error| error.to_string())?;
+                if let Some(kicker) = action.get("kicker").and_then(Value::as_bool) {
+                    let was_kicked = committed
+                        .state()
+                        .spells_cast_this_turn_by_player
+                        .get(&player)
+                        .and_then(|records| records.last())
+                        .is_some_and(|record| record.was_kicked);
+                    if was_kicked != kicker {
+                        return Err(format!(
+                            "script[{action_index}] cast.kicker = {kicker} but {card} was cast with kicker {}",
+                            if was_kicked { "paid" } else { "unpaid" }
+                        ));
+                    }
+                }
                 if let (Some(choice), Some(before)) = (&mana_choice, &mana_pool_before) {
                     verify_mana_choice_spent(
                         choice,
