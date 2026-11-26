@@ -9,7 +9,9 @@ use engine::game::game_object::GameObject;
 use engine::game::mana_abilities::is_mana_ability;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::game::scenario_db::GameScenarioDbExt;
-use engine::types::ability::{AdditionalCost, EffectKind, ReplacementMode};
+use engine::types::ability::{
+    effect_refs_parent_target, AbilityCondition, AdditionalCost, EffectKind, ReplacementMode,
+};
 use engine::types::keywords::KeywordKind;
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::{
@@ -1977,6 +1979,7 @@ fn cast_target_decision_slot_count(
     spell: ObjectId,
     player: PlayerId,
     x: Option<u32>,
+    kicked: bool,
 ) -> Result<usize, String> {
     let definition = state
         .objects
@@ -1985,6 +1988,24 @@ fn cast_target_decision_slot_count(
         .ok_or_else(|| "cast.targets could not find the spell's ability".to_string())?;
     let mut resolved = build_resolved_from_def(definition, spell, player);
     resolved.kind = AbilityKind::Spell;
+    // CR 601.2c: a kicked spell's targets are those of its kicked text, unless
+    // that text reuses the base target ("that creature").
+    let mut node = definition.sub_ability.as_deref();
+    let mut kicked_text_has_own_targets = false;
+    while let Some(sub) = node {
+        if matches!(
+            sub.condition,
+            Some(AbilityCondition::AdditionalCostPaidInstead)
+        ) {
+            kicked_text_has_own_targets = !effect_refs_parent_target(&sub.effect);
+            break;
+        }
+        node = sub.sub_ability.as_deref();
+    }
+    if kicked && kicked_text_has_own_targets {
+        resolved.context.additional_cost_paid = true;
+        resolved.set_context_recursive(resolved.context.clone());
+    }
     if let Some(x) = x {
         resolved.set_chosen_x_recursive(x);
     }
@@ -5127,6 +5148,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                         spell,
                         player,
                         x,
+                        action.get("kicker").and_then(Value::as_bool) == Some(true),
                     )?)
                 } else {
                     None
@@ -6368,9 +6390,14 @@ mod tests {
                     .id();
                 let selections = [Some(TargetRef::Object(artifact))];
                 let mut runner = scenario.build();
-                let decision_slot_count =
-                    cast_target_decision_slot_count(runner.state(), spell, PlayerId(0), None)
-                        .unwrap();
+                let decision_slot_count = cast_target_decision_slot_count(
+                    runner.state(),
+                    spell,
+                    PlayerId(0),
+                    None,
+                    false,
+                )
+                .unwrap();
                 assert_eq!(decision_slot_count, 1);
                 let committed = runner
                     .cast(spell)
@@ -6445,14 +6472,15 @@ mod tests {
                 let player = runner.state().active_player;
                 assert_eq!(player, PlayerId(1));
                 assert_eq!(
-                    cast_target_decision_slot_count(runner.state(), spell, player, None),
+                    cast_target_decision_slot_count(runner.state(), spell, player, None, false),
                     Ok(1)
                 );
                 assert!(cast_target_decision_slot_count(
                     runner.state(),
                     spell,
                     initial_active,
-                    None
+                    None,
+                    false
                 )
                 .is_err());
             })

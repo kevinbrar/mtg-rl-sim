@@ -88,7 +88,13 @@ other supported resolution choices use the same FIFO handlers during combat
 damage, and the runner stops only after regular combat damage is complete.
 A `cast` of a spell with kicker (CR 702.33) carries `kicker = true` or
 `kicker = false` (XMage suites only). XMage fails a kicker prompt with no
-answer; Phase fails `kicker` on a spell without the keyword. It cannot be
+answer, and the answer shares the `choose_optional` queue, so later
+optional answers stay in script order. Phase fails `kicker` on a spell
+without the keyword, and fails when the spell's cast record disagrees with
+the scripted answer (a `kicker = true` the player cannot pay is an error,
+not an unkicked cast). A kicked cast names the targets of the kicked text
+when that text has its own targets (Divine Resilience); a kicked clause
+that reuses the base target keeps the base target count. It cannot be
 combined with `x`, `sacrifice`, `alternative_cost` or `expect`. A refused
 `cast` with no `targets` also fails when Phase lists the cast as a legal
 action and only rejects it on submit: the cast must not be offered at all.
