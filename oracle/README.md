@@ -86,6 +86,12 @@ graveyard" (CR 701.44a) is scripted with `choose_optional`: `"yes"` puts the
 revealed card into the graveyard, `"no"` leaves it on top. Trigger targets, card choices, and
 other supported resolution choices use the same FIFO handlers during combat
 damage, and the runner stops only after regular combat damage is complete.
+A `cast` of a spell with kicker (CR 702.33) carries `kicker = true` or
+`kicker = false` (XMage suites only). XMage fails a kicker prompt with no
+answer; Phase fails `kicker` on a spell without the keyword. It cannot be
+combined with `x`, `sacrifice`, `alternative_cost` or `expect`. A refused
+`cast` with no `targets` also fails when Phase lists the cast as a legal
+action and only rejects it on submit: the cast must not be offered at all.
 Activations can name a labeled battlefield permanent or a card in the
 activating player's graveyard. Activation labels can match a unique
 loyalty-cost label (for example, `-3` or `+2`) or an ability description;

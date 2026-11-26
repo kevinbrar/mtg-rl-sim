@@ -1,0 +1,154 @@
+From 2fa87b9a9271f0a7d10bbad640aac7d17d3c62ef Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Thu, 26 Nov 2026 03:32:00 +0000
+Subject: [PATCH] Keep an 'instead' clause that reuses the base target from
+ widening castability (CR 601.2c)
+
+A kicker whose AdditionalCostPaidInstead clause reads the parent target
+("that creature", Firebending Lesson) has no target slot of its own, so the
+kicked spell looked castable with nothing to target. Such a clause now falls
+through to the base castability check; a clause with its own target
+(Bloodchief's Thirst) still broadens it.
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/ability_utils.rs       | 27 +++++---
+ .../kicked_instead_spell_needs_base_target.rs | 62 +++++++++++++++++++
+ crates/engine/tests/integration/main.rs       |  1 +
+ 3 files changed, 80 insertions(+), 10 deletions(-)
+ create mode 100644 crates/engine/tests/integration/kicked_instead_spell_needs_base_target.rs
+
+diff --git a/crates/engine/src/game/ability_utils.rs b/crates/engine/src/game/ability_utils.rs
+index 74cd45e52..573e1714c 100644
+--- a/crates/engine/src/game/ability_utils.rs
++++ b/crates/engine/src/game/ability_utils.rs
+@@ -885,29 +885,36 @@ pub fn additional_cost_instead_spell_has_legal_targets(
+     }
+     // Walk past GiftDelivery wrappers to find AdditionalCostPaidInstead.
+     let mut instead_node = ability_def.sub_ability.as_deref();
+-    let mut found_instead = false;
++    let mut reuses_base_target = None;
+     while let Some(sub) = instead_node {
+         if matches!(
+             sub.condition,
+             Some(AbilityCondition::AdditionalCostPaidInstead)
+         ) {
+-            found_instead = true;
++            reuses_base_target = Some(crate::types::ability::effect_refs_parent_target(
++                &sub.effect,
++            ));
+             break;
+         }
+         instead_node = sub.sub_ability.as_deref();
+     }
+-    if !found_instead {
++    let Some(reuses_base_target) = reuses_base_target else {
+         return false;
+-    }
++    };
+     let mut resolved = build_resolved_from_def(ability_def, object_id, player);
+     resolved.context.additional_cost_paid = true;
+     resolved.set_context_recursive(resolved.context.clone());
+-    // CR 601.2c: a queue-synthesized "instead" cost only broadens castability when the
+-    // override re-selects a REAL (non-context-ref) target — mirror the cast-time gate
+-    // (requires_additional_cost_declaration_before_targets). A context-ref override
+-    // ("that permanent" = ParentTarget, e.g. Torch the Tower / Bargain) does NOT broaden;
+-    // it inherits the base clause's target requirement, so fall through to the base
+-    // castability check. Kicker is unaffected (has_kicker_cost short-circuits).
++    // CR 601.2c: an "instead" cost only broadens castability when the override
++    // does not reuse the base clause's target. A context-ref override ("that
++    // creature" = ParentTarget, e.g. Firebending Lesson's kicker or Torch the
++    // Tower's bargain) inherits the base clause's target requirement, kicked or
++    // not, so fall through to the base castability check.
++    if reuses_base_target {
++        return false;
++    }
++    // A queue-synthesized cost additionally broadens only when the override
++    // re-selects a REAL target — mirror the cast-time gate
++    // (requires_additional_cost_declaration_before_targets).
+     if !has_kicker_cost
+         && !crate::game::casting::requires_additional_cost_declaration_before_targets(&resolved)
+     {
+diff --git a/crates/engine/tests/integration/kicked_instead_spell_needs_base_target.rs b/crates/engine/tests/integration/kicked_instead_spell_needs_base_target.rs
+new file mode 100644
+index 000000000..59ada51b1
+--- /dev/null
++++ b/crates/engine/tests/integration/kicked_instead_spell_needs_base_target.rs
+@@ -0,0 +1,62 @@
++//! CR 601.2c + CR 702.33d: a kicker "instead" clause that refers back to the
++//! spell's own target ("it deals 5 damage to that creature instead") adds no
++//! target of its own. With no creature to target, the spell can't be cast,
++//! kicked or not. A kicked clause that names a new target still makes the
++//! spell castable when only that target exists.
++
++use engine::game::casting::can_cast_object_now;
++use engine::game::scenario::{GameScenario, P0, P1};
++use engine::types::mana::{ManaType, ManaUnit};
++use engine::types::phase::Phase;
++
++const FIREBENDING_LESSON: &str = "Kicker {4} (You may pay an additional {4} as you cast this spell.)\nFirebending Lesson deals 2 damage to target creature. If this spell was kicked, it deals 5 damage to that creature instead.";
++const BLOODCHIEFS_THIRST: &str = "Kicker {2}{B} (You may pay an additional {2}{B} as you cast this spell.)\nDestroy target creature or planeswalker with mana value 2 or less. If this spell was kicked, instead destroy target creature or planeswalker.";
++
++fn castable(oracle: &str, creature_mana_value: Option<u32>) -> bool {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    scenario.with_mana_pool(
++        P0,
++        (0..3)
++            .map(|_| {
++                ManaUnit::new(
++                    ManaType::Red,
++                    engine::types::identifiers::ObjectId(0),
++                    false,
++                    vec![],
++                )
++            })
++            .chain((0..3).map(|_| {
++                ManaUnit::new(
++                    ManaType::Black,
++                    engine::types::identifiers::ObjectId(0),
++                    false,
++                    vec![],
++                )
++            }))
++            .collect(),
++    );
++    if let Some(mana_value) = creature_mana_value {
++        scenario
++            .add_creature(P1, "Bear", 2, 2)
++            .with_mana_cost(engine::types::mana::ManaCost::generic(mana_value));
++    }
++    let spell = scenario
++        .add_spell_to_hand_from_oracle(P0, "Spell", true, oracle)
++        .id();
++    let runner = scenario.build();
++    can_cast_object_now(runner.state(), P0, spell)
++}
++
++#[test]
++fn kicked_clause_that_reuses_the_target_does_not_make_the_spell_castable() {
++    assert!(!castable(FIREBENDING_LESSON, None));
++    assert!(castable(FIREBENDING_LESSON, Some(2)));
++}
++
++#[test]
++fn kicked_clause_with_its_own_target_makes_the_spell_castable() {
++    assert!(!castable(BLOODCHIEFS_THIRST, None));
++    assert!(castable(BLOODCHIEFS_THIRST, Some(5)));
++    assert!(castable(BLOODCHIEFS_THIRST, Some(2)));
++}
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index 5bf9d89e4..da45e8abd 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -174,6 +174,7 @@ mod jace_machinations;
+ mod karazikar_attack_scope_7189;
+ mod kashi_tribe_damage_tap_freeze;
+ mod kibo_uktabi_prince_defending_player_sacrifice;
++mod kicked_instead_spell_needs_base_target;
+ mod kili_the_resourceful;
+ mod kilo_live_offer_from_real_dump;
+ mod lady_octopus_first_second_draw;
+-- 
+2.56.0
+

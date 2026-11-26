@@ -1226,6 +1226,21 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
             raise ValueError(
                 f"{name}: script[{index}].answers is only valid for choose_optional actions"
             )
+        if "kicker" in action:
+            context = f"{name}: script[{index}].kicker"
+            if action.get("action") != "cast":
+                raise ValueError(f"{context} is only valid for cast actions")
+            if oracle == "forge":
+                raise ValueError(
+                    f"{context} is unsupported by the Forge scenario runner"
+                )
+            if not isinstance(action["kicker"], bool):
+                raise TypeError(f"{context} must be a boolean")
+            if {"sacrifice", "alternative_cost", "x", "expect"} & action.keys():
+                raise ValueError(
+                    f"{context} cannot be combined with x, sacrifice, "
+                    "alternative_cost or expect"
+                )
         if "sacrifice" in action:
             context = f"{name}: script[{index}].sacrifice"
             if action.get("action") != "cast":

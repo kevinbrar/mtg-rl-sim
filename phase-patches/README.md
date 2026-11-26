@@ -91,6 +91,18 @@
   `yenna_aura_token_copy.rs` (loss processed after the closing scry).
   Runtime-only; no parser or card-data change.
 
+## Patch 0049 — an "instead" clause that reuses the base target does not widen castability (CR 601.2c)
+
+- `additional_cost_instead_spell_has_legal_targets` let any kicker with an
+  `AdditionalCostPaidInstead` clause build the kicked spell's target slots. A
+  clause that reads the parent's target ("that creature", Firebending Lesson)
+  has no slot of its own, so the spell counted as castable with no creature to
+  target and the cast was rejected on submit. Such a clause now falls through
+  to the base castability check; a clause with its own target (Bloodchief's
+  Thirst) is unchanged.
+- Regression: `kicked_instead_spell_needs_base_target.rs`.
+- Runtime-only; no parser or card-data change.
+
 ## Patch 0048 — a dig's routed remainder stays in the library until it moves (CR 616.1)
 
 - `DigChoice` with `kept_destination = Library` lifted every looked-at card out

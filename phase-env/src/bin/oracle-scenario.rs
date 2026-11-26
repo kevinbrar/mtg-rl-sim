@@ -10,6 +10,7 @@ use engine::game::mana_abilities::is_mana_ability;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::types::ability::{AdditionalCost, EffectKind, ReplacementMode};
+use engine::types::keywords::KeywordKind;
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::{
     actions::{GameAction, OutsideGameSelection, UnlessCostBranch},
@@ -5164,6 +5165,15 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                             else {
                                 return Err(classified_error.to_string());
                             };
+                            // A cast refused whatever is chosen must not be in
+                            // the engine's own list of legal actions. With
+                            // scripted targets only those targets are refused,
+                            // and the cast itself may be legal.
+                            if action.get("targets").is_none() {
+                                return Err(format!(
+                                    "script[{action_index}] cast of {card} is refused but the engine offers it as a legal action: {classified_error}"
+                                ));
+                            }
                             let after = project(attempt.state(), &labels, None, true);
                             record_refusal(
                                 action_index,
@@ -5182,6 +5192,17 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 } else {
                     None
                 };
+                if action.get("kicker").is_some()
+                    && !runner
+                        .state()
+                        .objects
+                        .get(&spell)
+                        .is_some_and(|object| object.has_keyword_kind(KeywordKind::Kicker))
+                {
+                    return Err(format!(
+                        "script[{action_index}] cast.kicker is scripted but {card} has no kicker"
+                    ));
+                }
                 let cast = runner.cast(spell);
                 let cast = if let Some(x) = x { cast.x(x) } else { cast };
                 let cast = if let Some(sacrifices) = sacrifice_objects.as_ref() {
@@ -5194,6 +5215,29 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                     }
                 } else {
                     cast
+                };
+                let cast = match action.get("kicker") {
+                    None => cast,
+                    Some(value) => {
+                        if x.is_some()
+                            || sacrifice_objects.is_some()
+                            || action.get("alternative_cost").is_some()
+                            || action.get("expect").is_some()
+                        {
+                            return Err(format!(
+                                "script[{action_index}] cast.kicker cannot be combined with x, sacrifice, alternative_cost or expect"
+                            ));
+                        }
+                        match value.as_bool() {
+                            Some(true) => cast.accept_optional(),
+                            Some(false) => cast.decline_optional(),
+                            None => {
+                                return Err(format!(
+                                    "script[{action_index}] cast.kicker must be a boolean"
+                                ))
+                            }
+                        }
+                    }
                 };
                 let cast = if action.get("targets").is_some() {
                     cast.target_slot_selections(&target_slots)

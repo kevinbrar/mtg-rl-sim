@@ -1,0 +1,93 @@
+# Firebending Lesson {R} Instant — Lesson
+# Kicker {4} (You may pay an additional {4} as you cast this spell.)
+# Firebending Lesson deals 2 damage to target creature. If this spell was
+# kicked, it deals 5 damage to that creature instead.
+#
+# CR 601.2c: the spell has one target, a creature, kicked or not; "that
+# creature" in the kicked clause is the same target. CR 702.33d: a kicked
+# spell is one whose kicker cost was paid.
+
+[[scenarios]]
+name = "FL1 unkicked deals 2 damage to the target creature"
+active_player = 0
+script = [
+  { action = "cast", card = "Firebending Lesson", kicker = false, targets = ["courser"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.1", card = "Mountain" },
+]
+hand = ["Firebending Lesson"]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "courser", card = "Centaur Courser" },
+  { label = "bears", card = "Grizzly Bears" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "battlefield", player = "P1", card = "Centaur Courser", count = 1, damage = 2 },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", count = 1, damage = 0 },
+  { zone = "graveyard", player = "P0", card = "Firebending Lesson", count = 1 },
+]
+
+[[scenarios]]
+name = "FL3 kicked deals 5 damage to the target creature instead"
+active_player = 0
+script = [
+  { action = "cast", card = "Firebending Lesson", kicker = true, targets = ["courser"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.1", card = "Mountain" },
+  { label = "land.2", card = "Mountain" },
+  { label = "land.3", card = "Mountain" },
+  { label = "land.4", card = "Mountain" },
+  { label = "land.5", card = "Mountain" },
+]
+hand = ["Firebending Lesson"]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "courser", card = "Centaur Courser" },
+  { label = "bears", card = "Grizzly Bears" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P1", card = "Centaur Courser", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Grizzly Bears", count = 1, damage = 0 },
+  { zone = "graveyard", player = "P0", card = "Firebending Lesson", count = 1 },
+]
+
+[[scenarios]]
+name = "FL2 with no creature on the battlefield the spell can't be cast, with mana for the kicker"
+active_player = 0
+script = [
+  { action = "cast", card = "Firebending Lesson", expect = "refused" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.1", card = "Mountain" },
+  { label = "land.2", card = "Mountain" },
+  { label = "land.3", card = "Mountain" },
+  { label = "land.4", card = "Mountain" },
+  { label = "land.5", card = "Mountain" },
+]
+hand = ["Firebending Lesson"]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "land.p1", card = "Island" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Firebending Lesson", count = 1 },
+]
