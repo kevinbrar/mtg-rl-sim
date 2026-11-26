@@ -1,4 +1,4 @@
-From c20b57a9aba09c34efced3f8e538525b973c28fb Mon Sep 17 00:00:00 2001
+From db240846286685fa5f9fcd42faa6cd4ce0660f5b Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Thu, 26 Nov 2026 11:40:05 +0000
 Subject: [PATCH] Cast a spell on its 'instead' clause's targets only when that
@@ -6,10 +6,11 @@ Subject: [PATCH] Cast a spell on its 'instead' clause's targets only when that
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
- crates/engine/src/game/casting.rs             | 170 +++++++++++++++---
- ...ad_target_needs_payable_additional_cost.rs | 160 +++++++++++++++++
+ crates/engine/src/game/casting.rs             | 170 +++++++++++++---
+ crates/engine/src/game/casting_tests.rs       |  48 +++++
+ ...ad_target_needs_payable_additional_cost.rs | 185 ++++++++++++++++++
  crates/engine/tests/integration/main.rs       |   1 +
- 3 files changed, 302 insertions(+), 29 deletions(-)
+ 4 files changed, 375 insertions(+), 29 deletions(-)
  create mode 100644 crates/engine/tests/integration/instead_target_needs_payable_additional_cost.rs
 
 diff --git a/crates/engine/src/game/casting.rs b/crates/engine/src/game/casting.rs
@@ -252,12 +253,68 @@ index a848177ee..638d34bd6 100644
      let mana_payable = can_feasibly_pay_harmonize_mana_cost_with_probe(
          state,
          player,
+diff --git a/crates/engine/src/game/casting_tests.rs b/crates/engine/src/game/casting_tests.rs
+index 5f8143b2d..3e3b5b787 100644
+--- a/crates/engine/src/game/casting_tests.rs
++++ b/crates/engine/src/game/casting_tests.rs
+@@ -63157,3 +63157,51 @@ fn void_winnower_runtime_does_not_block_its_own_controller() {
+         "\"Your opponents can't cast\" never restricts the controller (CR 109.5)"
+     );
+ }
++
++/// CR 601.2c + CR 608.2g: a spell offered for casting during resolution needs
++/// a legal target.
++#[test]
++fn resolution_cast_face_needs_a_legal_target() {
++    let mut state = setup_game_at_main_phase();
++    let spell = create_object(
++        &mut state,
++        CardId(83_051),
++        PlayerId(0),
++        "Resolution Removal".to_string(),
++        Zone::Exile,
++    );
++    {
++        let object = state.objects.get_mut(&spell).unwrap();
++        object.card_types.core_types.push(CoreType::Sorcery);
++        object.mana_cost = ManaCost::zero();
++        Arc::make_mut(&mut object.abilities).push(AbilityDefinition::new(
++            AbilityKind::Spell,
++            Effect::Destroy {
++                target: TargetFilter::Typed(TypedFilter::creature()),
++                cant_regenerate: false,
++            },
++        ));
++    }
++    let request = resolution_test_request(TargetFilter::Any);
++    let legality = |state: &GameState| {
++        resolution_spell_face_legality(state, PlayerId(0), spell, &request).front
++    };
++
++    assert!(!legality(&state));
++
++    let creature = create_object(
++        &mut state,
++        CardId(83_052),
++        PlayerId(1),
++        "Resolution Target".to_string(),
++        Zone::Battlefield,
++    );
++    state
++        .objects
++        .get_mut(&creature)
++        .unwrap()
++        .card_types
++        .core_types
++        .push(CoreType::Creature);
++    assert!(legality(&state));
++}
 diff --git a/crates/engine/tests/integration/instead_target_needs_payable_additional_cost.rs b/crates/engine/tests/integration/instead_target_needs_payable_additional_cost.rs
 new file mode 100644
-index 000000000..5754ff370
+index 000000000..ad10f50f8
 --- /dev/null
 +++ b/crates/engine/tests/integration/instead_target_needs_payable_additional_cost.rs
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,185 @@
 +//! CR 601.2b-c + CR 601.2f: when only the targets of a spell's "instead"
 +//! clause can be chosen, the spell is cast with the additional cost that
 +//! clause reads. If that cost can't be paid with the rest of the total cost,
@@ -417,6 +474,31 @@ index 000000000..5754ff370
 +    assert!(!thirst(3, None));
 +    assert!(!thirst(2, gecko));
 +    assert!(thirst(3, gecko));
++}
++
++/// CR 601.2c: the target check alone still counts the "instead" clause's
++/// targets, whatever the mana available; with nothing to target it fails.
++#[test]
++fn target_check_counts_instead_clause_targets() {
++    let has_targets = |opposing: Option<u32>| {
++        let mut scenario = GameScenario::new();
++        scenario.at_phase(Phase::PreCombatMain);
++        if let Some(mana_value) = opposing {
++            scenario
++                .add_creature(P1, "Opposing", 6, 6)
++                .with_mana_cost(ManaCost::generic(mana_value));
++        }
++        let spell = scenario
++            .add_spell_to_hand_from_oracle(P0, "Spell", false, BLOODCHIEFS_THIRST)
++            .with_mana_cost(black(0))
++            .id();
++        let runner = scenario.build();
++        let state = runner.state();
++        engine::game::casting::spell_has_legal_targets(state, &state.objects[&spell], P0)
++    };
++    assert!(has_targets(Some(2)));
++    assert!(has_targets(Some(5)));
++    assert!(!has_targets(None));
 +}
 diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
 index 011daef2c..ab55eb5d3 100644
