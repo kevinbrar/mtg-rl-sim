@@ -1,4 +1,4 @@
-From db240846286685fa5f9fcd42faa6cd4ce0660f5b Mon Sep 17 00:00:00 2001
+From 5fc667cec6a4951a02d99d8cdb28b5bcd95846c6 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Thu, 26 Nov 2026 11:40:05 +0000
 Subject: [PATCH] Cast a spell on its 'instead' clause's targets only when that
@@ -7,10 +7,10 @@ Subject: [PATCH] Cast a spell on its 'instead' clause's targets only when that
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
  crates/engine/src/game/casting.rs             | 170 +++++++++++++---
- crates/engine/src/game/casting_tests.rs       |  48 +++++
+ crates/engine/src/game/casting_tests.rs       | 132 +++++++++++++
  ...ad_target_needs_payable_additional_cost.rs | 185 ++++++++++++++++++
  crates/engine/tests/integration/main.rs       |   1 +
- 4 files changed, 375 insertions(+), 29 deletions(-)
+ 4 files changed, 459 insertions(+), 29 deletions(-)
  create mode 100644 crates/engine/tests/integration/instead_target_needs_payable_additional_cost.rs
 
 diff --git a/crates/engine/src/game/casting.rs b/crates/engine/src/game/casting.rs
@@ -254,10 +254,10 @@ index a848177ee..638d34bd6 100644
          state,
          player,
 diff --git a/crates/engine/src/game/casting_tests.rs b/crates/engine/src/game/casting_tests.rs
-index 5f8143b2d..3e3b5b787 100644
+index 5f8143b2d..7ee39908f 100644
 --- a/crates/engine/src/game/casting_tests.rs
 +++ b/crates/engine/src/game/casting_tests.rs
-@@ -63157,3 +63157,51 @@ fn void_winnower_runtime_does_not_block_its_own_controller() {
+@@ -63157,3 +63157,135 @@ fn void_winnower_runtime_does_not_block_its_own_controller() {
          "\"Your opponents can't cast\" never restricts the controller (CR 109.5)"
      );
  }
@@ -308,6 +308,90 @@ index 5f8143b2d..3e3b5b787 100644
 +        .core_types
 +        .push(CoreType::Creature);
 +    assert!(legality(&state));
++}
++
++/// CR 303.4a + CR 608.2g: an Aura offered for casting during resolution needs
++/// something to enchant.
++#[test]
++fn resolution_cast_aura_needs_something_to_enchant() {
++    let mut state = setup_game_at_main_phase();
++    let aura = create_aura_in_hand(&mut state, PlayerId(0));
++    let request = resolution_test_request(TargetFilter::Any);
++    let legality = |state: &GameState| {
++        resolution_spell_face_legality(state, PlayerId(0), aura, &request).front
++    };
++
++    assert!(!legality(&state));
++
++    create_resolution_test_creature(&mut state, CardId(83_053));
++    assert!(legality(&state));
++}
++
++/// CR 601.2b + CR 601.2c: without a legal target, an {X} in the cost admits
++/// the spell only when the target itself depends on X.
++#[test]
++fn resolution_cast_untargetable_spell_needs_an_x_dependent_target() {
++    let legality = |target: TargetFilter, mana_cost: ManaCost| {
++        let mut state = setup_game_at_main_phase();
++        let spell = create_object(
++            &mut state,
++            CardId(83_054),
++            PlayerId(0),
++            "Resolution X Removal".to_string(),
++            Zone::Exile,
++        );
++        let object = state.objects.get_mut(&spell).unwrap();
++        object.card_types.core_types.push(CoreType::Sorcery);
++        object.mana_cost = mana_cost;
++        Arc::make_mut(&mut object.abilities).push(AbilityDefinition::new(
++            AbilityKind::Spell,
++            Effect::Destroy {
++                target,
++                cant_regenerate: false,
++            },
++        ));
++        let request = resolution_test_request(TargetFilter::Any);
++        resolution_spell_face_legality(&state, PlayerId(0), spell, &request).front
++    };
++    let x_cost = || ManaCost::Cost {
++        shards: vec![ManaCostShard::X],
++        generic: 0,
++    };
++    let mana_value_x = || {
++        TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::Cmc {
++            comparator: Comparator::EQ,
++            value: QuantityExpr::Ref {
++                qty: QuantityRef::Variable {
++                    name: "X".to_string(),
++                },
++            },
++        }]))
++    };
++
++    assert!(legality(mana_value_x(), x_cost()));
++    assert!(!legality(mana_value_x(), ManaCost::zero()));
++    assert!(!legality(
++        TargetFilter::Typed(TypedFilter::creature()),
++        x_cost()
++    ));
++}
++
++fn create_resolution_test_creature(state: &mut GameState, card_id: CardId) -> ObjectId {
++    let creature = create_object(
++        state,
++        card_id,
++        PlayerId(1),
++        "Resolution Target".to_string(),
++        Zone::Battlefield,
++    );
++    state
++        .objects
++        .get_mut(&creature)
++        .unwrap()
++        .card_types
++        .core_types
++        .push(CoreType::Creature);
++    creature
 +}
 diff --git a/crates/engine/tests/integration/instead_target_needs_payable_additional_cost.rs b/crates/engine/tests/integration/instead_target_needs_payable_additional_cost.rs
 new file mode 100644
