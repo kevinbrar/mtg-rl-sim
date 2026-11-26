@@ -99,7 +99,9 @@
   object in no zone list for that prompt (explore beside two Rest in Peace).
   Only a remainder routed back into the library is lifted now; the zone
   pipeline removes the others when their move happens.
-- Regression: `explore_rest_pile_stays_in_library_during_choice.rs`.
+- Regression: `explore_rest_pile_stays_in_library_during_choice.rs` (a one-card
+  explore, and a four-card dig that keeps one on top and routes three, each
+  pausing on its own choice).
 - Runtime-only; no parser or card-data change.
 
 # Local phase-rs fixes
