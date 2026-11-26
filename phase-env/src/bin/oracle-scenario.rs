@@ -5225,6 +5225,44 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                         "script[{action_index}] cast.kicker is scripted but {card} has no kicker"
                     ));
                 }
+                let cost_choice = match action.get("cost_choice") {
+                    None => None,
+                    Some(value) => {
+                        if x.is_some()
+                            || sacrifice_objects.is_some()
+                            || action.get("kicker").is_some()
+                            || action.get("alternative_cost").is_some()
+                            || action.get("expect").is_some()
+                        {
+                            return Err(format!(
+                                "script[{action_index}] cast.cost_choice cannot be combined with x, kicker, sacrifice, alternative_cost or expect"
+                            ));
+                        }
+                        match value.as_str() {
+                            Some("first") => Some(true),
+                            Some("second") => Some(false),
+                            _ => {
+                                return Err(format!(
+                                    "script[{action_index}] cast.cost_choice must be \"first\" or \"second\""
+                                ))
+                            }
+                        }
+                    }
+                };
+                if cost_choice.is_some()
+                    && !matches!(
+                        runner
+                            .state()
+                            .objects
+                            .get(&spell)
+                            .and_then(|object| object.additional_cost.as_ref()),
+                        Some(AdditionalCost::Choice(..))
+                    )
+                {
+                    return Err(format!(
+                        "script[{action_index}] cast.cost_choice is scripted but {card} has no \"A or B\" additional cost"
+                    ));
+                }
                 let cast = runner.cast(spell);
                 let cast = if let Some(x) = x { cast.x(x) } else { cast };
                 let cast = if let Some(sacrifices) = sacrifice_objects.as_ref() {
@@ -5261,6 +5299,11 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                         }
                     }
                 };
+                let cast = match cost_choice {
+                    None => cast,
+                    Some(true) => cast.accept_optional(),
+                    Some(false) => cast.decline_optional(),
+                };
                 let cast = if action.get("targets").is_some() {
                     cast.target_slot_selections(&target_slots)
                 } else {
@@ -5280,6 +5323,24 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                         return Err(format!(
                             "script[{action_index}] cast.kicker = {kicker} but {card} was cast with kicker {}",
                             if was_kicked { "paid" } else { "unpaid" }
+                        ));
+                    }
+                }
+                if let Some(first) = cost_choice {
+                    // The first cost is the one recorded as paid on the spell;
+                    // an unpayable scripted branch must not pass as the other.
+                    let paid_first = committed
+                        .state()
+                        .stack
+                        .iter()
+                        .find(|entry| entry.id == spell)
+                        .and_then(|entry| entry.ability())
+                        .is_some_and(|ability| ability.context.additional_cost_paid);
+                    if paid_first != first {
+                        return Err(format!(
+                            "script[{action_index}] cast.cost_choice = {} but {card} was cast paying its {} cost",
+                            if first { "first" } else { "second" },
+                            if paid_first { "first" } else { "second" }
                         ));
                     }
                 }
@@ -5306,7 +5367,12 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                         }
                     }
                 }
-                if let Some(decision_slot_count) = target_decision_slot_count {
+                // A cast whose life payment ends the game (CR 704.5a) leaves
+                // no stack entry to read the targets back from.
+                let game_over =
+                    matches!(committed.state().waiting_for, WaitingFor::GameOver { .. });
+                if let Some(decision_slot_count) = target_decision_slot_count.filter(|_| !game_over)
+                {
                     validate_engine_chosen_cast_targets(
                         committed.state(),
                         spell,

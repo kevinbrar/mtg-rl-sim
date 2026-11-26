@@ -5,8 +5,5 @@
 # ("Invariant fuzzer"). Remove a line in the PR that fixes it.
 # Panics, decision-cap games and zone faults carry no signature and cannot be listed.
 
-# "X or Y" additional costs offer a branch that is then rejected.
-offered_action_rejected|OptionalCostChoice|DecideOptionalCost|ActionNotAllowed||Countersculpt|pay=false
-offered_action_rejected|OptionalCostChoice|DecideOptionalCost|ActionNotAllowed||Bitter Triumph|pay=false
 # Great Arashin City's exile-from-graveyard activation cost offers an empty selection.
 offered_action_rejected|PayCost|SelectCards|InvalidAction||Great Arashin City|cards=#0

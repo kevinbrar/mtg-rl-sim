@@ -86,6 +86,18 @@ graveyard" (CR 701.44a) is scripted with `choose_optional`: `"yes"` puts the
 revealed card into the graveyard, `"no"` leaves it on top. Trigger targets, card choices, and
 other supported resolution choices use the same FIFO handlers during combat
 damage, and the runner stops only after regular combat damage is complete.
+A `cast` of a spell whose additional cost is a choice of two ("discard a
+card or pay 3 life", CR 601.2b) carries `cost_choice = "first"` or
+`cost_choice = "second"` when both costs can be paid (XMage suites only);
+the answer shares the `choose_optional` queue. With one payable cost Phase
+asks nothing and the field is left out, except where XMage still asks: its
+`OrCost` treats every mana cost as payable, so Countersculpt with no spare
+mana needs `cost_choice = "first"`. Phase fails the field on a spell with no
+such cost, and fails when the cost recorded as paid is not the scripted one.
+A card picked for the chosen cost (the discard, the beheld card) comes from
+the next `choose_cards` group. It cannot be combined with `x`, `kicker`,
+`sacrifice`, `alternative_cost` or `expect`. A spell on the stack is
+targeted by the label its card had in hand.
 A `cast` of a spell with kicker (CR 702.33) carries `kicker = true` or
 `kicker = false` (XMage suites only). XMage fails a kicker prompt with no
 answer, and the answer shares the `choose_optional` queue, so later

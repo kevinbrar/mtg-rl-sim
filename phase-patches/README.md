@@ -91,6 +91,25 @@
   `yenna_aura_token_copy.rs` (loss processed after the closing scry).
   Runtime-only; no parser or card-data change.
 
+## Patch 0050 — an "A or B" additional cost is announced only between payable branches (CR 601.2b, CR 601.2h)
+
+- A `Choice` additional cost was announced whenever its first branch was
+  payable, so the prompt offered a second branch (Bitter Triumph's 3 life at 2
+  life, Countersculpt's {1} with no mana left) that the cast rejected on
+  submit. `announce_choice_cost` now judges both branches where the prompt is
+  raised, after a Defiler's answer, and takes the only payable branch through
+  `handle_decide_additional_cost`, the handler of the prompt's answer. With
+  both payable the prompt is unchanged; with neither the cast is refused as
+  before.
+- Scenario cast driver (test support): a cost's card selection is answered
+  from the scripted card-choice queue when the front group holds only cards
+  the cost can take, and a cast whose cost payment ends the game stops at
+  `WaitingFor::GameOver` (CR 704.5a).
+- Regression: `choice_cost_offers_only_payable_branches.rs`, and
+  `choice_cost_without_the_defiler_reduction_pays_the_only_payable_branch` in
+  `additional_cost_declaration_tail.rs`.
+- Runtime-only; no parser or card-data change.
+
 ## Patch 0049 — an "instead" clause that reuses the base target does not widen castability (CR 601.2c)
 
 - `additional_cost_instead_spell_has_legal_targets` let any kicker with an
