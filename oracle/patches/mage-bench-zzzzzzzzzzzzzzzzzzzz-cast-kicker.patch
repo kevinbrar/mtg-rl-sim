@@ -1,0 +1,25 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -432,6 +432,21 @@
+                                 (info, player, game) ->
+                                         actingPlayer.setCastSacrificeLabels(castSacrifices));
+                     }
++                    if (action.has("kicker")) {
++                        JsonElement kicker = action.get("kicker");
++                        if (!kicker.isJsonPrimitive() || !kicker.getAsJsonPrimitive().isBoolean()) {
++                            throw new IllegalArgumentException("cast.kicker must be a boolean");
++                        }
++                        if (hasX || action.has("sacrifice") || action.has("alternative_cost")) {
++                            throw new IllegalArgumentException(
++                                    "cast.kicker cannot be combined with x, sacrifice or alternative_cost");
++                        }
++                        if (expectRefused) {
++                            throw new IllegalArgumentException(
++                                    "cast.kicker cannot be combined with expect");
++                        }
++                        actingPlayer.addScenarioOptionalAnswer(kicker.getAsBoolean() ? "yes" : "no", null);
++                    }
+                     if (hasX) {
+                         setChoice(actingPlayer, "X=" + x);
+                     }

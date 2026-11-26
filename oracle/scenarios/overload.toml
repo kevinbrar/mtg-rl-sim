@@ -1,0 +1,33 @@
+# Overload {R} Instant
+# Kicker {2} (You may pay an additional {2} as you cast this spell.)
+# Destroy target artifact if its mana value is 2 or less. If this spell was
+# kicked, destroy that artifact if its mana value is 5 or less instead.
+#
+# CR 601.2c: "that artifact" in the kicked clause is the spell's one target, so
+# with no artifact on the battlefield Overload can't be cast, kicked or not.
+
+[[scenarios]]
+name = "OV1 not castable with no artifact to target, kicker affordable"
+active_player = 0
+script = [
+  { action = "cast", card = "Overload", expect = "refused" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.1", card = "Mountain" },
+  { label = "land.2", card = "Mountain" },
+  { label = "land.3", card = "Mountain" },
+  { label = "land.4", card = "Mountain" },
+  { label = "land.5", card = "Mountain" },
+  { label = "land.6", card = "Mountain" },
+]
+hand = ["Overload"]
+
+[scenarios.setup.P1]
+battlefield = []
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Overload", count = 1 },
+]

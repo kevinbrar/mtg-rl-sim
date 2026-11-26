@@ -1,0 +1,35 @@
+# Divine Resilience {W} Instant
+# Kicker {2}{W}
+# Target creature you control gains indestructible until end of turn. If this
+# spell was kicked, instead any number of target creatures you control gain
+# indestructible until end of turn.
+#
+# CR 601.2c: a kicked spell is cast at the targets of its kicked text, so the
+# kicked cast takes two targets where the unkicked one takes one.
+
+[[scenarios]]
+name = "DR1 kicked takes two targets"
+active_player = 0
+script = [
+  { action = "cast", card = "Divine Resilience", kicker = true, targets = ["courser", "bears"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.1", card = "Plains" },
+  { label = "land.2", card = "Plains" },
+  { label = "land.3", card = "Plains" },
+  { label = "land.4", card = "Plains" },
+  { label = "courser", card = "Centaur Courser" },
+  { label = "bears", card = "Grizzly Bears" },
+]
+hand = ["Divine Resilience"]
+
+[scenarios.setup.P1]
+battlefield = []
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P0", card = "Divine Resilience", count = 1 },
+]

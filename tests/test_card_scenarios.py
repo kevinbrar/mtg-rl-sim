@@ -1358,6 +1358,38 @@ def test_load_specs_rejects_invalid_cast_sacrifice_choices(
 
 
 @pytest.mark.parametrize(
+    ("action", "message"),
+    [
+        (
+            '{ action = "pass_until_resolved", kicker = true }',
+            "only valid for cast actions",
+        ),
+        ('{ action = "cast", card = "Memnite", kicker = "yes" }', "must be a boolean"),
+        (
+            '{ action = "cast", card = "Memnite", kicker = true, x = 1 }',
+            "cannot be combined",
+        ),
+        (
+            '{ action = "cast", card = "Memnite", kicker = false, expect = "refused" }',
+            "cannot be combined",
+        ),
+    ],
+)
+def test_load_specs_rejects_invalid_cast_kicker(
+    tmp_path: Path, action: str, message: str
+) -> None:
+    spec = tmp_path / "invalid-cast-kicker.toml"
+    spec.write_text(
+        f'[[scenarios]]\nname = "invalid cast kicker"\nscript = [{action}]\n\n'
+        '[scenarios.setup.P0]\nhand = ["Memnite"]\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        load_specs([spec])
+
+
+@pytest.mark.parametrize(
     ("action", "setup", "message"),
     [
         (

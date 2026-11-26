@@ -9,7 +9,10 @@ use engine::game::game_object::GameObject;
 use engine::game::mana_abilities::is_mana_ability;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::game::scenario_db::GameScenarioDbExt;
-use engine::types::ability::{AdditionalCost, EffectKind, ReplacementMode};
+use engine::types::ability::{
+    effect_refs_parent_target, AbilityCondition, AdditionalCost, EffectKind, ReplacementMode,
+};
+use engine::types::keywords::KeywordKind;
 use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::{
     actions::{GameAction, OutsideGameSelection, UnlessCostBranch},
@@ -1976,6 +1979,7 @@ fn cast_target_decision_slot_count(
     spell: ObjectId,
     player: PlayerId,
     x: Option<u32>,
+    kicked: bool,
 ) -> Result<usize, String> {
     let definition = state
         .objects
@@ -1984,6 +1988,24 @@ fn cast_target_decision_slot_count(
         .ok_or_else(|| "cast.targets could not find the spell's ability".to_string())?;
     let mut resolved = build_resolved_from_def(definition, spell, player);
     resolved.kind = AbilityKind::Spell;
+    // CR 601.2c: a kicked spell's targets are those of its kicked text, unless
+    // that text reuses the base target ("that creature").
+    let mut node = definition.sub_ability.as_deref();
+    let mut kicked_text_has_own_targets = false;
+    while let Some(sub) = node {
+        if matches!(
+            sub.condition,
+            Some(AbilityCondition::AdditionalCostPaidInstead)
+        ) {
+            kicked_text_has_own_targets = !effect_refs_parent_target(&sub.effect);
+            break;
+        }
+        node = sub.sub_ability.as_deref();
+    }
+    if kicked && kicked_text_has_own_targets {
+        resolved.context.additional_cost_paid = true;
+        resolved.set_context_recursive(resolved.context.clone());
+    }
     if let Some(x) = x {
         resolved.set_chosen_x_recursive(x);
     }
@@ -5126,6 +5148,7 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                         spell,
                         player,
                         x,
+                        action.get("kicker").and_then(Value::as_bool) == Some(true),
                     )?)
                 } else {
                     None
@@ -5164,6 +5187,15 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                             else {
                                 return Err(classified_error.to_string());
                             };
+                            // A cast refused whatever is chosen must not be in
+                            // the engine's own list of legal actions. With
+                            // scripted targets only those targets are refused,
+                            // and the cast itself may be legal.
+                            if action.get("targets").is_none() {
+                                return Err(format!(
+                                    "script[{action_index}] cast of {card} is refused but the engine offers it as a legal action: {classified_error}"
+                                ));
+                            }
                             let after = project(attempt.state(), &labels, None, true);
                             record_refusal(
                                 action_index,
@@ -5182,6 +5214,17 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 } else {
                     None
                 };
+                if action.get("kicker").is_some()
+                    && !runner
+                        .state()
+                        .objects
+                        .get(&spell)
+                        .is_some_and(|object| object.has_keyword_kind(KeywordKind::Kicker))
+                {
+                    return Err(format!(
+                        "script[{action_index}] cast.kicker is scripted but {card} has no kicker"
+                    ));
+                }
                 let cast = runner.cast(spell);
                 let cast = if let Some(x) = x { cast.x(x) } else { cast };
                 let cast = if let Some(sacrifices) = sacrifice_objects.as_ref() {
@@ -5195,6 +5238,29 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 } else {
                     cast
                 };
+                let cast = match action.get("kicker") {
+                    None => cast,
+                    Some(value) => {
+                        if x.is_some()
+                            || sacrifice_objects.is_some()
+                            || action.get("alternative_cost").is_some()
+                            || action.get("expect").is_some()
+                        {
+                            return Err(format!(
+                                "script[{action_index}] cast.kicker cannot be combined with x, sacrifice, alternative_cost or expect"
+                            ));
+                        }
+                        match value.as_bool() {
+                            Some(true) => cast.accept_optional(),
+                            Some(false) => cast.decline_optional(),
+                            None => {
+                                return Err(format!(
+                                    "script[{action_index}] cast.kicker must be a boolean"
+                                ))
+                            }
+                        }
+                    }
+                };
                 let cast = if action.get("targets").is_some() {
                     cast.target_slot_selections(&target_slots)
                 } else {
@@ -5203,6 +5269,20 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 let committed = cast
                     .commit_with_card_choices(&mut card_choice_groups)
                     .map_err(|error| error.to_string())?;
+                if let Some(kicker) = action.get("kicker").and_then(Value::as_bool) {
+                    let was_kicked = committed
+                        .state()
+                        .spells_cast_this_turn_by_player
+                        .get(&player)
+                        .and_then(|records| records.last())
+                        .is_some_and(|record| record.was_kicked);
+                    if was_kicked != kicker {
+                        return Err(format!(
+                            "script[{action_index}] cast.kicker = {kicker} but {card} was cast with kicker {}",
+                            if was_kicked { "paid" } else { "unpaid" }
+                        ));
+                    }
+                }
                 if let (Some(choice), Some(before)) = (&mana_choice, &mana_pool_before) {
                     verify_mana_choice_spent(
                         choice,
@@ -6324,9 +6404,14 @@ mod tests {
                     .id();
                 let selections = [Some(TargetRef::Object(artifact))];
                 let mut runner = scenario.build();
-                let decision_slot_count =
-                    cast_target_decision_slot_count(runner.state(), spell, PlayerId(0), None)
-                        .unwrap();
+                let decision_slot_count = cast_target_decision_slot_count(
+                    runner.state(),
+                    spell,
+                    PlayerId(0),
+                    None,
+                    false,
+                )
+                .unwrap();
                 assert_eq!(decision_slot_count, 1);
                 let committed = runner
                     .cast(spell)
@@ -6401,14 +6486,15 @@ mod tests {
                 let player = runner.state().active_player;
                 assert_eq!(player, PlayerId(1));
                 assert_eq!(
-                    cast_target_decision_slot_count(runner.state(), spell, player, None),
+                    cast_target_decision_slot_count(runner.state(), spell, player, None, false),
                     Ok(1)
                 );
                 assert!(cast_target_decision_slot_count(
                     runner.state(),
                     spell,
                     initial_active,
-                    None
+                    None,
+                    false
                 )
                 .is_err());
             })

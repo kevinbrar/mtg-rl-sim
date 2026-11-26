@@ -1,0 +1,33 @@
+# Prohibit {1}{U} Instant
+# Kicker {2} (You may pay an additional {2} as you cast this spell.)
+# Counter target spell if its mana value is 2 or less. If this spell was
+# kicked, counter that spell if its mana value is 4 or less instead.
+#
+# CR 601.2c: "that spell" in the kicked clause is the spell's one target, so
+# with no spell on the stack Prohibit can't be cast, kicked or not.
+
+[[scenarios]]
+name = "PH1 not castable with no spell to target, kicker affordable"
+active_player = 0
+script = [
+  { action = "cast", card = "Prohibit", expect = "refused" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.1", card = "Island" },
+  { label = "land.2", card = "Island" },
+  { label = "land.3", card = "Island" },
+  { label = "land.4", card = "Island" },
+  { label = "land.5", card = "Island" },
+  { label = "land.6", card = "Island" },
+]
+hand = ["Prohibit"]
+
+[scenarios.setup.P1]
+battlefield = []
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Prohibit", count = 1 },
+]
