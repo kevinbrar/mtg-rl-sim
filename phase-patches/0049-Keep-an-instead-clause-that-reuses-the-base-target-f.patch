@@ -1,4 +1,4 @@
-From bfd609e7fea8c5b7bfe76a8db2727548d2e306cd Mon Sep 17 00:00:00 2001
+From e5ca40e28f49aa5379a1302e59033c2d611a8ff3 Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Thu, 26 Nov 2026 03:32:00 +0000
 Subject: [PATCH] Keep an 'instead' clause that reuses the base target from
@@ -12,14 +12,14 @@ through to the base castability check; a clause with its own target
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
- crates/engine/src/game/ability_utils.rs       | 30 ++++----
- .../kicked_instead_spell_needs_base_target.rs | 71 +++++++++++++++++++
+ crates/engine/src/game/ability_utils.rs       | 32 +++---
+ .../kicked_instead_spell_needs_base_target.rs | 97 +++++++++++++++++++
  crates/engine/tests/integration/main.rs       |  1 +
- 3 files changed, 90 insertions(+), 12 deletions(-)
+ 3 files changed, 117 insertions(+), 13 deletions(-)
  create mode 100644 crates/engine/tests/integration/kicked_instead_spell_needs_base_target.rs
 
 diff --git a/crates/engine/src/game/ability_utils.rs b/crates/engine/src/game/ability_utils.rs
-index 74cd45e52..b5b4c17d3 100644
+index 74cd45e52..938542eec 100644
 --- a/crates/engine/src/game/ability_utils.rs
 +++ b/crates/engine/src/game/ability_utils.rs
 @@ -886,14 +886,17 @@ pub fn additional_cost_instead_spell_has_legal_targets(
@@ -45,7 +45,7 @@ index 74cd45e52..b5b4c17d3 100644
          instead_node = sub.sub_ability.as_deref();
      }
      if !found_instead {
-@@ -902,19 +905,22 @@ pub fn additional_cost_instead_spell_has_legal_targets(
+@@ -902,26 +905,29 @@ pub fn additional_cost_instead_spell_has_legal_targets(
      let mut resolved = build_resolved_from_def(ability_def, object_id, player);
      resolved.context.additional_cost_paid = true;
      resolved.set_context_recursive(resolved.context.clone());
@@ -71,23 +71,31 @@ index 74cd45e52..b5b4c17d3 100644
 +        // ParentTarget, e.g. Firebending Lesson's kicker or Torch the Tower's
 +        // bargain) inherits the base clause's target requirement, paid or
 +        // not, so fall through to the base castability check.
-+        Ok(slots) if slots.is_empty() => !reuses_base_target,
          Ok(slots) => {
              let constraints = resolved
                  .sub_ability
+                 .as_ref()
+                 .map(|sub| &sub.target_constraints)
+                 .unwrap_or(&resolved.target_constraints);
+-            has_legal_target_assignment_for_ability(state, &resolved, &slots, constraints)
++            (!slots.is_empty() || !reuses_base_target)
++                && has_legal_target_assignment_for_ability(state, &resolved, &slots, constraints)
+         }
+         Err(_) => false,
+     }
 diff --git a/crates/engine/tests/integration/kicked_instead_spell_needs_base_target.rs b/crates/engine/tests/integration/kicked_instead_spell_needs_base_target.rs
 new file mode 100644
-index 000000000..687798d60
+index 000000000..6bad18b0f
 --- /dev/null
 +++ b/crates/engine/tests/integration/kicked_instead_spell_needs_base_target.rs
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,97 @@
 +//! CR 601.2c + CR 702.33d: a kicker "instead" clause that refers back to the
 +//! spell's own target ("it deals 5 damage to that creature instead") adds no
 +//! target of its own. With no creature to target, the spell can't be cast,
 +//! kicked or not. A kicked clause that names a new target still makes the
 +//! spell castable when only that target exists.
 +
-+use engine::game::casting::can_cast_object_now;
++use engine::game::casting::{can_cast_object_now, spell_has_legal_targets};
 +use engine::game::scenario::{GameScenario, P0, P1};
 +use engine::types::mana::{ManaType, ManaUnit};
 +use engine::types::phase::Phase;
@@ -95,6 +103,8 @@ index 000000000..687798d60
 +const FIREBENDING_LESSON: &str = "Kicker {4} (You may pay an additional {4} as you cast this spell.)\nFirebending Lesson deals 2 damage to target creature. If this spell was kicked, it deals 5 damage to that creature instead.";
 +const BLOODCHIEFS_THIRST: &str = "Kicker {2}{B} (You may pay an additional {2}{B} as you cast this spell.)\nDestroy target creature or planeswalker with mana value 2 or less. If this spell was kicked, instead destroy target creature or planeswalker.";
 +const CONDITIONAL_DESTROY: &str = "Kicker {2} (You may pay an additional {2} as you cast this spell.)\nDestroy target creature if its mana value is 2 or less. If this spell was kicked, destroy that creature if its mana value is 5 or less instead.";
++const KICKED_TEXT_WITHOUT_TARGETS: &str = "Kicker {2} (You may pay an additional {2} as you cast this spell.)\nDestroy target creature with mana value 2 or less. If this spell was kicked, instead destroy all creatures.";
++const KICKED_TEXT_WITH_TWO_TARGETS: &str = "Kicker {2} (You may pay an additional {2} as you cast this spell.)\nDestroy target creature with mana value 2 or less. If this spell was kicked, instead destroy two target creatures.";
 +
 +fn castable(oracle: &str, creature_mana_value: Option<u32>) -> bool {
 +    let mut scenario = GameScenario::new();
@@ -129,7 +139,16 @@ index 000000000..687798d60
 +        .add_spell_to_hand_from_oracle(P0, "Spell", true, oracle)
 +        .id();
 +    let runner = scenario.build();
-+    can_cast_object_now(runner.state(), P0, spell)
++    let state = runner.state();
++    let castable = can_cast_object_now(state, P0, spell);
++    // The target check alone must agree: other cast gates must not be what
++    // keeps a targetless spell out of the legal actions.
++    assert_eq!(
++        spell_has_legal_targets(state, &state.objects[&spell], P0),
++        castable,
++        "target check disagrees with castability"
++    );
++    castable
 +}
 +
 +#[test]
@@ -151,6 +170,21 @@ index 000000000..687798d60
 +fn kicked_clause_that_reuses_the_target_below_the_instead_node_does_not_make_the_spell_castable() {
 +    assert!(!castable(CONDITIONAL_DESTROY, None));
 +    assert!(castable(CONDITIONAL_DESTROY, Some(4)));
++}
++
++/// CR 601.2c: kicked text that has no target and does not read the base
++/// target replaces the targeted text, so the kicked spell needs no target.
++#[test]
++fn kicked_clause_without_any_target_makes_the_spell_castable() {
++    assert!(castable(KICKED_TEXT_WITHOUT_TARGETS, None));
++}
++
++/// CR 601.2c + CR 115.3: kicked text with two targets needs two different
++/// creatures; one creature fills each slot alone but not both.
++#[test]
++fn kicked_clause_with_two_targets_needs_two_legal_targets() {
++    assert!(!castable(KICKED_TEXT_WITH_TWO_TARGETS, Some(5)));
++    assert!(castable(KICKED_TEXT_WITH_TWO_TARGETS, Some(2)));
 +}
 diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
 index 5bf9d89e4..da45e8abd 100644
