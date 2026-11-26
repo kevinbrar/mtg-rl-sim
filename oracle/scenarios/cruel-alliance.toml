@@ -1,0 +1,65 @@
+# Cruel Alliance {2}{B} Sorcery
+# Teamwork 2 (As an additional cost to cast this spell, you may tap any number
+# of creatures you control with total power 2 or more.)
+# Exile target creature with mana value 3 or less. If this spell was cast using
+# teamwork, instead exile target creature and you gain 3 life.
+#
+# CR 601.2b-c + CR 601.2f: against a creature with mana value 6 only the
+# teamwork text has a legal target, so the spell can be cast only when
+# creatures with total power 2 can be tapped.
+
+[[scenarios]]
+name = "CA1 against a six-drop with no creature to tap the spell can't be cast"
+active_player = 0
+script = [
+  { action = "cast", card = "Cruel Alliance", expect = "refused" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.1", card = "Swamp" },
+  { label = "land.2", card = "Swamp" },
+  { label = "land.3", card = "Swamp" },
+  { label = "land.4", card = "Swamp" },
+  { label = "land.5", card = "Swamp" },
+  { label = "land.6", card = "Swamp" },
+]
+hand = ["Cruel Alliance"]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "maw", card = "Colossal Dreadmaw" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Cruel Alliance", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Colossal Dreadmaw", count = 1 },
+]
+
+[[scenarios]]
+name = "CA2 without teamwork exiles a two-drop"
+active_player = 0
+script = [
+  { action = "cast", card = "Cruel Alliance", targets = ["bears"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.1", card = "Swamp" },
+  { label = "land.2", card = "Swamp" },
+  { label = "land.3", card = "Swamp" },
+]
+hand = ["Cruel Alliance"]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "bears", card = "Grizzly Bears" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P0", card = "Cruel Alliance", count = 1 },
+  { zone = "exile", player = "P1", card = "Grizzly Bears", count = 1 },
+]

@@ -571,3 +571,18 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
   those two beside the delayed trigger, and an earlier life-loss event beside
   one combat trigger, beside an order prompt, and with an order prompt of its own).
 - Runtime-only; no parser or card-data change.
+
+## Patch 0051 — an "instead" clause's targets need its additional cost (CR 601.2b, 601.2c, 601.2f)
+
+- `casting.rs`: the castability target check returns `SpellTargetLegality`
+  (`None`, `Legal`, `OnlyWithAdditionalCost`) instead of a bool. When only the
+  additional-cost "instead" clause has legal targets, `can_cast_object_now`
+  also requires `optional_additional_cost_is_payable`: some kicker cost or
+  optional additional cost (printed or queued, e.g. Teamwork) passes
+  `additional_cost_declaration_is_offerable` against the spell's own cost.
+  Before, Divine Resilience, Bloodchief's Thirst and Cruel Alliance were
+  offered with no base target and an unpayable additional cost.
+- Regression: `instead_target_needs_payable_additional_cost.rs` (kicker mana
+  short by one and exact, Teamwork with and without a creature to tap, a base
+  target present, and a kicked "any number of targets" clause with none).
+- Runtime-only; no parser or card-data change.

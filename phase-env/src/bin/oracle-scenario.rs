@@ -5153,6 +5153,25 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 } else {
                     None
                 };
+                if action.get("kicker").is_some()
+                    && !runner
+                        .state()
+                        .objects
+                        .get(&spell)
+                        .is_some_and(|object| object.has_keyword_kind(KeywordKind::Kicker))
+                {
+                    return Err(format!(
+                        "script[{action_index}] cast.kicker is scripted but {card} has no kicker"
+                    ));
+                }
+                if action
+                    .get("kicker")
+                    .is_some_and(|kicker| !kicker.is_boolean())
+                {
+                    return Err(format!(
+                        "script[{action_index}] cast.kicker must be a boolean"
+                    ));
+                }
                 let before = expect_refused.then(|| project(runner.state(), &labels, None, true));
                 if expect_refused {
                     if let Some(mode) = classify_refusal(offered, false) {
@@ -5214,17 +5233,6 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                 } else {
                     None
                 };
-                if action.get("kicker").is_some()
-                    && !runner
-                        .state()
-                        .objects
-                        .get(&spell)
-                        .is_some_and(|object| object.has_keyword_kind(KeywordKind::Kicker))
-                {
-                    return Err(format!(
-                        "script[{action_index}] cast.kicker is scripted but {card} has no kicker"
-                    ));
-                }
                 let cost_choice = match action.get("cost_choice") {
                     None => None,
                     Some(value) => {
@@ -5282,10 +5290,9 @@ fn run_one(spec: &Value, db: &CardDatabase) -> Result<Value, String> {
                         if x.is_some()
                             || sacrifice_objects.is_some()
                             || action.get("alternative_cost").is_some()
-                            || action.get("expect").is_some()
                         {
                             return Err(format!(
-                                "script[{action_index}] cast.kicker cannot be combined with x, sacrifice, alternative_cost or expect"
+                                "script[{action_index}] cast.kicker cannot be combined with x, sacrifice or alternative_cost"
                             ));
                         }
                         match value.as_bool() {

@@ -33,3 +33,52 @@ battlefield = []
 all = [
   { zone = "graveyard", player = "P0", card = "Divine Resilience", count = 1 },
 ]
+
+# CR 601.2b-c + CR 601.2f: with no creature to target, only the kicked text
+# (any number of targets, so none) can be cast, and only when the kicker can
+# be paid. XMage does not list the kicked cast with no creature at all, so that
+# cast is covered by a Phase test only.
+
+[[scenarios]]
+name = "DR2 with no creature and no mana for the kicker the spell can't be cast"
+active_player = 0
+script = [
+  { action = "cast", card = "Divine Resilience", expect = "refused" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.1", card = "Plains" },
+]
+hand = ["Divine Resilience"]
+
+[scenarios.setup.P1]
+battlefield = []
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Divine Resilience", count = 1 },
+]
+
+[[scenarios]]
+name = "DR3 unkicked takes one target"
+active_player = 0
+script = [
+  { action = "cast", card = "Divine Resilience", kicker = false, targets = ["bears"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.1", card = "Plains" },
+  { label = "bears", card = "Grizzly Bears" },
+]
+hand = ["Divine Resilience"]
+
+[scenarios.setup.P1]
+battlefield = []
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P0", card = "Divine Resilience", count = 1 },
+]

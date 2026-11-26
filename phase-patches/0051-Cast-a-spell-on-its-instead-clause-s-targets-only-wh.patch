@@ -1,0 +1,375 @@
+From a40c01f5471ae35040479b606d4e5ea04769b460 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Thu, 26 Nov 2026 11:40:05 +0000
+Subject: [PATCH] Cast a spell on its 'instead' clause's targets only when that
+ clause's additional cost can be paid (CR 601.2b, CR 601.2c, CR 601.2f)
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/casting.rs             | 143 ++++++++++++++----
+ ...ad_target_needs_payable_additional_cost.rs | 127 ++++++++++++++++
+ crates/engine/tests/integration/main.rs       |   1 +
+ 3 files changed, 242 insertions(+), 29 deletions(-)
+ create mode 100644 crates/engine/tests/integration/instead_target_needs_payable_additional_cost.rs
+
+diff --git a/crates/engine/src/game/casting.rs b/crates/engine/src/game/casting.rs
+index a848177ee..5059b128c 100644
+--- a/crates/engine/src/game/casting.rs
++++ b/crates/engine/src/game/casting.rs
+@@ -20673,11 +20673,91 @@ pub fn spell_has_legal_targets_with_probe(
+     player: PlayerId,
+     probe: Option<&PriorityCastProbe>,
+ ) -> bool {
++    spell_target_legality_with_probe(state, object_id, player, probe) != SpellTargetLegality::None
++}
++
++/// CR 601.2c: whether a spell's targets can be chosen, and on what terms.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum SpellTargetLegality {
++    /// No legal choice of targets exists.
++    None,
++    /// The targets the spell requires as printed can be chosen.
++    Legal,
++    /// CR 601.2b-c: only the targets of an "instead" clause can be chosen, so
++    /// the spell can be cast only with the additional cost that clause reads.
++    OnlyWithAdditionalCost,
++}
++
++fn spell_target_legality_with_probe(
++    state: &GameState,
++    object_id: ObjectId,
++    player: PlayerId,
++    probe: Option<&PriorityCastProbe>,
++) -> SpellTargetLegality {
+     with_flushed_cast_state(state, player, probe, |flushed| {
+-        spell_has_legal_targets_in_flushed_state(flushed, object_id, player)
++        spell_target_legality_in_flushed_state(flushed, object_id, player)
+     })
+ }
+ 
++fn spell_has_legal_targets_in_flushed_state(
++    state: &GameState,
++    object_id: ObjectId,
++    player: PlayerId,
++) -> bool {
++    spell_target_legality_in_flushed_state(state, object_id, player) != SpellTargetLegality::None
++}
++
++/// CR 601.2b + CR 601.2f: whether an optional additional cost of the spell
++/// (a kicker, or a queued cost such as Teamwork or Bargain) can be paid with
++/// the spell's total cost. A spell whose only legal targets belong to its
++/// "instead" clause can be cast only when one can.
++fn optional_additional_cost_is_payable(
++    state: &GameState,
++    player: PlayerId,
++    prepared: &PreparedSpellCast,
++) -> bool {
++    let pending = castability_pending_cast(prepared, player);
++    let printed = state
++        .objects
++        .get(&prepared.object_id)
++        .and_then(|obj| obj.additional_cost.clone());
++    let queued =
++        casting_costs::build_effective_additional_cost_queue(state, player, prepared.object_id)
++            .into_iter()
++            .map(|instance| instance.cost);
++    printed.into_iter().chain(queued).any(|additional| {
++        let costs = match additional {
++            AdditionalCost::Kicker { costs, .. } => costs,
++            AdditionalCost::Optional { cost, .. } => vec![cost],
++            AdditionalCost::Required(_) | AdditionalCost::Choice(..) => Vec::new(),
++        };
++        costs.into_iter().any(|cost| {
++            casting_costs::additional_cost_declaration_is_offerable(state, player, &pending, cost)
++                .unwrap_or(false)
++        })
++    })
++}
++
++/// The cast a castability check prices an additional cost against.
++fn castability_pending_cast(prepared: &PreparedSpellCast, player: PlayerId) -> PendingCast {
++    let resolved = prepared.ability_def.as_ref().map_or_else(
++        || ResolvedAbility::new(Effect::NoOp, Vec::new(), prepared.object_id, player),
++        |def| build_resolved_from_def(def, prepared.object_id, player),
++    );
++    let mut pending = PendingCast::new(
++        prepared.object_id,
++        prepared.card_id,
++        resolved,
++        prepared.mana_cost.clone(),
++    );
++    pending.base_cost = Some(prepared.base_mana_cost.clone());
++    pending.casting_variant = prepared.casting_variant;
++    pending.cast_timing_permission = prepared.cast_timing_permission;
++    pending.origin_zone = prepared.origin_zone;
++    pending.payment_mode = prepared.payment_mode;
++    pending
++}
++
+ /// CR 613.1: Target legality is judged on characteristics with
+ /// every continuous effect applied. Reads `probe`'s already-flushed state when
+ /// it was taken for `player` on this `state`; otherwise flushes layers on a
+@@ -20940,13 +21020,20 @@ fn legal_target_slots_for_castable_spell_in_flushed_state(
+     Ok(target_slots)
+ }
+ 
+-fn spell_has_legal_targets_in_flushed_state(
++fn spell_target_legality_in_flushed_state(
+     state: &GameState,
+     object_id: ObjectId,
+     player: PlayerId,
+-) -> bool {
++) -> SpellTargetLegality {
++    let legality = |legal: bool| {
++        if legal {
++            SpellTargetLegality::Legal
++        } else {
++            SpellTargetLegality::None
++        }
++    };
+     let Some(obj) = state.objects.get(&object_id) else {
+-        return false;
++        return SpellTargetLegality::None;
+     };
+ 
+     // Aura spells target via the Enchant keyword rather than the effect's target field.
+@@ -20959,23 +21046,23 @@ fn spell_has_legal_targets_in_flushed_state(
+                 None
+             }
+         });
+-        return enchant_filter.is_some_and(|filter| {
++        return legality(enchant_filter.is_some_and(|filter| {
+             !targeting::find_legal_targets(state, &filter, player, obj.id).is_empty()
+-        });
++        }));
+     }
+ 
+     // CR 700.2a + CR 601.2b-c: Modal spells are castable only when a legal
+     // mode selection exists — enough modes with a legal targeting assignment
+     // (or no targets) to meet the spell's minimum.
+     if obj.modal.is_some() {
+-        return castable_spell_modes_in_flushed_state(state, obj.id, player).is_some();
++        return legality(castable_spell_modes_in_flushed_state(state, obj.id, player).is_some());
+     }
+ 
+     // Only Spell-kind abilities contribute targets when casting.
+     // Activated/Database abilities are irrelevant to spell castability.
+     let ability_def = match combined_spell_ability_def(obj) {
+         Some(a) => a,
+-        None => return true, // Permanent with no spell abilities needs no targets
++        None => return SpellTargetLegality::Legal, // Permanent with no spell abilities needs no targets
+     };
+ 
+     let resolved = build_resolved_from_def(&ability_def, obj.id, player);
+@@ -20990,14 +21077,17 @@ fn spell_has_legal_targets_in_flushed_state(
+         Err(_) => false,
+     };
+     if base_ok {
+-        return true;
++        return SpellTargetLegality::Legal;
+     }
+     if additional_cost_instead_spell_has_legal_targets(state, &ability_def, obj.id, player) {
+-        return true;
++        return SpellTargetLegality::OnlyWithAdditionalCost;
+     }
+-    ability_target_legality_needs_chosen_x(&resolved, ability_def.distribute.as_ref())
+-        && (casting_costs::required_additional_cost_can_declare_x(state, player, obj.id).is_some()
+-            || casting_costs::cost_has_x(&obj.mana_cost))
++    legality(
++        ability_target_legality_needs_chosen_x(&resolved, ability_def.distribute.as_ref())
++            && (casting_costs::required_additional_cost_can_declare_x(state, player, obj.id)
++                .is_some()
++                || casting_costs::cost_has_x(&obj.mana_cost)),
++    )
+ }
+ 
+ /// The mode choice a modal spell's `ModeChoice` prompt presents, with what it
+@@ -21853,21 +21943,7 @@ fn can_cast_prepared_now_with_probe(
+         .get(&prepared.object_id)
+         .and_then(|o| o.additional_cost.as_ref())
+     {
+-        let resolved = prepared.ability_def.as_ref().map_or_else(
+-            || ResolvedAbility::new(Effect::NoOp, Vec::new(), prepared.object_id, player),
+-            |def| build_resolved_from_def(def, prepared.object_id, player),
+-        );
+-        let mut pending = PendingCast::new(
+-            prepared.object_id,
+-            prepared.card_id,
+-            resolved,
+-            prepared.mana_cost.clone(),
+-        );
+-        pending.base_cost = Some(prepared.base_mana_cost.clone());
+-        pending.casting_variant = prepared.casting_variant;
+-        pending.cast_timing_permission = prepared.cast_timing_permission;
+-        pending.origin_zone = prepared.origin_zone;
+-        pending.payment_mode = prepared.payment_mode;
++        let pending = castability_pending_cast(prepared, player);
+         let branch_is_offerable = |cost: &AbilityCost| {
+             casting_costs::additional_cost_declaration_is_offerable(
+                 state,
+@@ -21934,7 +22010,16 @@ fn can_cast_prepared_now_with_probe(
+     // CR 601.2c + CR 700.2a: the spell needs a legal target for each target it
+     // requires — for a modal spell, a legal mode selection (see
+     // `spell_has_legal_targets_in_flushed_state`).
+-    let targets_ok = spell_has_legal_targets_with_probe(state, obj.id, player, probe);
++    let target_legality = spell_target_legality_with_probe(state, obj.id, player, probe);
++    // CR 601.2b-c + CR 601.2f: a spell whose only legal targets are those of
++    // its "instead" clause is cast with the additional cost that clause reads,
++    // so that cost has to be payable with the rest of the total cost.
++    if target_legality == SpellTargetLegality::OnlyWithAdditionalCost
++        && !optional_additional_cost_is_payable(state, player, prepared)
++    {
++        return false;
++    }
++    let targets_ok = target_legality != SpellTargetLegality::None;
+     let mana_payable = can_feasibly_pay_harmonize_mana_cost_with_probe(
+         state,
+         player,
+diff --git a/crates/engine/tests/integration/instead_target_needs_payable_additional_cost.rs b/crates/engine/tests/integration/instead_target_needs_payable_additional_cost.rs
+new file mode 100644
+index 000000000..c11b98dd5
+--- /dev/null
++++ b/crates/engine/tests/integration/instead_target_needs_payable_additional_cost.rs
+@@ -0,0 +1,127 @@
++//! CR 601.2b-c + CR 601.2f: when only the targets of a spell's "instead"
++//! clause can be chosen, the spell is cast with the additional cost that
++//! clause reads. If that cost can't be paid with the rest of the total cost,
++//! the spell can't be cast.
++
++use engine::game::casting::can_cast_object_now;
++use engine::game::scenario::{GameScenario, P0, P1};
++use engine::types::identifiers::ObjectId;
++use engine::types::mana::{ManaCost, ManaType, ManaUnit};
++use engine::types::phase::Phase;
++
++const BLOODCHIEFS_THIRST: &str = "Kicker {2}{B} (You may pay an additional {2}{B} as you cast this spell.)\nDestroy target creature or planeswalker with mana value 2 or less. If this spell was kicked, instead destroy target creature or planeswalker.";
++const DIVINE_RESILIENCE: &str = "Kicker {2}{W} (You may pay an additional {2}{W} as you cast this spell.)\nTarget creature you control gains indestructible until end of turn. If this spell was kicked, instead any number of target creatures you control gain indestructible until end of turn.";
++const CRUEL_ALLIANCE: &str = "Teamwork 2 (As an additional cost to cast this spell, you may tap any number of creatures you control with total power 2 or more.)\nExile target creature with mana value 3 or less. If this spell was cast using teamwork, instead exile target creature and you gain 3 life.";
++
++struct Board {
++    mana: usize,
++    opposing_mana_value: u32,
++    /// Power and tapped state of P0's one creature.
++    own_creature: Option<(i32, bool)>,
++}
++
++fn castable(oracle: &str, mana_cost: ManaCost, mana_type: ManaType, board: Board) -> bool {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    scenario.with_mana_pool(
++        P0,
++        (0..board.mana)
++            .map(|_| ManaUnit::new(mana_type, ObjectId(0), false, vec![]))
++            .collect(),
++    );
++    scenario
++        .add_creature(P1, "Opposing", 6, 6)
++        .with_mana_cost(ManaCost::generic(board.opposing_mana_value));
++    // Mana value 4: never a legal target of either base clause.
++    let own = board.own_creature.map(|(power, tapped)| {
++        let id = scenario
++            .add_creature(P0, "Own", power, 4)
++            .with_mana_cost(ManaCost::generic(4))
++            .id();
++        (id, tapped)
++    });
++    let spell = scenario
++        .add_spell_to_hand_from_oracle(P0, "Spell", false, oracle)
++        .with_mana_cost(mana_cost)
++        .id();
++    let mut runner = scenario.build();
++    if let Some((id, tapped)) = own {
++        runner.state_mut().objects.get_mut(&id).unwrap().tapped = tapped;
++    }
++    can_cast_object_now(runner.state(), P0, spell)
++}
++
++fn black(generic: u32) -> ManaCost {
++    ManaCost::Cost {
++        shards: vec![engine::types::mana::ManaCostShard::Black],
++        generic,
++    }
++}
++
++#[test]
++fn kicked_only_target_needs_an_affordable_kicker() {
++    let thirst = |black_mana, opposing_mana_value| {
++        castable(
++            BLOODCHIEFS_THIRST,
++            black(0),
++            ManaType::Black,
++            Board {
++                mana: black_mana,
++                opposing_mana_value,
++                own_creature: None,
++            },
++        )
++    };
++    // {B} + kicker {2}{B} = four mana.
++    assert!(!thirst(1, 5));
++    assert!(!thirst(3, 5));
++    assert!(thirst(4, 5));
++    // The base clause has its own legal target: no kicker needed.
++    assert!(thirst(1, 2));
++}
++
++#[test]
++fn teamwork_only_target_needs_creatures_to_tap() {
++    let alliance = |opposing_mana_value, own_creature| {
++        castable(
++            CRUEL_ALLIANCE,
++            black(2),
++            ManaType::Black,
++            Board {
++                mana: 3,
++                opposing_mana_value,
++                own_creature,
++            },
++        )
++    };
++    assert!(!alliance(6, None));
++    assert!(!alliance(6, Some((1, false))));
++    assert!(!alliance(6, Some((2, true))));
++    assert!(alliance(6, Some((2, false))));
++    // The base clause has its own legal target: no teamwork needed.
++    assert!(alliance(3, None));
++}
++
++/// CR 601.2c: the kicked text takes any number of targets, so with no creature
++/// you control the kicked spell is cast with none, and the unkicked one can't be.
++#[test]
++fn kicked_any_number_of_targets_needs_an_affordable_kicker() {
++    let resilience = |mana| {
++        castable(
++            DIVINE_RESILIENCE,
++            ManaCost::Cost {
++                shards: vec![engine::types::mana::ManaCostShard::White],
++                generic: 0,
++            },
++            ManaType::White,
++            Board {
++                mana,
++                opposing_mana_value: 6,
++                own_creature: None,
++            },
++        )
++    };
++    assert!(!resilience(1));
++    assert!(!resilience(3));
++    assert!(resilience(4));
++}
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index 011daef2c..ab55eb5d3 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -113,6 +113,7 @@ mod heroic_sacrifice_redirect;
+ mod hunters_insight_combat_draw;
+ mod indoraptor_enrage_chosen_opponent;
+ mod innocent_bystander_whole_event_damage;
++mod instead_target_needs_payable_additional_cost;
+ mod interaction_contract;
+ mod inti_trigger_order;
+ mod invasion_of_alara_8750;
+-- 
+2.56.0
+

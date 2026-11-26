@@ -1236,10 +1236,10 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                 )
             if not isinstance(action["kicker"], bool):
                 raise TypeError(f"{context} must be a boolean")
-            if {"sacrifice", "alternative_cost", "x", "expect"} & action.keys():
+            if {"sacrifice", "alternative_cost", "x"} & action.keys():
                 raise ValueError(
-                    f"{context} cannot be combined with x, sacrifice, "
-                    "alternative_cost or expect"
+                    f"{context} cannot be combined with x, sacrifice or "
+                    "alternative_cost"
                 )
         if "cost_choice" in action:
             context = f"{name}: script[{index}].cost_choice"

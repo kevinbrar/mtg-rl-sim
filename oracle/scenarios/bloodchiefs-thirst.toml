@@ -1,0 +1,113 @@
+# Bloodchief's Thirst {B} Sorcery
+# Kicker {2}{B} (You may pay an additional {2}{B} as you cast this spell.)
+# Destroy target creature or planeswalker with mana value 2 or less. If this
+# spell was kicked, instead destroy target creature or planeswalker.
+#
+# CR 601.2b-c + CR 601.2f: against a creature with mana value 6 only the kicked
+# text has a legal target, so the spell can be cast only when the kicker can be
+# paid.
+
+[[scenarios]]
+name = "BC1 against a six-drop without mana for the kicker the spell can't be cast kicked"
+active_player = 0
+script = [
+  { action = "cast", card = "Bloodchief's Thirst", kicker = true, targets = ["maw"], expect = "refused" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.1", card = "Swamp" },
+  { label = "land.2", card = "Swamp" },
+  { label = "land.3", card = "Swamp" },
+]
+hand = ["Bloodchief's Thirst"]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "maw", card = "Colossal Dreadmaw" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Bloodchief's Thirst", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Colossal Dreadmaw", count = 1 },
+]
+
+[[scenarios]]
+name = "BC2 kicked destroys the six-drop"
+active_player = 0
+script = [
+  { action = "cast", card = "Bloodchief's Thirst", kicker = true, targets = ["maw"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.1", card = "Swamp" },
+  { label = "land.2", card = "Swamp" },
+  { label = "land.3", card = "Swamp" },
+  { label = "land.4", card = "Swamp" },
+]
+hand = ["Bloodchief's Thirst"]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "maw", card = "Colossal Dreadmaw" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P0", card = "Bloodchief's Thirst", count = 1 },
+  { zone = "graveyard", player = "P1", card = "Colossal Dreadmaw", count = 1 },
+]
+
+[[scenarios]]
+name = "BC3 unkicked destroys a two-drop with one land"
+active_player = 0
+script = [
+  { action = "cast", card = "Bloodchief's Thirst", kicker = false, targets = ["bears"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.1", card = "Swamp" },
+]
+hand = ["Bloodchief's Thirst"]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "bears", card = "Grizzly Bears" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P0", card = "Bloodchief's Thirst", count = 1 },
+  { zone = "graveyard", player = "P1", card = "Grizzly Bears", count = 1 },
+]
+
+[[scenarios]]
+name = "BC4 against a six-drop without mana for the kicker the spell can't be cast unkicked"
+active_player = 0
+script = [
+  { action = "cast", card = "Bloodchief's Thirst", kicker = false, expect = "refused" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "land.1", card = "Swamp" },
+  { label = "land.2", card = "Swamp" },
+  { label = "land.3", card = "Swamp" },
+]
+hand = ["Bloodchief's Thirst"]
+
+[scenarios.setup.P1]
+battlefield = [
+  { label = "maw", card = "Colossal Dreadmaw" },
+]
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Bloodchief's Thirst", count = 1 },
+  { zone = "battlefield", player = "P1", card = "Colossal Dreadmaw", count = 1 },
+]
