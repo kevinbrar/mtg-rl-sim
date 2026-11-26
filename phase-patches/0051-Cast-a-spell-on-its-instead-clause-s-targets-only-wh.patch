@@ -1,4 +1,4 @@
-From a40c01f5471ae35040479b606d4e5ea04769b460 Mon Sep 17 00:00:00 2001
+From c20b57a9aba09c34efced3f8e538525b973c28fb Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Thu, 26 Nov 2026 11:40:05 +0000
 Subject: [PATCH] Cast a spell on its 'instead' clause's targets only when that
@@ -6,17 +6,17 @@ Subject: [PATCH] Cast a spell on its 'instead' clause's targets only when that
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
- crates/engine/src/game/casting.rs             | 143 ++++++++++++++----
- ...ad_target_needs_payable_additional_cost.rs | 127 ++++++++++++++++
+ crates/engine/src/game/casting.rs             | 170 +++++++++++++++---
+ ...ad_target_needs_payable_additional_cost.rs | 160 +++++++++++++++++
  crates/engine/tests/integration/main.rs       |   1 +
- 3 files changed, 242 insertions(+), 29 deletions(-)
+ 3 files changed, 302 insertions(+), 29 deletions(-)
  create mode 100644 crates/engine/tests/integration/instead_target_needs_payable_additional_cost.rs
 
 diff --git a/crates/engine/src/game/casting.rs b/crates/engine/src/game/casting.rs
-index a848177ee..5059b128c 100644
+index a848177ee..638d34bd6 100644
 --- a/crates/engine/src/game/casting.rs
 +++ b/crates/engine/src/game/casting.rs
-@@ -20673,11 +20673,91 @@ pub fn spell_has_legal_targets_with_probe(
+@@ -20673,11 +20673,118 @@ pub fn spell_has_legal_targets_with_probe(
      player: PlayerId,
      probe: Option<&PriorityCastProbe>,
  ) -> bool {
@@ -73,17 +73,44 @@ index a848177ee..5059b128c 100644
 +        casting_costs::build_effective_additional_cost_queue(state, player, prepared.object_id)
 +            .into_iter()
 +            .map(|instance| instance.cost);
-+    printed.into_iter().chain(queued).any(|additional| {
-+        let costs = match additional {
-+            AdditionalCost::Kicker { costs, .. } => costs,
-+            AdditionalCost::Optional { cost, .. } => vec![cost],
-+            AdditionalCost::Required(_) | AdditionalCost::Choice(..) => Vec::new(),
-+        };
-+        costs.into_iter().any(|cost| {
-+            casting_costs::additional_cost_declaration_is_offerable(state, player, &pending, cost)
++    printed
++        .into_iter()
++        .chain(queued)
++        .any(|additional| match additional {
++            AdditionalCost::Kicker { costs, .. } => costs
++                .into_iter()
++                .zip([
++                    crate::types::ability::KickerVariant::First,
++                    crate::types::ability::KickerVariant::Second,
++                ])
++                .any(|(cost, variant)| kicker_is_payable(state, player, &pending, cost, variant)),
++            AdditionalCost::Optional { cost, .. } => {
++                casting_costs::additional_cost_declaration_is_offerable(
++                    state, player, &pending, cost,
++                )
 +                .unwrap_or(false)
++            }
++            AdditionalCost::Required(_) | AdditionalCost::Choice(..) => false,
 +        })
-+    })
++}
++
++/// CR 601.2f + CR 702.33a: price the kicker against the kicked spell, as the
++/// kicker announcement does, so a reduction that reads "kicked spell" (Vine
++/// Gecko) counts.
++fn kicker_is_payable(
++    state: &GameState,
++    player: PlayerId,
++    pending: &PendingCast,
++    cost: AbilityCost,
++    variant: crate::types::ability::KickerVariant,
++) -> bool {
++    let mut preview = pending.clone();
++    preview.ability.context.additional_cost_paid = true;
++    preview.ability.context.kickers_paid.push(variant);
++    let mut kicked_state = state.clone();
++    kicked_state.pending_cast = Some(Box::new(preview));
++    casting_costs::additional_cost_declaration_is_offerable(&kicked_state, player, pending, cost)
++        .unwrap_or(false)
 +}
 +
 +/// The cast a castability check prices an additional cost against.
@@ -109,7 +136,7 @@ index a848177ee..5059b128c 100644
  /// CR 613.1: Target legality is judged on characteristics with
  /// every continuous effect applied. Reads `probe`'s already-flushed state when
  /// it was taken for `player` on this `state`; otherwise flushes layers on a
-@@ -20940,13 +21020,20 @@ fn legal_target_slots_for_castable_spell_in_flushed_state(
+@@ -20940,13 +21047,20 @@ fn legal_target_slots_for_castable_spell_in_flushed_state(
      Ok(target_slots)
  }
  
@@ -133,7 +160,7 @@ index a848177ee..5059b128c 100644
      };
  
      // Aura spells target via the Enchant keyword rather than the effect's target field.
-@@ -20959,23 +21046,23 @@ fn spell_has_legal_targets_in_flushed_state(
+@@ -20959,23 +21073,23 @@ fn spell_has_legal_targets_in_flushed_state(
                  None
              }
          });
@@ -161,7 +188,7 @@ index a848177ee..5059b128c 100644
      };
  
      let resolved = build_resolved_from_def(&ability_def, obj.id, player);
-@@ -20990,14 +21077,17 @@ fn spell_has_legal_targets_in_flushed_state(
+@@ -20990,14 +21104,17 @@ fn spell_has_legal_targets_in_flushed_state(
          Err(_) => false,
      };
      if base_ok {
@@ -184,7 +211,7 @@ index a848177ee..5059b128c 100644
  }
  
  /// The mode choice a modal spell's `ModeChoice` prompt presents, with what it
-@@ -21853,21 +21943,7 @@ fn can_cast_prepared_now_with_probe(
+@@ -21853,21 +21970,7 @@ fn can_cast_prepared_now_with_probe(
          .get(&prepared.object_id)
          .and_then(|o| o.additional_cost.as_ref())
      {
@@ -207,7 +234,7 @@ index a848177ee..5059b128c 100644
          let branch_is_offerable = |cost: &AbilityCost| {
              casting_costs::additional_cost_declaration_is_offerable(
                  state,
-@@ -21934,7 +22010,16 @@ fn can_cast_prepared_now_with_probe(
+@@ -21934,7 +22037,16 @@ fn can_cast_prepared_now_with_probe(
      // CR 601.2c + CR 700.2a: the spell needs a legal target for each target it
      // requires — for a modal spell, a legal mode selection (see
      // `spell_has_legal_targets_in_flushed_state`).
@@ -227,10 +254,10 @@ index a848177ee..5059b128c 100644
          player,
 diff --git a/crates/engine/tests/integration/instead_target_needs_payable_additional_cost.rs b/crates/engine/tests/integration/instead_target_needs_payable_additional_cost.rs
 new file mode 100644
-index 000000000..c11b98dd5
+index 000000000..5754ff370
 --- /dev/null
 +++ b/crates/engine/tests/integration/instead_target_needs_payable_additional_cost.rs
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,160 @@
 +//! CR 601.2b-c + CR 601.2f: when only the targets of a spell's "instead"
 +//! clause can be chosen, the spell is cast with the additional cost that
 +//! clause reads. If that cost can't be paid with the rest of the total cost,
@@ -251,6 +278,8 @@ index 000000000..c11b98dd5
 +    opposing_mana_value: u32,
 +    /// Power and tapped state of P0's one creature.
 +    own_creature: Option<(i32, bool)>,
++    /// P0 also controls a permanent with this Oracle text.
++    own_static: Option<&'static str>,
 +}
 +
 +fn castable(oracle: &str, mana_cost: ManaCost, mana_type: ManaType, board: Board) -> bool {
@@ -273,6 +302,11 @@ index 000000000..c11b98dd5
 +            .id();
 +        (id, tapped)
 +    });
++    if let Some(text) = board.own_static {
++        scenario
++            .add_creature_from_oracle(P0, "Reducer", 2, 2, text)
++            .with_mana_cost(ManaCost::generic(4));
++    }
 +    let spell = scenario
 +        .add_spell_to_hand_from_oracle(P0, "Spell", false, oracle)
 +        .with_mana_cost(mana_cost)
@@ -302,6 +336,7 @@ index 000000000..c11b98dd5
 +                mana: black_mana,
 +                opposing_mana_value,
 +                own_creature: None,
++                own_static: None,
 +            },
 +        )
 +    };
@@ -324,6 +359,7 @@ index 000000000..c11b98dd5
 +                mana: 3,
 +                opposing_mana_value,
 +                own_creature,
++                own_static: None,
 +            },
 +        )
 +    };
@@ -351,12 +387,36 @@ index 000000000..c11b98dd5
 +                mana,
 +                opposing_mana_value: 6,
 +                own_creature: None,
++                own_static: None,
 +            },
 +        )
 +    };
 +    assert!(!resilience(1));
 +    assert!(!resilience(3));
 +    assert!(resilience(4));
++}
++
++/// CR 601.2f: a reduction that applies to the kicked spell counts toward
++/// paying the kicker (Vine Gecko).
++#[test]
++fn kicked_only_target_counts_a_kicked_spell_discount() {
++    let thirst = |mana, own_static| {
++        castable(
++            BLOODCHIEFS_THIRST,
++            black(0),
++            ManaType::Black,
++            Board {
++                mana,
++                opposing_mana_value: 5,
++                own_creature: None,
++                own_static,
++            },
++        )
++    };
++    let gecko = Some("The first kicked spell you cast each turn costs {1} less to cast.");
++    assert!(!thirst(3, None));
++    assert!(!thirst(2, gecko));
++    assert!(thirst(3, gecko));
 +}
 diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
 index 011daef2c..ab55eb5d3 100644

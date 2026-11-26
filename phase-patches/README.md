@@ -584,5 +584,8 @@ based on `988bc3412f5d4e475c1837fbc88062b14d1f5489`.
   offered with no base target and an unpayable additional cost.
 - Regression: `instead_target_needs_payable_additional_cost.rs` (kicker mana
   short by one and exact, Teamwork with and without a creature to tap, a base
-  target present, and a kicked "any number of targets" clause with none).
+  target present, a kicked "any number of targets" clause with none, and a
+  "kicked spell costs {1} less" reduction).
+- The kicker is priced against the kicked spell (`kicker_is_payable`), as the
+  kicker announcement does, so Vine Gecko's reduction counts.
 - Runtime-only; no parser or card-data change.
