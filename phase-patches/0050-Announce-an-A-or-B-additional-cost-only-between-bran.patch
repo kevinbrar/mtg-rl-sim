@@ -1,0 +1,546 @@
+From c154b6c96627c7916df5e883c7aa80b3172f1b49 Mon Sep 17 00:00:00 2001
+From: kevinbrar2024 <kevinbrar2024@gmail.com>
+Date: Thu, 26 Nov 2026 08:28:30 +0000
+Subject: [PATCH] Announce an 'A or B' additional cost only between branches
+ that can be paid (CR 601.2b, CR 601.2h)
+
+A Choice additional cost (Bitter Triumph's 'discard a card or pay 3 life',
+Countersculpt's 'behold a Jace or pay {1}') was announced whenever its first
+branch was payable, so the prompt offered a second branch the cast then
+rejected. The announcement now judges both branches against the costs and
+reductions already settled on the cast, a Defiler's answer included, and takes
+the only payable branch as its answer to the prompt would be.
+
+The scenario cast driver answers a cost's card selection from the scripted
+card-choice queue and stops at a game the cost payment ended (CR 704.5a).
+
+Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ crates/engine/src/game/casting_costs.rs       |  36 ++-
+ crates/engine/src/game/scenario.rs            |  45 ++-
+ .../additional_cost_declaration_tail.rs       |  23 ++
+ ...hoice_cost_offers_only_payable_branches.rs | 297 ++++++++++++++++++
+ crates/engine/tests/integration/main.rs       |   1 +
+ .../wrens_run_vanquisher_reveal_cost.rs       |  26 +-
+ 6 files changed, 404 insertions(+), 24 deletions(-)
+ create mode 100644 crates/engine/tests/integration/choice_cost_offers_only_payable_branches.rs
+
+diff --git a/crates/engine/src/game/casting_costs.rs b/crates/engine/src/game/casting_costs.rs
+index 79022083c..ee94b73e2 100644
+--- a/crates/engine/src/game/casting_costs.rs
++++ b/crates/engine/src/game/casting_costs.rs
+@@ -1662,7 +1662,7 @@ pub(crate) fn finish_pending_cost_or_cast(
+     }
+ 
+     if let Some(choice @ AdditionalCost::Choice(..)) = pending.additional_cost_flow.clone() {
+-        return Ok(make_optional_cost_choice(state, player, choice, 0, pending));
++        return announce_choice_cost(state, player, pending, choice, events);
+     }
+ 
+     if matches!(
+@@ -10222,12 +10222,46 @@ fn continue_cost_declarations(
+         DeclarationExit::Pay { cost, source } => {
+             pay_additional_cost_with_source(state, player, cost, source, pending, events)
+         }
++        DeclarationExit::Prompt(cost @ AdditionalCost::Choice(..)) => {
++            announce_choice_cost(state, player, pending, cost, events)
++        }
+         DeclarationExit::Prompt(cost) => {
+             Ok(make_optional_cost_choice(state, player, cost, 0, pending))
+         }
+     }
+ }
+ 
++/// CR 601.2b + CR 601.2h: announce a spell's "A or B" additional cost. A
++/// branch that can't be paid beside the costs and reductions already settled
++/// on the cast (a Defiler's answer included) is not a choice; when exactly one
++/// branch is payable it is taken as its answer to the prompt would be.
++fn announce_choice_cost(
++    state: &mut GameState,
++    player: PlayerId,
++    pending: PendingCast,
++    choice: AdditionalCost,
++    events: &mut Vec<GameEvent>,
++) -> Result<WaitingFor, EngineError> {
++    let AdditionalCost::Choice(preferred, fallback) = &choice else {
++        return Ok(make_optional_cost_choice(state, player, choice, 0, pending));
++    };
++    let preferred_payable =
++        additional_cost_declaration_is_offerable(state, player, &pending, preferred.clone())?;
++    let fallback_payable =
++        additional_cost_declaration_is_offerable(state, player, &pending, fallback.clone())?;
++    if preferred_payable != fallback_payable {
++        return handle_decide_additional_cost(
++            state,
++            player,
++            pending,
++            &choice,
++            preferred_payable,
++            events,
++        );
++    }
++    Ok(make_optional_cost_choice(state, player, choice, 0, pending))
++}
++
+ /// Encode a declaration route's `exit` on `pending` so that
+ /// `finish_pending_cost_or_cast` replays it after the Defiler decision: a
+ /// payment joins the required flow, an optional or Choice prompt becomes the
+diff --git a/crates/engine/src/game/scenario.rs b/crates/engine/src/game/scenario.rs
+index f38484679..3e89f80db 100644
+--- a/crates/engine/src/game/scenario.rs
++++ b/crates/engine/src/game/scenario.rs
+@@ -2868,13 +2868,30 @@ impl<'a> SpellCast<'a> {
+                     min_count,
+                     ..
+                 } => {
+-                    let chosen = pick_declared_cards(
+-                        choices,
+-                        *min_count,
+-                        *count,
+-                        &mut remaining_cost_objects,
+-                        "PayCost",
+-                    );
++                    // A scripted card-choice group answers a cost selection
++                    // nothing was declared for (a discard or behold cost) when
++                    // every card in it is one this cost can take; any other
++                    // group is left for the prompt it was scripted for.
++                    let scripted = card_choice_groups
++                        .as_deref_mut()
++                        .filter(|groups| {
++                            remaining_cost_objects.is_empty()
++                                && groups.front().is_some_and(|cards| {
++                                    !cards.is_empty()
++                                        && cards.iter().all(|card| choices.contains(card))
++                                })
++                        })
++                        .and_then(|groups| groups.pop_front());
++                    let chosen = match scripted {
++                        Some(cards) => cards,
++                        None => pick_declared_cards(
++                            choices,
++                            *min_count,
++                            *count,
++                            &mut remaining_cost_objects,
++                            "PayCost",
++                        ),
++                    };
+                     act_collect(
+                         runner,
+                         GameAction::SelectCards { cards: chosen },
+@@ -3027,6 +3044,20 @@ impl<'a> SpellCast<'a> {
+                     );
+                     break;
+                 }
++                // CR 704.5a + CR 119.4: paying life as a cost can leave the
++                // caster at 0 life; the cast is complete and the game ends
++                // at the state-based action check before anyone has priority.
++                WaitingFor::GameOver { .. } => {
++                    hand_at_commit = Some(
++                        runner
++                            .state
++                            .players
++                            .iter()
++                            .map(|p| (p.id, p.hand.len()))
++                            .collect(),
++                    );
++                    break;
++                }
+                 other => panic!(
+                     "SpellCast driver does not handle WaitingFor::{} yet — extend the driver \
+                      or drive this case manually",
+diff --git a/crates/engine/tests/integration/additional_cost_declaration_tail.rs b/crates/engine/tests/integration/additional_cost_declaration_tail.rs
+index c2c2e4162..9b30505d7 100644
+--- a/crates/engine/tests/integration/additional_cost_declaration_tail.rs
++++ b/crates/engine/tests/integration/additional_cost_declaration_tail.rs
+@@ -896,6 +896,29 @@ fn choice_cost_fallback_branch_after_the_defiler() {
+     assert_eq!(pool(&runner), 0, "{{4}}{{B}} + {{1}}{{B}} less {{B}}");
+ }
+ 
++/// CR 601.2b + CR 601.2h: with the Defiler declined the pool can't pay
++/// {4}{B} + {1}{B}, so the sacrifice is the only branch and is not asked.
++#[test]
++fn choice_cost_without_the_defiler_reduction_pays_the_only_payable_branch() {
++    let (mut runner, morkrut, bear) = morkrut_with_defiler();
++
++    let trail = cast(
++        &mut runner,
++        morkrut,
++        &Answers {
++            defiler: false,
++            picks: vec![bear],
++            ..Answers::default()
++        },
++    );
++
++    assert_cast_completes(&runner, morkrut, &trail);
++    assert_eq!(trail.prompts, ["DefilerPayment", "PayCost"]);
++    assert_eq!(zone(&runner, bear), Zone::Graveyard);
++    assert_eq!(life(&runner), 20);
++    assert_eq!(pool(&runner), 1, "{{4}}{{B}} from six mana");
++}
++
+ /// CR 601.2b + CR 702.138a: with no creature to sacrifice, the Choice's
+ /// fallback is paid without a prompt, and escape's three cards are still exiled.
+ #[test]
+diff --git a/crates/engine/tests/integration/choice_cost_offers_only_payable_branches.rs b/crates/engine/tests/integration/choice_cost_offers_only_payable_branches.rs
+new file mode 100644
+index 000000000..fef3dd373
+--- /dev/null
++++ b/crates/engine/tests/integration/choice_cost_offers_only_payable_branches.rs
+@@ -0,0 +1,297 @@
++//! CR 601.2b + CR 601.2h + CR 119.4: a spell with an "A or B" additional cost
++//! lets its caster choose only a branch that can be paid. When exactly one
++//! branch is payable there is no choice to announce and that branch is paid.
++
++use engine::ai_support::candidate_actions;
++use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
++use engine::types::ability::TargetRef;
++use engine::types::actions::GameAction;
++use engine::types::game_state::{CastPaymentMode, StackEntryKind, WaitingFor};
++use engine::types::identifiers::ObjectId;
++use engine::types::mana::{ManaCost, ManaType, ManaUnit};
++use engine::types::phase::Phase;
++use engine::types::zones::Zone;
++
++const DISCARD_OR_LIFE: &str = "As an additional cost to cast this spell, discard a card or pay 3 life.\nDestroy target creature or planeswalker.";
++const BEHOLD_OR_MANA: &str =
++    "As an additional cost to cast this spell, behold a Jace or pay {1}.\nDestroy target creature.";
++
++struct Board {
++    oracle: &'static str,
++    life: i32,
++    black_mana: usize,
++    spare_card_in_hand: bool,
++    jace_on_battlefield: bool,
++}
++
++struct Outcome {
++    /// Answers the engine offered at the "A or B" prompt; empty when it did
++    /// not ask.
++    offered: Vec<bool>,
++    life: i32,
++    hand: usize,
++    floating_mana: usize,
++    additional_cost_paid: bool,
++}
++
++/// Cast the spell at the Bear and answer the "A or B" prompt with `answer`
++/// when the engine asks. Every offered answer is also submitted on a copy of
++/// the game, so an offer the engine then rejects fails the test.
++fn cast(board: &Board, answer: bool) -> Outcome {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    scenario.with_life(P0, board.life);
++    scenario.with_mana_pool(
++        P0,
++        (0..board.black_mana)
++            .map(|_| ManaUnit::new(ManaType::Black, ObjectId(0), false, vec![]))
++            .collect(),
++    );
++    let bear = scenario.add_creature(P1, "Bear", 2, 2).id();
++    if board.spare_card_in_hand {
++        scenario.add_card_to_hand(P0, "Spare");
++    }
++    if board.jace_on_battlefield {
++        scenario
++            .add_creature(P0, "Jace", 0, 0)
++            .as_planeswalker_with_loyalty("Jace", 3);
++    }
++    let spell = scenario
++        .add_spell_to_hand_from_oracle(P0, "Spell", true, board.oracle)
++        .with_mana_cost(ManaCost::generic(1))
++        .id();
++    let mut runner = scenario.build();
++    let card_id = runner.state().objects[&spell].card_id;
++    runner
++        .act(GameAction::CastSpell {
++            object_id: spell,
++            card_id,
++            targets: vec![],
++            payment_mode: CastPaymentMode::Auto,
++        })
++        .expect("cast");
++
++    let mut offered = Vec::new();
++    for _ in 0..16 {
++        match runner.state().waiting_for.clone() {
++            WaitingFor::TargetSelection { .. } => {
++                runner
++                    .act(GameAction::ChooseTarget {
++                        target: Some(TargetRef::Object(bear)),
++                    })
++                    .expect("target the Bear");
++            }
++            WaitingFor::OptionalCostChoice { .. } => {
++                assert!(offered.is_empty(), "the choice is asked once");
++                for candidate in candidate_actions(runner.state()) {
++                    if let GameAction::DecideOptionalCost { pay } = candidate.action {
++                        GameRunner::from_state(runner.state().clone())
++                            .act(GameAction::DecideOptionalCost { pay })
++                            .unwrap_or_else(|error| {
++                                panic!("offered pay={pay} is rejected: {error:?}")
++                            });
++                        offered.push(pay);
++                    }
++                }
++                offered.sort();
++                runner
++                    .act(GameAction::DecideOptionalCost { pay: answer })
++                    .expect("answer the choice");
++            }
++            WaitingFor::PayCost { choices, .. } => {
++                runner
++                    .act(GameAction::SelectCards {
++                        cards: vec![choices[0]],
++                    })
++                    .expect("pick the card for the cost");
++            }
++            WaitingFor::ManaPayment { .. } => {
++                runner.act(GameAction::PassPriority).expect("pay mana");
++            }
++            WaitingFor::Priority { .. } => break,
++            other => panic!("unexpected prompt: {other:?}"),
++        }
++    }
++
++    let state = runner.state();
++    assert_eq!(state.objects[&spell].zone, Zone::Stack, "the spell is cast");
++    let additional_cost_paid = state
++        .stack
++        .iter()
++        .find_map(|entry| match &entry.kind {
++            StackEntryKind::Spell {
++                ability: Some(ability),
++                ..
++            } if entry.id == spell => Some(ability.context.additional_cost_paid),
++            _ => None,
++        })
++        .expect("the spell's stack entry");
++    Outcome {
++        offered,
++        life: state.players[0].life,
++        hand: state.players[0].hand.len(),
++        floating_mana: state.players[0].mana_pool.total(),
++        additional_cost_paid,
++    }
++}
++
++fn discard_or_life(life: i32, spare_card_in_hand: bool) -> Board {
++    Board {
++        oracle: DISCARD_OR_LIFE,
++        life,
++        black_mana: 1,
++        spare_card_in_hand,
++        jace_on_battlefield: false,
++    }
++}
++
++fn behold_or_mana(black_mana: usize, jace_on_battlefield: bool) -> Board {
++    Board {
++        oracle: BEHOLD_OR_MANA,
++        life: 20,
++        black_mana,
++        spare_card_in_hand: false,
++        jace_on_battlefield,
++    }
++}
++
++#[test]
++fn both_branches_payable_asks_and_pays_the_chosen_one() {
++    let discard = cast(&discard_or_life(20, true), true);
++    assert_eq!(discard.offered, vec![false, true]);
++    assert_eq!((discard.life, discard.hand), (20, 0));
++    assert!(discard.additional_cost_paid);
++
++    let life = cast(&discard_or_life(20, true), false);
++    assert_eq!(life.offered, vec![false, true]);
++    assert_eq!((life.life, life.hand), (17, 1));
++    assert!(!life.additional_cost_paid);
++}
++
++#[test]
++fn only_the_first_branch_payable_pays_it_without_asking() {
++    // CR 119.4: a player at 2 life can't pay 3 life.
++    let outcome = cast(&discard_or_life(2, true), false);
++    assert_eq!(outcome.offered, Vec::<bool>::new());
++    assert_eq!((outcome.life, outcome.hand), (2, 0));
++    assert!(outcome.additional_cost_paid);
++}
++
++#[test]
++fn only_the_second_branch_payable_pays_it_without_asking() {
++    let outcome = cast(&discard_or_life(20, false), true);
++    assert_eq!(outcome.offered, Vec::<bool>::new());
++    assert_eq!((outcome.life, outcome.hand), (17, 0));
++    assert!(!outcome.additional_cost_paid);
++}
++
++#[test]
++fn a_mana_branch_that_cannot_be_paid_beside_the_spell_is_not_offered() {
++    // One mana pays the spell's {1}; nothing is left for the "or pay {1}".
++    let outcome = cast(&behold_or_mana(1, true), false);
++    assert_eq!(outcome.offered, Vec::<bool>::new());
++    assert_eq!(outcome.floating_mana, 0);
++    assert!(outcome.additional_cost_paid);
++}
++
++#[test]
++fn a_mana_branch_is_paid_without_asking_when_nothing_can_be_beheld() {
++    let outcome = cast(&behold_or_mana(2, false), true);
++    assert_eq!(outcome.offered, Vec::<bool>::new());
++    assert_eq!(outcome.floating_mana, 0);
++    assert!(!outcome.additional_cost_paid);
++}
++
++#[test]
++fn a_payable_mana_branch_is_offered_beside_a_behold() {
++    let behold = cast(&behold_or_mana(2, true), true);
++    assert_eq!(behold.offered, vec![false, true]);
++    assert_eq!(behold.floating_mana, 1);
++
++    let mana = cast(&behold_or_mana(2, true), false);
++    assert_eq!(mana.offered, vec![false, true]);
++    assert_eq!(mana.floating_mana, 0);
++}
++
++/// A Bear for the spell to destroy, the spell in hand beside a spare card,
++/// and one black mana floating.
++fn driver_board(life: i32) -> (GameRunner, ObjectId, ObjectId, ObjectId) {
++    let mut scenario = GameScenario::new();
++    scenario.at_phase(Phase::PreCombatMain);
++    scenario.with_life(P0, life);
++    scenario.with_mana_pool(
++        P0,
++        vec![ManaUnit::new(ManaType::Black, ObjectId(0), false, vec![])],
++    );
++    let bear = scenario.add_creature(P1, "Bear", 2, 2).id();
++    let spare = scenario.add_card_to_hand(P0, "Spare");
++    let spell = scenario
++        .add_spell_to_hand_from_oracle(P0, "Spell", true, DISCARD_OR_LIFE)
++        .with_mana_cost(ManaCost::generic(1))
++        .id();
++    (scenario.build(), bear, spare, spell)
++}
++
++/// The cast driver answers a cost's card selection from the scripted
++/// card-choice queue when no cost object was declared.
++#[test]
++fn cast_driver_pays_a_discard_cost_from_the_card_choice_queue() {
++    let (mut runner, bear, spare, spell) = driver_board(2);
++    let mut groups = std::collections::VecDeque::from([vec![spare]]);
++    let committed = runner
++        .cast(spell)
++        .target_object(bear)
++        .commit_with_card_choices(&mut groups)
++        .expect("cast");
++    assert!(groups.is_empty(), "the group answered the discard");
++    assert_eq!(committed.state().objects[&spare].zone, Zone::Graveyard);
++    assert_eq!(committed.state().players[0].life, 2);
++}
++
++/// A declared cost object answers the selection; the queue is left for the
++/// prompts that follow.
++#[test]
++fn cast_driver_prefers_a_declared_cost_object_over_the_queue() {
++    let (mut runner, bear, spare, spell) = driver_board(2);
++    let mut groups = std::collections::VecDeque::from([vec![bear]]);
++    let committed = runner
++        .cast(spell)
++        .target_object(bear)
++        .pay_cost_with(&[spare])
++        .commit_with_card_choices(&mut groups)
++        .expect("cast");
++    assert_eq!(groups.len(), 1, "the queued group is not consumed");
++    assert_eq!(committed.state().objects[&spare].zone, Zone::Graveyard);
++}
++
++/// CR 119.4 + CR 704.5a: at exactly 3 life the life cost is payable; the
++/// spell is cast and its caster loses before anyone gets priority.
++#[test]
++fn cast_driver_stops_at_a_game_ended_by_the_life_payment() {
++    let (mut runner, bear, _spare, spell) = driver_board(3);
++    let committed = runner
++        .cast(spell)
++        .target_object(bear)
++        .decline_optional()
++        .commit();
++    assert_eq!(committed.state().players[0].life, 0);
++    assert!(matches!(
++        committed.state().waiting_for,
++        WaitingFor::GameOver { .. }
++    ));
++}
++
++/// A queued group naming a card the cost can't take is not its answer: the
++/// group stays queued and the cost selection is left unanswered.
++#[test]
++fn cast_driver_leaves_a_group_the_cost_cannot_take() {
++    let (mut runner, bear, spare, spell) = driver_board(2);
++    let mut groups = std::collections::VecDeque::from([vec![bear]]);
++    let result = runner
++        .cast(spell)
++        .target_object(bear)
++        .commit_with_card_choices(&mut groups);
++    assert!(result.is_err(), "the discard has no scripted answer");
++    assert_eq!(groups.len(), 1);
++    assert_eq!(runner.state().objects[&spare].zone, Zone::Hand);
++}
+diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
+index da45e8abd..011daef2c 100644
+--- a/crates/engine/tests/integration/main.rs
++++ b/crates/engine/tests/integration/main.rs
+@@ -41,6 +41,7 @@ mod cartographers_hawk_relative_damage_recipient;
+ mod case_solve_condition;
+ mod cast_this_way_gate_8721;
+ mod charging_cinderhorn_issue_2868;
++mod choice_cost_offers_only_payable_branches;
+ mod choose_creature_and_opponent_flip;
+ mod chosen_object_reader_hand_built;
+ mod cobra_king_guarded_reflexive_modal;
+diff --git a/crates/engine/tests/integration/wrens_run_vanquisher_reveal_cost.rs b/crates/engine/tests/integration/wrens_run_vanquisher_reveal_cost.rs
+index 56480bbbc..53bfc9c75 100644
+--- a/crates/engine/tests/integration/wrens_run_vanquisher_reveal_cost.rs
++++ b/crates/engine/tests/integration/wrens_run_vanquisher_reveal_cost.rs
+@@ -2,7 +2,7 @@
+ //! "As an additional cost to cast this spell, reveal an Elf card from your hand or pay {3}."
+ //!
+ //! Verifies:
+-//! 1. Choosing to reveal an Elf card prompts `WaitingFor::PayCost { kind: PayCostKind::Reveal { .. } }`,
++//! 1. Revealing an Elf card (the only payable branch with two lands) prompts `WaitingFor::PayCost { kind: PayCostKind::Reveal { .. } }`,
+ //!    and selecting an Elf card from hand successfully completes the cast for {1}{G}.
+ //! 2. Choosing to pay {3} instead charges {4}{G} total ({1}{G} base + {3} additional).
+ //! 3. Casting with no Elf card in hand falls through directly to the {3} additional cost.
+@@ -79,21 +79,15 @@ fn wrens_run_vanquisher_cast_by_revealing_elf() {
+         })
+         .expect("casting Wren's Run Vanquisher must be accepted");
+ 
+-    // 1. Must prompt for the additional cost choice (Reveal vs Pay {3}).
+-    match runner.state().waiting_for.clone() {
+-        WaitingFor::OptionalCostChoice { cost, .. } => {
+-            assert!(
+-                matches!(cost, engine::types::ability::AdditionalCost::Choice(_, _)),
+-                "must offer AdditionalCost::Choice"
+-            );
+-        }
+-        other => panic!("expected OptionalCostChoice, got {other:?}"),
+-    }
+-
+-    // 2. Choose to pay the preferred cost (reveal an Elf).
+-    runner
+-        .act(GameAction::DecideOptionalCost { pay: true })
+-        .expect("deciding to reveal must be accepted");
++    // 1-2. CR 601.2b + CR 601.2h: two lands can't pay {1}{G} + {3}, so the
++    // reveal is the only payable branch and is taken without a choice prompt.
++    assert!(
++        !matches!(
++            runner.state().waiting_for,
++            WaitingFor::OptionalCostChoice { .. }
++        ),
++        "an unpayable {{3}} is not offered as a choice"
++    );
+ 
+     // 3. Must prompt to select the Elf card from hand.
+     match runner.state().waiting_for.clone() {
+-- 
+2.56.0
+

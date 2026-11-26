@@ -1390,6 +1390,62 @@ def test_load_specs_rejects_invalid_cast_kicker(
 
 
 @pytest.mark.parametrize(
+    ("action", "message"),
+    [
+        (
+            '{ action = "pass_priority", cost_choice = "first" }',
+            "cost_choice is unsupported",
+        ),
+        (
+            '{ action = "cast", card = "Memnite", cost_choice = "third" }',
+            'must be "first" or "second"',
+        ),
+        (
+            '{ action = "cast", card = "Memnite", cost_choice = true }',
+            'must be "first" or "second"',
+        ),
+        (
+            '{ action = "cast", card = "Memnite", cost_choice = "first", kicker = true }',
+            "cannot be combined",
+        ),
+        (
+            '{ action = "cast", card = "Memnite", cost_choice = "first", x = 1 }',
+            "cannot be combined",
+        ),
+        (
+            '{ action = "cast", card = "Memnite", cost_choice = "second", expect = "refused" }',
+            "cannot be combined",
+        ),
+    ],
+)
+def test_load_specs_rejects_invalid_cast_cost_choice(
+    tmp_path: Path, action: str, message: str
+) -> None:
+    spec = tmp_path / "invalid-cast-cost-choice.toml"
+    spec.write_text(
+        f'[[scenarios]]\nname = "invalid cast cost choice"\nscript = [{action}]\n\n'
+        '[scenarios.setup.P0]\nhand = ["Memnite"]\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        load_specs([spec])
+
+
+def test_load_specs_rejects_cast_cost_choice_for_forge(tmp_path: Path) -> None:
+    spec = tmp_path / "forge-cast-cost-choice.toml"
+    spec.write_text(
+        'oracle = "forge"\n\n[[scenarios]]\nname = "forge cost choice"\n'
+        'script = [{ action = "cast", card = "Memnite", cost_choice = "first" }]\n\n'
+        '[scenarios.setup.P0]\nhand = ["Memnite"]\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsupported by the Forge scenario runner"):
+        load_specs([spec])
+
+
+@pytest.mark.parametrize(
     ("action", "setup", "message"),
     [
         (

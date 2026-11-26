@@ -1241,6 +1241,27 @@ def _validate_setup(scenario: dict, oracle: str = "xmage") -> None:
                     f"{context} cannot be combined with x, sacrifice, "
                     "alternative_cost or expect"
                 )
+        if "cost_choice" in action:
+            context = f"{name}: script[{index}].cost_choice"
+            if action.get("action") != "cast":
+                raise ValueError(f"{context} is only valid for cast actions")
+            if oracle == "forge":
+                raise ValueError(
+                    f"{context} is unsupported by the Forge scenario runner"
+                )
+            if action["cost_choice"] not in ("first", "second"):
+                raise ValueError(f'{context} must be "first" or "second"')
+            if {
+                "kicker",
+                "sacrifice",
+                "alternative_cost",
+                "x",
+                "expect",
+            } & action.keys():
+                raise ValueError(
+                    f"{context} cannot be combined with x, kicker, sacrifice, "
+                    "alternative_cost or expect"
+                )
         if "sacrifice" in action:
             context = f"{name}: script[{index}].sacrifice"
             if action.get("action") != "cast":

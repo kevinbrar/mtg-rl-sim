@@ -1,0 +1,40 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -778,6 +778,12 @@
+             return true;
+         }
+ 
++        // a spell is a new object; its alias is the one of the card it was cast from
++        if (nameOrAlias.startsWith(ALIAS_PREFIX) && object instanceof Spell
++                && ((Spell) object).getSourceId().equals(getAliasByName(nameOrAlias))) {
++            return true;
++        }
++
+         // must search any names, even empty (face down cards)
+         if (CardUtil.haveSameNames(nameOrAlias, object.getName(), true)) {
+             return true;
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -447,6 +447,20 @@
+                         }
+                         actingPlayer.addScenarioOptionalAnswer(kicker.getAsBoolean() ? "yes" : "no", null);
+                     }
++                    if (action.has("cost_choice")) {
++                        String costChoice = action.get("cost_choice").getAsString();
++                        if (!"first".equals(costChoice) && !"second".equals(costChoice)) {
++                            throw new IllegalArgumentException(
++                                    "cast.cost_choice must be \"first\" or \"second\"");
++                        }
++                        if (hasX || expectRefused || action.has("kicker")
++                                || action.has("sacrifice") || action.has("alternative_cost")) {
++                            throw new IllegalArgumentException(
++                                    "cast.cost_choice cannot be combined with x, kicker, sacrifice, alternative_cost or expect");
++                        }
++                        // OrCost asks one yes/no: yes pays the first cost, no the second.
++                        actingPlayer.addScenarioOptionalAnswer("first".equals(costChoice) ? "yes" : "no", null);
++                    }
+                     if (hasX) {
+                         setChoice(actingPlayer, "X=" + x);
+                     }

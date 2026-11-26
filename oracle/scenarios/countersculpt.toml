@@ -1,0 +1,145 @@
+# Countersculpt {U}{U} Instant
+# As an additional cost to cast this spell, behold a Jace or pay {1}. (To
+# behold a Jace, choose a Jace you control or reveal a Jace card from your
+# hand.)
+# Counter target spell. Empower Jace 1.
+#
+# CR 601.2b + CR 601.2h: the caster chooses one of the two costs and can
+# choose only a cost they can pay. With one payable cost there is no choice;
+# with none the spell can't be cast.
+
+[[scenarios]]
+name = "CS1 no Jace: {1} is the only cost, no choice"
+active_player = 0
+script = [
+  { action = "cast", card = "Memnite" },
+  { action = "cast", card = "Countersculpt", targets = ["memnite"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "island.1", card = "Island" },
+  { label = "island.2", card = "Island" },
+  { label = "island.3", card = "Island" },
+]
+hand = ["Countersculpt", { card = "Memnite", label = "memnite" }]
+
+[scenarios.setup.P1]
+battlefield = []
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P0", card = "Memnite", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Countersculpt", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Island", tapped = true, count = 3 },
+]
+
+[[scenarios]]
+name = "CS2 Jace in hand, no spare mana: behold is the only payable cost"
+active_player = 0
+script = [
+  { action = "cast", card = "Memnite" },
+  { action = "choose_cards", cards = ["jace"] },
+  { action = "cast", card = "Countersculpt", cost_choice = "first", targets = ["memnite"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "island.1", card = "Island" },
+  { label = "island.2", card = "Island" },
+]
+hand = ["Countersculpt", { card = "Memnite", label = "memnite" }, { card = "Jace Beleren", label = "jace" }]
+
+[scenarios.setup.P1]
+battlefield = []
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P0", card = "Memnite", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Countersculpt", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Island", tapped = true, count = 2 },
+  { zone = "hand", player = "P0", card = "Jace Beleren", count = 1 },
+]
+
+[[scenarios]]
+name = "CS3 both costs payable, behold chosen"
+active_player = 0
+script = [
+  { action = "cast", card = "Memnite" },
+  { action = "choose_cards", cards = ["jace"] },
+  { action = "cast", card = "Countersculpt", cost_choice = "first", targets = ["memnite"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "island.1", card = "Island" },
+  { label = "island.2", card = "Island" },
+  { label = "island.3", card = "Island" },
+]
+hand = ["Countersculpt", { card = "Memnite", label = "memnite" }, { card = "Jace Beleren", label = "jace" }]
+
+[scenarios.setup.P1]
+battlefield = []
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P0", card = "Memnite", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Countersculpt", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Island", tapped = true, count = 2 },
+  { zone = "battlefield", player = "P0", card = "Island", tapped = false, count = 1 },
+]
+
+[[scenarios]]
+name = "CS4 both costs payable, {1} chosen"
+active_player = 0
+script = [
+  { action = "cast", card = "Memnite" },
+  { action = "cast", card = "Countersculpt", cost_choice = "second", targets = ["memnite"] },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "island.1", card = "Island" },
+  { label = "island.2", card = "Island" },
+  { label = "island.3", card = "Island" },
+]
+hand = ["Countersculpt", { card = "Memnite", label = "memnite" }, { card = "Jace Beleren", label = "jace" }]
+
+[scenarios.setup.P1]
+battlefield = []
+
+[scenarios.reach]
+all = [
+  { zone = "graveyard", player = "P0", card = "Memnite", count = 1 },
+  { zone = "graveyard", player = "P0", card = "Countersculpt", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Island", tapped = true, count = 3 },
+]
+
+[[scenarios]]
+name = "CS5 no Jace and no spare mana: can't be cast"
+active_player = 0
+script = [
+  { action = "cast", card = "Memnite" },
+  { action = "cast", card = "Countersculpt", targets = ["memnite"], expect = "refused" },
+  { action = "pass_until_resolved" },
+]
+
+[scenarios.setup.P0]
+battlefield = [
+  { label = "island.1", card = "Island" },
+  { label = "island.2", card = "Island" },
+]
+hand = ["Countersculpt", { card = "Memnite", label = "memnite" }]
+
+[scenarios.setup.P1]
+battlefield = []
+
+[scenarios.reach]
+all = [
+  { zone = "hand", player = "P0", card = "Countersculpt", count = 1 },
+  { zone = "battlefield", player = "P0", card = "Memnite", count = 1 },
+]
