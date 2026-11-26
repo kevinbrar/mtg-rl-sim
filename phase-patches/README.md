@@ -99,7 +99,9 @@
   has no slot of its own, so the spell counted as castable with no creature to
   target and the cast was rejected on submit. Such a clause now falls through
   to the base castability check; a clause with its own target (Bloodchief's
-  Thirst) is unchanged.
+  Thirst) is unchanged. The reference is looked for from the "instead" node
+  down, since Prohibit and Overload keep it one node below an empty "instead"
+  node.
 - Regression: `kicked_instead_spell_needs_base_target.rs`.
 - Runtime-only; no parser or card-data change.
 

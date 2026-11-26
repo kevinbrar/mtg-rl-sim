@@ -1,4 +1,4 @@
-From 2fa87b9a9271f0a7d10bbad640aac7d17d3c62ef Mon Sep 17 00:00:00 2001
+From bfd609e7fea8c5b7bfe76a8db2727548d2e306cd Mon Sep 17 00:00:00 2001
 From: kevinbrar2024 <kevinbrar2024@gmail.com>
 Date: Thu, 26 Nov 2026 03:32:00 +0000
 Subject: [PATCH] Keep an 'instead' clause that reuses the base target from
@@ -12,40 +12,40 @@ through to the base castability check; a clause with its own target
 
 Co-Authored-By: Devin AI <158243242+devin-ai-integration[bot]@users.noreply.github.com>
 ---
- crates/engine/src/game/ability_utils.rs       | 27 +++++---
- .../kicked_instead_spell_needs_base_target.rs | 62 +++++++++++++++++++
+ crates/engine/src/game/ability_utils.rs       | 30 ++++----
+ .../kicked_instead_spell_needs_base_target.rs | 71 +++++++++++++++++++
  crates/engine/tests/integration/main.rs       |  1 +
- 3 files changed, 80 insertions(+), 10 deletions(-)
+ 3 files changed, 90 insertions(+), 12 deletions(-)
  create mode 100644 crates/engine/tests/integration/kicked_instead_spell_needs_base_target.rs
 
 diff --git a/crates/engine/src/game/ability_utils.rs b/crates/engine/src/game/ability_utils.rs
-index 74cd45e52..573e1714c 100644
+index 74cd45e52..b5b4c17d3 100644
 --- a/crates/engine/src/game/ability_utils.rs
 +++ b/crates/engine/src/game/ability_utils.rs
-@@ -885,29 +885,36 @@ pub fn additional_cost_instead_spell_has_legal_targets(
-     }
+@@ -886,14 +886,17 @@ pub fn additional_cost_instead_spell_has_legal_targets(
      // Walk past GiftDelivery wrappers to find AdditionalCostPaidInstead.
      let mut instead_node = ability_def.sub_ability.as_deref();
--    let mut found_instead = false;
-+    let mut reuses_base_target = None;
+     let mut found_instead = false;
++    let mut reuses_base_target = false;
      while let Some(sub) = instead_node {
-         if matches!(
+-        if matches!(
++        found_instead |= matches!(
              sub.condition,
              Some(AbilityCondition::AdditionalCostPaidInstead)
-         ) {
+-        ) {
 -            found_instead = true;
-+            reuses_base_target = Some(crate::types::ability::effect_refs_parent_target(
-+                &sub.effect,
-+            ));
-             break;
-         }
+-            break;
+-        }
++        );
++        // The override may sit below the "instead" node (Prohibit: the node is
++        // a NoOp and its child counters "that spell"), so read the whole chain
++        // from the "instead" node down.
++        reuses_base_target |=
++            found_instead && crate::types::ability::effect_refs_parent_target(&sub.effect);
          instead_node = sub.sub_ability.as_deref();
      }
--    if !found_instead {
-+    let Some(reuses_base_target) = reuses_base_target else {
-         return false;
--    }
-+    };
+     if !found_instead {
+@@ -902,19 +905,22 @@ pub fn additional_cost_instead_spell_has_legal_targets(
      let mut resolved = build_resolved_from_def(ability_def, object_id, player);
      resolved.context.additional_cost_paid = true;
      resolved.set_context_recursive(resolved.context.clone());
@@ -55,26 +55,32 @@ index 74cd45e52..573e1714c 100644
 -    // ("that permanent" = ParentTarget, e.g. Torch the Tower / Bargain) does NOT broaden;
 -    // it inherits the base clause's target requirement, so fall through to the base
 -    // castability check. Kicker is unaffected (has_kicker_cost short-circuits).
-+    // CR 601.2c: an "instead" cost only broadens castability when the override
-+    // does not reuse the base clause's target. A context-ref override ("that
-+    // creature" = ParentTarget, e.g. Firebending Lesson's kicker or Torch the
-+    // Tower's bargain) inherits the base clause's target requirement, kicked or
-+    // not, so fall through to the base castability check.
-+    if reuses_base_target {
-+        return false;
-+    }
 +    // A queue-synthesized cost additionally broadens only when the override
 +    // re-selects a REAL target — mirror the cast-time gate
 +    // (requires_additional_cost_declaration_before_targets).
      if !has_kicker_cost
          && !crate::game::casting::requires_additional_cost_declaration_before_targets(&resolved)
      {
+         return false;
+     }
+     match build_target_slots(state, &resolved) {
+-        Ok(slots) if slots.is_empty() => true,
++        // CR 601.2c: an "instead" cost only broadens castability when the
++        // override does not reuse the base clause's target. An override with
++        // no target of its own that reads the base target ("that creature" =
++        // ParentTarget, e.g. Firebending Lesson's kicker or Torch the Tower's
++        // bargain) inherits the base clause's target requirement, paid or
++        // not, so fall through to the base castability check.
++        Ok(slots) if slots.is_empty() => !reuses_base_target,
+         Ok(slots) => {
+             let constraints = resolved
+                 .sub_ability
 diff --git a/crates/engine/tests/integration/kicked_instead_spell_needs_base_target.rs b/crates/engine/tests/integration/kicked_instead_spell_needs_base_target.rs
 new file mode 100644
-index 000000000..59ada51b1
+index 000000000..687798d60
 --- /dev/null
 +++ b/crates/engine/tests/integration/kicked_instead_spell_needs_base_target.rs
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,71 @@
 +//! CR 601.2c + CR 702.33d: a kicker "instead" clause that refers back to the
 +//! spell's own target ("it deals 5 damage to that creature instead") adds no
 +//! target of its own. With no creature to target, the spell can't be cast,
@@ -88,6 +94,7 @@ index 000000000..59ada51b1
 +
 +const FIREBENDING_LESSON: &str = "Kicker {4} (You may pay an additional {4} as you cast this spell.)\nFirebending Lesson deals 2 damage to target creature. If this spell was kicked, it deals 5 damage to that creature instead.";
 +const BLOODCHIEFS_THIRST: &str = "Kicker {2}{B} (You may pay an additional {2}{B} as you cast this spell.)\nDestroy target creature or planeswalker with mana value 2 or less. If this spell was kicked, instead destroy target creature or planeswalker.";
++const CONDITIONAL_DESTROY: &str = "Kicker {2} (You may pay an additional {2} as you cast this spell.)\nDestroy target creature if its mana value is 2 or less. If this spell was kicked, destroy that creature if its mana value is 5 or less instead.";
 +
 +fn castable(oracle: &str, creature_mana_value: Option<u32>) -> bool {
 +    let mut scenario = GameScenario::new();
@@ -136,6 +143,14 @@ index 000000000..59ada51b1
 +    assert!(!castable(BLOODCHIEFS_THIRST, None));
 +    assert!(castable(BLOODCHIEFS_THIRST, Some(5)));
 +    assert!(castable(BLOODCHIEFS_THIRST, Some(2)));
++}
++
++/// Prohibit / Overload shape: the "instead" node is empty and the clause that
++/// reads "that creature" sits one node below it.
++#[test]
++fn kicked_clause_that_reuses_the_target_below_the_instead_node_does_not_make_the_spell_castable() {
++    assert!(!castable(CONDITIONAL_DESTROY, None));
++    assert!(castable(CONDITIONAL_DESTROY, Some(4)));
 +}
 diff --git a/crates/engine/tests/integration/main.rs b/crates/engine/tests/integration/main.rs
 index 5bf9d89e4..da45e8abd 100644
