@@ -18,7 +18,7 @@ diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjecti
 +                            throw new IllegalArgumentException(
 +                                    "cast.kicker cannot be combined with expect");
 +                        }
-+                        setChoice(actingPlayer, kicker.getAsBoolean());
++                        actingPlayer.addScenarioOptionalAnswer(kicker.getAsBoolean() ? "yes" : "no", null);
 +                    }
                      if (hasX) {
                          setChoice(actingPlayer, "X=" + x);
