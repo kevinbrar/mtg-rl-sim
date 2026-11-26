@@ -107,7 +107,11 @@ the scripted answer (a `kicker = true` the player cannot pay is an error,
 not an unkicked cast). A kicked cast names the targets of the kicked text
 when that text has its own targets (Divine Resilience); a kicked clause
 that reuses the base target keeps the base target count. It cannot be
-combined with `x`, `sacrifice`, `alternative_cost` or `expect`. A refused
+combined with `x`, `sacrifice` or `alternative_cost`. On a refused `cast`,
+`kicker` is the answer given if the engine asks: XMage lists some casts as
+playable that no kicker answer completes, so a refusal that holds for both
+answers takes two scenarios. Phase does not read the answer on a refused
+cast. A refused
 `cast` with no `targets` also fails when Phase lists the cast as a legal
 action and only rejects it on submit: the cast must not be offered at all.
 Activations can name a labeled battlefield permanent or a card in the

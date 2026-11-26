@@ -1370,7 +1370,7 @@ def test_load_specs_rejects_invalid_cast_sacrifice_choices(
             "cannot be combined",
         ),
         (
-            '{ action = "cast", card = "Memnite", kicker = false, expect = "refused" }',
+            '{ action = "cast", card = "Memnite", kicker = false, alternative_cost = true }',
             "cannot be combined",
         ),
     ],
@@ -1387,6 +1387,19 @@ def test_load_specs_rejects_invalid_cast_kicker(
 
     with pytest.raises((TypeError, ValueError), match=message):
         load_specs([spec])
+
+
+def test_load_specs_accepts_kicker_answer_on_refused_cast(tmp_path: Path) -> None:
+    spec = tmp_path / "refused-cast-kicker.toml"
+    spec.write_text(
+        '[[scenarios]]\nname = "refused cast kicker"\n'
+        'script = [{ action = "cast", card = "Memnite", kicker = true, '
+        'expect = "refused" }]\n\n'
+        '[scenarios.setup.P0]\nhand = ["Memnite"]\n',
+        encoding="utf-8",
+    )
+
+    load_specs([spec])
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,108 @@
+diff --git a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+--- a/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
++++ b/Mage.Tests/src/test/java/org/mage/test/player/TestPlayer.java
+@@ -113,6 +113,7 @@
+     private final List<List<String>> cardChoiceGroups = new ArrayList<>();
+     private final List<String> refusalCostPrompts = new ArrayList<>();
+     private int expectedRefusalScriptIndex = -1;
++    private ScenarioOptionalAnswer refusalOptionalAnswer;
+     private UUID expectedBeholdSource;
+     private Boolean expectedBeholdChoice;
+     private final Map<String, UUID> aliases = new HashMap<>(); // aliases for game objects/players (use it for cards with same name to save and use)
+@@ -241,6 +242,35 @@
+         addChoice(mappedAnswer);
+     }
+ 
++    /**
++     * Queues the answer of an expected-refusal attempt ahead of the answers scripted for later steps.
++     */
++    public void addRefusalOptionalAnswer(boolean accept) {
++        if (refusalOptionalAnswer != null) {
++            throw new IllegalStateException("an expected-refusal optional answer is already queued");
++        }
++        refusalOptionalAnswer = new ScenarioOptionalAnswer(accept ? "Yes" : "No", null);
++        scenarioOptionalAnswers.addFirst(refusalOptionalAnswer);
++        choices.add(0, refusalOptionalAnswer.answer());
++    }
++
++    /**
++     * Removes the expected-refusal answer when no prompt consumed it: a cast that is not offered asks nothing.
++     */
++    public void finishRefusalOptionalAnswer() {
++        ScenarioOptionalAnswer queued = refusalOptionalAnswer;
++        refusalOptionalAnswer = null;
++        if (queued == null || scenarioOptionalAnswers.peekFirst() != queued) {
++            return;
++        }
++        if (choices.isEmpty() || !choices.get(0).equals(queued.answer())) {
++            throw new IllegalStateException(
++                    "expected-refusal optional answer is not first in the choice queue: " + queued.answer());
++        }
++        scenarioOptionalAnswers.removeFirst();
++        choices.remove(0);
++    }
++
+     public void assertNoScenarioOptionalAnswers() {
+         if (!scenarioOptionalAnswers.isEmpty()) {
+             throw new IllegalStateException(
+diff --git a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+--- a/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
++++ b/Mage.Tests/src/test/java/org/mage/test/testapi/CardScenarioProjectionTest.java
+@@ -441,11 +441,10 @@
+                             throw new IllegalArgumentException(
+                                     "cast.kicker cannot be combined with x, sacrifice or alternative_cost");
+                         }
+-                        if (expectRefused) {
+-                            throw new IllegalArgumentException(
+-                                    "cast.kicker cannot be combined with expect");
++                        // A refused cast answers the kicker prompt inside its own attempt.
++                        if (!expectRefused) {
++                            actingPlayer.addScenarioOptionalAnswer(kicker.getAsBoolean() ? "yes" : "no", null);
+                         }
+-                        actingPlayer.addScenarioOptionalAnswer(kicker.getAsBoolean() ? "yes" : "no", null);
+                     }
+                     if (action.has("cost_choice")) {
+                         String costChoice = action.get("cost_choice").getAsString();
+@@ -487,6 +486,7 @@
+                     if (expectRefused) {
+                         scheduleExpectedRefusal(
+                                 actionIndex, "cast", card, source, null, scriptedTargets,
++                                action.has("kicker") ? action.get("kicker").getAsBoolean() : null,
+                                 turn, step, actingPlayer);
+                     } else if (source.equals("graveyard")) {
+                         scriptedTargets.forEach(actingPlayer::addTarget);
+@@ -814,7 +814,7 @@
+                             });
+                     if (expectRefused) {
+                         scheduleExpectedRefusal(
+-                                actionIndex, "activate", source, null, ability, targets,
++                                actionIndex, "activate", source, null, ability, targets, null,
+                                 turn, step, actingPlayer);
+                     } else if (hasAlternativeCost) {
+                         boolean accepted = acceptAlternativeCost;
+@@ -891,6 +891,7 @@
+             String sourceZone,
+             String ability,
+             List<String> targets,
++            Boolean kicker,
+             int turn,
+             PhaseStep step,
+             TestPlayer actingPlayer) {
+@@ -904,6 +905,9 @@
+                     JsonObject before = result().getAsJsonObject("projection").deepCopy();
+                     boolean accepted;
+                     actingPlayer.beginScenarioExpectedRefusal(scriptIndex);
++                    if (kicker != null) {
++                        actingPlayer.addRefusalOptionalAnswer(kicker);
++                    }
+                     try {
+                         if (kind.equals("cast")) {
+                             Zone zone = switch (sourceZone) {
+@@ -954,6 +958,7 @@
+                             accepted = actingPlayer.attemptScenarioActivatedAbility(command, game);
+                         }
+                     } finally {
++                        actingPlayer.finishRefusalOptionalAnswer();
+                         for (String prompt : actingPlayer.finishScenarioExpectedRefusal()) {
+                             JsonObject costPrompt = new JsonObject();
+                             costPrompt.addProperty("script_index", scriptIndex);
